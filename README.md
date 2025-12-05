@@ -35,7 +35,7 @@
 
 ### 1. 克隆项目
 \`\`\`bash
-git clone https://github.com/YourUsername/my-portfolio-blog.git
+git clone https://github.com/Lum-aurous/portfolio-blog.git
 \`\`\`
 
 ### 2. 启动后端
