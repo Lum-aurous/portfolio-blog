@@ -27,9 +27,9 @@ onMounted(() => {
 <template>
     <div class="app-container">
 
-        <div v-if="profile" class="resume-card">
+        <div v-if="profile" class="resume-card animate__animated animate__fadeInDown">
             <div class="header">
-                <h1>{{ profile.name }}</h1>
+                <h1 class="typing-effect">{{ profile.name }}</h1>
                 <p class="title">{{ profile.title }}</p>
             </div>
             <div class="content">
@@ -44,7 +44,7 @@ onMounted(() => {
             </div>
         </div>
 
-        <div v-if="articles.length > 0" class="blog-section">
+        <div v-if="articles.length > 0" class="blog-section animate__animated animate__fadeInUp animate__delay-1s">
             <h2 class="section-title">📝 最新动态</h2>
 
             <div class="article-list">
@@ -88,6 +88,17 @@ onMounted(() => {
     margin-bottom: 40px;
     border: 1px solid var(--border-color);
     color: var(--text-color);
+    transition: all 0.3s ease;
+    /* 让所有变化都平滑过渡 */
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    /* 微妙的边框 */
+}
+
+.resume-card:hover {
+    transform: translateY(-5px);
+    /* 向上浮起 5px */
+    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.15);
+    /* 阴影变大，营造空间感 */
 }
 
 .header {
@@ -98,8 +109,51 @@ onMounted(() => {
 }
 
 .header h1 {
-    margin: 0;
-    font-size: 2.5rem;
+    font-size: 3rem;
+    /* 👇 渐变文字魔法 */
+    background: linear-gradient(120deg, #84fab0 0%, #8fd3f4 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    /* 如果背景是浅色，就把上面的颜色换深一点，比如 #42b883 到 #35495e */
+}
+
+/* 打字机光标动画 */
+@keyframes blink {
+    50% {
+        border-color: transparent;
+    }
+}
+
+/* 打字机文字样式 */
+.typing-effect {
+    display: inline-block;
+    overflow: hidden;
+    /* 隐藏多余部分 */
+    white-space: nowrap;
+    /* 不换行 */
+    border-right: 3px solid #fff;
+    /* 光标 */
+    width: 0;
+    /* 初始宽度为0 */
+    animation:
+        typing 2s steps(10) forwards,
+        /* 打字动画 */
+        blink .70s step-end infinite;
+    /* 光标闪烁 */
+    margin: 0 auto;
+}
+
+/* 定义打字过程：从宽度0变到100% */
+@keyframes typing {
+    from {
+        width: 0
+    }
+
+    to {
+        width: 200px
+    }
+
+    /* 或者写具体宽度，比如 200px */
 }
 
 .title {
@@ -180,6 +234,10 @@ h3 {
 .article-card:hover {
     transform: translateY(-3px);
     box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+    transform: translateY(-5px);
+    /* 向上浮起 5px */
+    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.15);
+    /* 阴影变大，营造空间感 */
 }
 
 /* 👇 新增图片的样式 */
@@ -191,6 +249,19 @@ h3 {
     /* 裁剪模式，保证图片填满且不变形 */
     display: block;
 }
+
+/* 图片放大效果 */
+.article-card:hover .card-image img {
+    transform: scale(1.05);
+    /* 图片微微放大 */
+    transition: transform 0.5s ease;
+}
+
+.card-image {
+    overflow: hidden;
+}
+
+/* 这一句很重要，防止图片放大溢出 */
 
 .card-text {
     padding: 20px;

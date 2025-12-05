@@ -1,11 +1,21 @@
+/* 引入 'Noto Sans SC' (中文) 和 'Inter' (英文) */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+@import 'animate.css'; /* 👈 新增：引入动画库 */
+
 /* 1. 定义浅色模式（默认）变量 */
 :root {
-  --bg-color: #f4f7f6;        /* 网页大背景 */
-  --card-bg: #ffffff;         /* 卡片背景 */
-  --text-color: #2c3e50;      /* 主要文字颜色 */
-  --text-secondary: #666;     /* 次要文字颜色 */
-  --border-color: #eee;       /* 边框颜色 */
-  --primary-color: #42b883;   /* 主题绿 */
+  --bg-color: #f4f7f6;
+  /* 网页大背景 */
+  --card-bg: #ffffff;
+  /* 卡片背景 */
+  --text-color: #2c3e50;
+  /* 主要文字颜色 */
+  --text-secondary: #666;
+  /* 次要文字颜色 */
+  --border-color: #eee;
+  /* 边框颜色 */
+  --primary-color: #42b883;
+  /* 主题绿 */
 }
 
 /* 2. 定义深色模式变量 */
@@ -22,21 +32,56 @@ body {
   margin: 0;
   background-color: var(--bg-color);
   color: var(--text-color);
-  font-family: 'Inter', system-ui, sans-serif;
-  transition: background-color 0.3s, color 0.3s; /* 让颜色切换有动画过渡 */
+  /* 👇 修改这里：使用新字体 */
+  font-family: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  line-height: 1.6;
+  /* 增加行高，阅读更舒服 */
+  -webkit-font-smoothing: antialiased;
+  /* 让字体看起来更清晰 */
 }
 
 /* 4. 强制覆盖所有组件的卡片颜色 (这样你就不用改 Home.vue 了) */
-.resume-card, 
-.article-card, 
-.admin-container, 
+.resume-card,
+.article-card,
+.admin-container,
 .detail-container {
   background-color: var(--card-bg) !important;
   color: var(--text-color) !important;
   border: 1px solid var(--border-color) !important;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
 }
 
 /* 链接文字颜色适配 */
-h1, h2, h3, h4 { color: var(--text-color) !important; }
-p { color: var(--text-secondary); }
+h1,
+h2,
+h3,
+h4 {
+  color: var(--text-color) !important;
+}
+
+p {
+  color: var(--text-secondary);
+}
+
+/* 滚动条整体 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+/* 滚动条轨道 */
+::-webkit-scrollbar-track {
+  background: var(--bg-color);
+}
+
+/* 滚动条滑块 */
+::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 4px;
+}
+
+/* 滑块悬停 */
+::-webkit-scrollbar-thumb:hover {
+  background: #42b883;
+  /* 你的主题绿 */
+}
