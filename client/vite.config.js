@@ -5,6 +5,7 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
+    port: 5173,
     // 👇 新增：开发服务器代理配置
     // 意思是：在 npm run dev 模式下，如果遇到 /api 开头的请求，
     // 自动帮我转发给 localhost:3000

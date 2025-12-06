@@ -39,6 +39,21 @@ const changeWallpaper = (type) => {
 
 watch(wallpaperSource, (newVal) => { changeWallpaper(newVal) })
 
+// ⚡️ 新增：监听当前壁纸的变化，并存入本地存储
+watch(currentWallpaper, (newUrl) => {
+    localStorage.setItem('activeWallpaperUrl', newUrl)
+})
+
+// 初始化时也存一次 (在 onMounted 里 changeWallpaper 执行后)
+onMounted(() => {
+    updateTime()
+    timer = setInterval(updateTime, 1000)
+    document.body.style.overflow = 'hidden'
+
+    // 确保初始壁纸也被保存
+    changeWallpaper(wallpaperSource.value)
+})
+
 // 搜索建议设置
 const showSuggestions = ref(true)
 

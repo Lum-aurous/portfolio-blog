@@ -5,6 +5,7 @@ import ArticleDetail from "./views/ArticleDetail.vue";
 import Admin from "./views/Admin.vue";
 import Login from "./views/Login.vue";
 import Register from "./views/Register.vue";
+import Account from './views/Account.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -44,6 +45,14 @@ const router = createRouter({
         requiresAuth: true,
         title: "Veritas - 后台管理"
       },
+    },
+    {
+      path: "/account",
+      component: Account,
+      meta :{
+        requiresAuth: true,
+        title: "Veritas - 个人账号中心"
+      }
     },
 
     // ==================== 功能页面（暂时用 Home 占位）====================
