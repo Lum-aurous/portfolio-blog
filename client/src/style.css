@@ -1,87 +1,111 @@
-/* 引入 'Noto Sans SC' (中文) 和 'Inter' (英文) */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
-@import 'animate.css'; /* 👈 新增：引入动画库 */
+/* 1. 引入字体 */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+@import 'animate.css';
 
-/* 1. 定义浅色模式（默认）变量 */
+/* 2. 定义变量 */
 :root {
-  --bg-color: #f4f7f6;
-  /* 网页大背景 */
+  /* 网页大背景 (虽然body透明了，但这个变量留着给其他组件用) */
+  --bg-color: #f4f7f6; 
+  /* 卡片背景 (实心颜色) */
   --card-bg: #ffffff;
-  /* 卡片背景 */
+  /* 文字颜色 */
   --text-color: #2c3e50;
-  /* 主要文字颜色 */
   --text-secondary: #666;
-  /* 次要文字颜色 */
-  --border-color: #eee;
-  /* 边框颜色 */
+  --border-color: rgba(0, 0, 0, 0.1); /* 优化：用透明度边框，适配背景图 */
   --primary-color: #42b883;
-  /* 主题绿 */
 }
 
-/* 2. 定义深色模式变量 */
 html.dark {
   --bg-color: #1a1a1a;
   --card-bg: #252525;
   --text-color: #e0e0e0;
   --text-secondary: #a0a0a0;
-  --border-color: #333;
+  --border-color: rgba(255, 255, 255, 0.1); /* 优化：深色模式下的透明边框 */
 }
 
-/* 3. 全局基础样式 */
+/* 3. 全局 body 设置 */
 body {
   margin: 0;
-  background-color: var(--bg-color);
+  /* 核心：背景透明，让轮播图露出来 */
+  background-color: transparent; 
   color: var(--text-color);
-  /* 👇 修改这里：使用新字体 */
   font-family: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
   line-height: 1.6;
-  /* 增加行高，阅读更舒服 */
-  -webkit-font-smoothing: antialiased;
-  /* 让字体看起来更清晰 */
+  min-height: 100vh;
+  transition: color 0.3s; 
+  /* 优化：防止移动端横向溢出 */
+  overflow-x: hidden; 
 }
 
-/* 4. 强制覆盖所有组件的卡片颜色 (这样你就不用改 Home.vue 了) */
+/* 4. 背景轮播动画 */
+.background-animate {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: -1;
+    overflow: hidden;
+    /* 遮罩：让图片稍微暗一点，凸显文字 */
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.6) 100%);
+    
+    /* 替换为你的高清图 */
+    background-image: url('https://picsum.photos/1920/1080?random=1'), 
+                      url('https://picsum.photos/1920/1080?random=2');
+    background-size: cover; /* 优化：cover 比 100% 100% 更自然，不变形 */
+    background-position: center;
+    background-repeat: no-repeat;
+    animation: bg-slide 30s infinite alternate;
+}
+
+@keyframes bg-slide {
+    0% { transform: scale(1); }
+    100% { transform: scale(1.1); } /* 优化：用缩放代替位移，效果更高级 */
+}
+
+html.dark .background-animate {
+    opacity: 0.6; /* 深色模式下背景更暗 */
+}
+
+/* 5. 全局卡片样式 (已修复) */
 .resume-card,
 .article-card,
 .admin-container,
 .detail-container {
-  background-color: var(--card-bg) !important;
-  color: var(--text-color) !important;
-  border: 1px solid var(--border-color) !important;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  /* ❌ 删除了 background-color 的 !important，允许组件使用毛玻璃 */
+  /* 这里只提供兜底颜色，如果组件没写 background，就用这个 */
+  background-color: var(--card-bg); 
+  
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  /* 统一的阴影 */
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
 }
 
 /* 链接文字颜色适配 */
-h1,
-h2,
-h3,
-h4 {
-  color: var(--text-color) !important;
-}
+h1, h2, h3, h4 { color: var(--text-color); }
+p { color: var(--text-secondary); }
 
-p {
-  color: var(--text-secondary);
-}
-
-/* 滚动条整体 */
+/* 6. 全局滚动条美化 (悬浮感) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-/* 滚动条轨道 */
+/* 轨道透明，这样滚动条就像悬浮在背景图上 */
 ::-webkit-scrollbar-track {
-  background: var(--bg-color);
+  background: transparent; 
 }
 
-/* 滚动条滑块 */
+/* 滑块样式 */
 ::-webkit-scrollbar-thumb {
-  background: #ccc;
+  background: rgba(150, 150, 150, 0.3); /* 半透明灰 */
   border-radius: 4px;
+  border: 2px solid transparent; /* 增加一点间隙 */
+  background-clip: content-box;
 }
 
-/* 滑块悬停 */
+/* 滑块悬停变明显 */
 ::-webkit-scrollbar-thumb:hover {
-  background: #42b883;
-  /* 你的主题绿 */
+  background: rgba(150, 150, 150, 0.6);
 }
