@@ -1,3 +1,4 @@
+// vite.config.js
 import { defineConfig, loadEnv } from "vite";
 import vue from "@vitejs/plugin-vue";
 import path from "path";
@@ -21,11 +22,13 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_API_TARGET || "http://localhost:3000",
           changeOrigin: true,
           secure: false,
+          rewrite: (path) => path.replace(/^\/api/, "/api"), // 👈 新增：确保路径正确
         },
         "/uploads": {
           target: env.VITE_API_TARGET || "http://localhost:3000",
           changeOrigin: true,
           secure: false,
+          rewrite: (path) => path.replace(/^\/uploads/, "/uploads"), // 👈 新增：同上
         },
       },
     },
@@ -64,4 +67,3 @@ export default defineConfig(({ mode }) => {
     },
   };
 });
-                                                                                                                                                                                                                  

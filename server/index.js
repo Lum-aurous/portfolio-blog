@@ -396,8 +396,6 @@ app.get("/api/user/profile", (req, res) => {
 // 👇 新增：更新用户个人信息接口 (POST)
 // ==========================================
 app.post("/api/user/update", (req, res) => {
-  // 接收前端发来的所有字段
-  // 👇 1. 接收新字段
   const {
     username,
     nickname,
@@ -411,14 +409,18 @@ app.post("/api/user/update", (req, res) => {
     social_link,
   } = req.body;
 
-  // 👇 2. SQL 增加更新项
-  const sql = `
-        UPDATE users 
-        SET nickname = ?, email = ?, avatar = ?, phone = ?, gender = ?, birthday = ?, region = ?, bio = ?, social_link = ?
-        WHERE username = ?
-    `;
+  // 验证必填字段
+  if (!username) {
+    return res.status(400).json({ success: false, message: "用户名不能为空" });
+  }
 
-  // 👇 3. 参数数组对应增加
+  const sql = `
+    UPDATE users
+    SET nickname = ?, email = ?, avatar = ?, phone = ?, gender = ?, 
+        birthday = ?, region = ?, bio = ?, social_link = ?
+    WHERE username = ?
+  `;
+
   const values = [
     nickname,
     email,
@@ -435,9 +437,37 @@ app.post("/api/user/update", (req, res) => {
   db.query(sql, values, (err, result) => {
     if (err) {
       console.error("更新失败:", err);
-      return res.send({ success: false, message: "更新失败" });
+      return res.status(500).json({ success: false, message: "数据库更新失败" });
     }
-    res.send({ success: true, message: "个人信息已保存到数据库" });
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "用户不存在" });
+    }
+    
+    // 🔥 返回更新后的完整用户数据
+    const selectSql = `
+      SELECT id, username, nickname, email, avatar, phone, gender, 
+             birthday, region, bio, social_link, role 
+      FROM users 
+      WHERE username = ?
+    `;
+    
+    db.query(selectSql, [username], (selectErr, selectResults) => {
+      if (selectErr || selectResults.length === 0) {
+        return res.json({ 
+          success: true, 
+          message: "更新成功，但获取更新后数据失败" 
+        });
+      }
+      
+      const updatedUser = selectResults[0];
+      
+      res.json({ 
+        success: true, 
+        message: "个人信息已保存到数据库",
+        user: updatedUser
+      });
+    });
   });
 });
 

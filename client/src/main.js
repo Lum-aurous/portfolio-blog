@@ -20,6 +20,6 @@ app.use(router);
 
 // 恢复登录状态（现在真的生效了！）
 const userStore = useUserStore();
-userStore.init();
+userStore.checkLoginStatus();
 
 app.mount("#app");

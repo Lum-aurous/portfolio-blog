@@ -128,27 +128,21 @@ const router = createRouter({
 
 // ==================== 全局前置守卫 ====================
 router.beforeEach((to, from, next) => {
-  // 1. 更新页面标题
-  if (to.meta.title) {
-    document.title = to.meta.title;
-  }
-
-  // 2. 权限验证（仅后台需要）
+  // 2. 权限验证
   if (to.meta.requiresAuth) {
-    // ⚡️ 关键修复：改用 Pinia 检查登录状态
     const userStore = useUserStore();
 
-    // 检查是否登录且是管理员
-    if (userStore.isLoggedIn && userStore.user?.role === "admin") {
-      next(); // 管理员放行
-    } else if (userStore.isLoggedIn && userStore.user?.role !== "admin") {
-      // 已登录但不是管理员
-      alert("🚫 只有管理员才能进入后台！");
-      next("/"); // 跳转首页
-    } else {
-      // 未登录
+    if (!userStore.isLoggedIn) {
+      // 未登录 → 跳转登录页
       alert("🚫 请先登录！");
-      next("/login"); // 跳转登录页
+      next("/login");
+    } else if (to.path === "/admin" && userStore.user?.role !== "admin") {
+      // 🔥 关键修改：只有访问 /admin 才检查管理员权限
+      alert("🚫 只有管理员才能进入后台！");
+      next("/");
+    } else {
+      // 已登录 + (访问非 /admin 页面 或 是管理员) → 放行
+      next();
     }
   } else {
     next(); // 无需验证的页面直接放行

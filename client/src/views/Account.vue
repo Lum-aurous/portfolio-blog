@@ -1,6 +1,12 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import axios from 'axios' // 引入 axios
+import { ref, onMounted, computed, watch } from 'vue'
+import { useRouter } from 'vue-router' // 👈 添加 router
+import axios from 'axios'
+import { useUserStore } from '@/stores/user.js'
+
+const router = useRouter() // 👈 初始化 router
+const userStore = useUserStore()
+const isAdmin = computed(() => userStore.user?.role === 'admin')
 
 // 背景图状态
 const bgUrl = ref('')
@@ -16,16 +22,15 @@ const user = ref({
     birthday: '',
     gender: '',
     phone: '',
-    // 👇 新增
     region: '',
     bio: '',
     social_link: ''
 })
 
-// 💾 数据备份 (用于“取消”操作回滚)
+// 💾 数据备份 (用于"取消"操作回滚)
 const originalUser = ref({})
 
-// 侧边栏菜单 (保持不变)
+// 侧边栏菜单
 const menuItems = [
     { id: 'personal', label: '个人信息', iconPath: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z' },
     { id: 'security', label: '安全与登录', iconPath: 'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-9-2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z' },
@@ -33,13 +38,23 @@ const menuItems = [
     { id: 'people', label: '用户与分享', iconPath: 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z' },
 ]
 
-// ==================== 核心逻辑区域 ====================
+// 👇 新增：如果是管理员，动态添加"后台管理"菜单
+if (isAdmin.value) {
+    menuItems.push({
+        id: 'admin',
+        label: '后台管理',
+        iconPath: 'M19.43 12.98c.04-.32.07-.64.07-.98 0-.34-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.06-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65-.63.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98 0 .33.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.06.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.63-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z'
+    })
+}
 
 // 1. 获取用户信息 (从后端数据库拉取)
 const fetchUserInfo = async () => {
-    // 从登录时保存的 localStorage 中获取当前用户名
-    const currentUsername = localStorage.getItem('username')
-    if (!currentUsername) return
+    // 优先从 Pinia Store 获取当前用户名
+    const currentUsername = userStore.user?.username || localStorage.getItem('username')
+    if (!currentUsername) {
+        console.warn('未找到用户名')
+        return
+    }
 
     try {
         // 向后端请求数据
@@ -52,25 +67,28 @@ const fetchUserInfo = async () => {
             // 将数据库的数据填充到前端 user 对象
             user.value = {
                 username: dbUser.username,
-                nickname: dbUser.nickname || dbUser.username, // 如果没设置昵称，默认显示用户名
+                nickname: dbUser.nickname || dbUser.username,
                 email: dbUser.email || '',
                 avatar: dbUser.avatar || '',
-                birthday: dbUser.birthday || '未设置',
-                gender: dbUser.gender || '未设置',
+                birthday: dbUser.birthday || '',
+                gender: dbUser.gender || '',
                 phone: dbUser.phone || '',
-                // 👇 新增
                 region: dbUser.region || '',
                 bio: dbUser.bio || '',
                 social_link: dbUser.social_link || ''
             }
 
-            // 备份一份，用于“取消”功能
+            // 备份一份，用于"取消"功能
             originalUser.value = { ...user.value }
 
-            // 🔥 重要：同步更新 localStorage，保证 Navbar 头像能立即显示
-            if (dbUser.avatar) localStorage.setItem('userAvatar', dbUser.avatar)
-            if (dbUser.nickname) localStorage.setItem('nickname', dbUser.nickname)
-            if (dbUser.email) localStorage.setItem('email', dbUser.email)
+            // 🔥 重要：同步更新 Pinia Store
+            userStore.updateUser({
+                nickname: user.value.nickname,
+                email: user.value.email,
+                avatar: user.value.avatar,
+                region: user.value.region,
+                bio: user.value.bio
+            })
         }
     } catch (error) {
         console.error('获取用户信息失败', error)
@@ -79,14 +97,29 @@ const fetchUserInfo = async () => {
 
 // 2. 取消修改 (Cancel)
 const handleCancel = () => {
-    // 恢复到刚进入页面时的数据
-    user.value = { ...originalUser.value }
-    alert('已重置为最新保存的状态')
+    // 检查是否有未保存的修改
+    const hasChanges = JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
+
+    if (!hasChanges) {
+        // 没有修改，直接返回上一页
+        router.back()
+        return
+    }
+
+    // 有修改，询问用户
+    if (confirm('您有未保存的修改，确定要放弃吗？')) {
+        // 恢复到刚进入页面时的数据
+        user.value = { ...originalUser.value }
+        router.back()
+    }
 }
 
 // 3. 发布/保存修改 (Publish) - 存入数据库
 const handlePublish = async () => {
-    if (!user.value.nickname) return alert('昵称不能为空')
+    if (!user.value.nickname) {
+        alert('昵称不能为空')
+        return
+    }
 
     isSaving.value = true
 
@@ -97,16 +130,23 @@ const handlePublish = async () => {
         if (res.data.success) {
             alert('🎉 保存成功！数据已同步到数据库')
 
-            // 更新 localStorage 供 Navbar 使用 (不用刷新页面也能同步)
-            localStorage.setItem('nickname', user.value.nickname)
-            localStorage.setItem('email', user.value.email)
-            localStorage.setItem('userAvatar', user.value.avatar)
+            // 🔥 关键：更新 Pinia Store 中的用户信息
+            const updatedData = {
+                nickname: user.value.nickname,
+                email: user.value.email,
+                avatar: user.value.avatar,
+                region: user.value.region,
+                bio: user.value.bio
+            }
+
+            userStore.updateUser(updatedData)
 
             // 更新备份数据
             originalUser.value = { ...user.value }
 
-            // 刷新页面，确保 Navbar 组件重新挂载并读取最新头像
-            window.location.reload()
+            // 🔥 可选：刷新用户信息（确保与数据库完全一致）
+            await userStore.refreshUserInfo()
+
         } else {
             alert('保存失败：' + res.data.message)
         }
@@ -119,21 +159,20 @@ const handlePublish = async () => {
     }
 }
 
-// 头像上传 (逻辑不变，依然转 Base64，但现在会存入数据库)
+// 头像上传
 const fileInput = ref(null)
 const triggerUpload = () => fileInput.value.click()
 const handleFileChange = (event) => {
     const file = event.target.files[0]
     if (file) {
-        // 限制图片大小 (建议限制在 500KB 以内，因为 Base64 很占数据库空间)
-        if (file.size > 500 * 1024) {
-            alert('图片太大啦，请上传 500KB 以内的图片')
-            return
+        // 限制图片大小 (建议限制在 1MB 以内)
+        if (file.size > 1024 * 1024) {
+            alert('头像大小不能超过 1MB');
+            return;
         }
 
         const reader = new FileReader()
         reader.onload = (e) => {
-            // 这里的更改只在当前页面预览，必须点击右上角“发布”才会存入数据库
             user.value.avatar = e.target.result
         }
         reader.readAsDataURL(file)
@@ -144,7 +183,12 @@ onMounted(() => {
     const savedBg = localStorage.getItem('activeWallpaperUrl')
     bgUrl.value = savedBg || 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2940&q=80'
 
-    fetchUserInfo() // 🚀 页面加载时，从数据库拉取数据
+    fetchUserInfo() // 页面加载时，从数据库拉取数据
+})
+
+// 👇 监听用户数据变化，如果有变动就启用保存按钮
+const hasUnsavedChanges = computed(() => {
+    return JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
 })
 </script>
 
@@ -175,7 +219,9 @@ onMounted(() => {
 
                 <ul class="nav-list">
                     <li v-for="item in menuItems" :key="item.id" class="nav-item"
-                        :class="{ active: activeTab === item.id }" @click="activeTab = item.id">
+                        :class="{ active: activeTab === item.id }"
+                        @click="item.id === 'admin' ? $router.push('/admin') : activeTab = item.id">
+                        <!-- 👆 关键修改：点击"后台管理"时跳转 -->
                         <svg viewBox="0 0 24 24" class="nav-icon">
                             <path :d="item.iconPath" fill="currentColor" />
                         </svg>
@@ -204,7 +250,7 @@ onMounted(() => {
                                 <div class="current-avatar">
                                     <img v-if="user.avatar" :src="user.avatar" />
                                     <span v-else>{{ user.username ? user.username.charAt(0).toUpperCase() : 'U'
-                                        }}</span>
+                                    }}</span>
                                     <div class="camera-icon">📷</div>
                                 </div>
                             </div>
