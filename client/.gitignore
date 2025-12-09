@@ -1,4 +1,4 @@
-# Logs
+# 日志
 logs
 *.log
 npm-debug.log*
@@ -7,12 +7,23 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# 环境变量文件
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 依赖项目
 node_modules
+
+# 构建输出
 dist
 dist-ssr
 *.local
 
-# Editor directories and files
+
+# 编译文件
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -22,3 +33,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+

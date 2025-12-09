@@ -3,6 +3,7 @@ const cors = require("cors");
 const mysql = require("mysql2");
 const bcrypt = require("bcryptjs");
 const multer = require("multer"); // 👈 新增：引入 multer
+const fs = require("fs");
 const path = require("path"); // 👈 新增：引入 path (处理路径用)
 const app = express();
 
@@ -29,20 +30,37 @@ db.connect((err) => {
 });
 
 // ==========================================
-// 👇 新增：配置 Multer 图片上传存储规则
+// 👇 修改：配置 Multer 图片上传存储规则
 // ==========================================
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, "uploads/"); // 1. 存到 uploads 文件夹
+    // 确保 uploads 文件夹存在
+    if (!fs.existsSync("uploads")) {
+      fs.mkdirSync("uploads", { recursive: true });
+    }
+    cb(null, "uploads/");
   },
   filename: function (req, file, cb) {
-    // 2. 给文件起个唯一的名字 (时间戳 + 原名)，防止重名覆盖
-    // 比如: 1678888888-my-photo.jpg
-    cb(null, Date.now() + "-" + file.originalname);
+    // ✅ 生成安全的文件名：移除所有特殊字符和空格
+    const originalName = file.originalname;
+    const ext = path.extname(originalName).toLowerCase();
+
+    // 生成安全的文件名：时间戳 + 随机数 + 扩展名
+    const timestamp = Date.now();
+    const random = Math.round(Math.random() * 1e9);
+    const safeName = `${timestamp}-${random}${ext}`;
+
+    console.log("📝 文件重命名:", originalName, "->", safeName);
+    cb(null, safeName);
   },
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB限制
+  },
+});
 
 // ==========================================
 // 👇 新增：上传接口 (单独的一个接口)
@@ -258,36 +276,38 @@ app.post("/api/register", (req, res) => {
 // });
 
 // 加密用户登录密码
-app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
+app.post("/api/login", (req, res) => {
+  const { username, password } = req.body;
 
-    // ⚡️ 确保 SELECT 包含 avatar
-    const sql = 'SELECT id, username, password, role, avatar, nickname, email FROM users WHERE username = ?';
-    
-    db.query(sql, [username], (err, results) => {
-        if (err) return res.status(500).json({ message: '服务器错误' });
-        if (results.length === 0) return res.status(401).json({ success: false, message: '用户不存在' });
+  // ⚡️ 确保 SELECT 包含 avatar
+  const sql =
+    "SELECT id, username, password, role, avatar, nickname, email FROM users WHERE username = ?";
 
-        const user = results[0];
-        const isMatch = bcrypt.compareSync(password, user.password);
+  db.query(sql, [username], (err, results) => {
+    if (err) return res.status(500).json({ message: "服务器错误" });
+    if (results.length === 0)
+      return res.status(401).json({ success: false, message: "用户不存在" });
 
-        if (isMatch) {
-            res.json({ 
-                success: true, 
-                message: '登录成功', 
-                user: { 
-                    id: user.id, 
-                    username: user.username, 
-                    role: user.role,
-                    avatar: user.avatar || null,        // ⚡️ 返回 Base64 或 null
-                    nickname: user.nickname || null,
-                    email: user.email || null
-                } 
-            });
-        } else {
-            res.status(401).json({ success: false, message: '密码错误' });
-        }
-    });
+    const user = results[0];
+    const isMatch = bcrypt.compareSync(password, user.password);
+
+    if (isMatch) {
+      res.json({
+        success: true,
+        message: "登录成功",
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          avatar: user.avatar || null, // ⚡️ 返回 Base64 或 null
+          nickname: user.nickname || null,
+          email: user.email || null,
+        },
+      });
+    } else {
+      res.status(401).json({ success: false, message: "密码错误" });
+    }
+  });
 });
 
 // ==========================================
@@ -421,9 +441,139 @@ app.post("/api/user/update", (req, res) => {
   });
 });
 
+// ==================== 壁纸相关接口 ====================
+
+// 1. 获取全局壁纸配置（所有人可访问）
+app.get("/api/wallpaper/global", (req, res) => {
+  const sql = "SELECT * FROM global_wallpapers LIMIT 1";
+  db.query(sql, (err, results) => {
+    if (err || results.length === 0) {
+      return res.status(500).json({ error: "获取全局壁纸失败" });
+    }
+    const data = results[0];
+    res.json({
+      mode: data.mode || "website",
+      dailyUrl: data.daily_url || "",
+      websiteUrl: data.website_url || "",
+      randomUrls:
+        data.random_urls && typeof data.random_urls === "string"
+          ? data.random_urls
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : [],
+    });
+  });
+});
+
+// 2. 【需登录】获取用户个人壁纸（也加上日志）
+app.get("/api/wallpaper/user", (req, res) => {
+  const userId = req.query.userId;
+
+  if (!userId) {
+    console.warn("⚠️ 未提供用户ID");
+    return res.status(401).json({ error: "未登录" });
+  }
+
+  const sql = "SELECT wallpaper_url FROM user_wallpapers WHERE user_id = ?";
+  db.query(sql, [userId], (err, results) => {
+    if (err) {
+      console.error("❌ 查询壁纸失败:", err);
+      return res.status(500).json({ error: "查询失败" });
+    }
+
+    if (results.length > 0) {
+      const url = results[0].wallpaper_url;
+      console.log("✅ 找到用户壁纸:", { userId, url });
+      res.json({ hasCustom: true, url });
+    } else {
+      console.log("ℹ️ 用户无自定义壁纸:", userId);
+      res.json({ hasCustom: false });
+    }
+  });
+});
+
+// 3. 【需登录】上传用户个人壁纸（简化版）
+app.post("/api/wallpaper/user", upload.single("image"), (req, res) => {
+  console.log("🔍 收到上传请求，userId:", req.body.userId);
+  console.log("🔍 上传文件:", req.file);
+
+  const userId = req.body.userId;
+
+  if (!userId || !req.file) {
+    console.error("❌ 参数错误");
+    return res.status(400).json({
+      success: false,
+      error: "参数错误",
+    });
+  }
+
+  const filePath = req.file.path.replace(/\\/g, "/");
+  const dbPath = "/" + filePath; // 确保有前导斜杠
+
+  console.log("📁 文件路径:", dbPath);
+
+  // 使用 REPLACE INTO 而不是复杂的 UPSERT
+  const sql = `
+    REPLACE INTO user_wallpapers (user_id, wallpaper_url, updated_at) 
+    VALUES (?, ?, NOW())
+  `;
+
+  db.query(sql, [userId, dbPath], (err, result) => {
+    if (err) {
+      console.error("❌ 数据库操作失败:", err);
+      return res.status(500).json({
+        success: false,
+        error: "保存到数据库失败",
+      });
+    }
+
+    console.log("✅ 壁纸保存成功，影响行数:", result.affectedRows);
+
+    res.json({
+      success: true,
+      url: `/${filePath}`,
+      message: "壁纸上传成功",
+    });
+  });
+});
+
+// 4. 【管理员专用】更新全局壁纸（你以后可以做一个管理页面调用这个）
+app.post("/api/admin/wallpaper/global", (req, res) => {
+  // 简单判断一下是不是管理员（实际项目可以用 JWT 中间件）
+  if (req.body.secret !== "your-super-secret-key") {
+    return res.status(403).json({ error: "权限不足" });
+  }
+
+  const { mode, dailyUrl, websiteUrl, randomUrls } = req.body;
+  const sql = `
+    UPDATE global_wallpapers 
+    SET mode = ?, daily_url = ?, website_url = ?, random_urls = ?
+    WHERE id = 1
+  `;
+  db.query(
+    sql,
+    [mode, dailyUrl, websiteUrl, JSON.stringify(randomUrls)],
+    (err) => {
+      if (err) return res.status(500).json({ error: "更新失败" });
+      res.json({ success: true });
+    }
+  );
+});
+
 // 👇 新增：把 'uploads' 文件夹变成公开的静态资源目录
 // 这样浏览器访问 http://localhost:3000/uploads/xxx.jpg 就能看到图了
-app.use("/uploads", express.static("uploads"));
+app.use(
+  "/uploads",
+  express.static("uploads", {
+    // 设置缓存控制
+    maxAge: "1d",
+    // 设置索引文件
+    index: false,
+    // 处理点文件
+    dotfiles: "ignore",
+  })
+);
 // ==========================================
 // 👇 1. 托管前端静态文件 (让 dist 文件夹能被访问)
 // ==========================================

@@ -1,112 +1,113 @@
 import { createRouter, createWebHistory } from "vue-router";
+import { useUserStore } from "@/stores/user.js"; // ⚡️ 导入 Store
 import Home from "./views/Home.vue";
 import Blog from "./views/Blog.vue";
 import ArticleDetail from "./views/ArticleDetail.vue";
 import Admin from "./views/Admin.vue";
 import Login from "./views/Login.vue";
 import Register from "./views/Register.vue";
-import Account from './views/Account.vue'
+import Account from "./views/Account.vue";
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     // ==================== 核心页面 ====================
-    { 
-      path: "/", 
+    {
+      path: "/",
       component: Home,
-      meta: { title: "Veritas - 首页" }
+      meta: { title: "Veritas - 首页" },
     },
-    { 
-      path: "/blog", 
+    {
+      path: "/blog",
       component: Blog,
-      meta: { title: "Veritas - 博客" }
+      meta: { title: "Veritas - 博客" },
     },
-    { 
-      path: "/article/:id", 
+    {
+      path: "/article/:id",
       component: ArticleDetail,
-      meta: { title: "Veritas - 文章详情" }
+      meta: { title: "Veritas - 文章详情" },
     },
 
     // ==================== 用户系统 ====================
-    { 
-      path: "/login", 
+    {
+      path: "/login",
       component: Login,
-      meta: { title: "Veritas - 登录" }
+      meta: { title: "Veritas - 登录" },
     },
-    { 
-      path: "/register", 
+    {
+      path: "/register",
       component: Register,
-      meta: { title: "Veritas - 注册" }
+      meta: { title: "Veritas - 注册" },
     },
     {
       path: "/admin",
       component: Admin,
-      meta: { 
+      meta: {
         requiresAuth: true,
-        title: "Veritas - 后台管理"
+        title: "Veritas - 后台管理",
       },
     },
     {
       path: "/account",
       component: Account,
-      meta :{
+      meta: {
         requiresAuth: true,
-        title: "Veritas - 个人账号中心"
-      }
+        title: "Veritas - 个人账号中心",
+      },
     },
 
     // ==================== 功能页面（暂时用 Home 占位）====================
-    { 
-      path: "/travel", 
-      component: Home, // 🔧 游记页面，待开发
-      meta: { title: "Veritas - 游记" }
+    {
+      path: "/travel",
+      component: Home,
+      meta: { title: "Veritas - 游记" },
     },
-    { 
-      path: "/toolkit", 
-      component: Home, // 🔧 百宝箱，待开发
-      meta: { title: "Veritas - 百宝箱" }
+    {
+      path: "/toolkit",
+      component: Home,
+      meta: { title: "Veritas - 百宝箱" },
     },
-    { 
-      path: "/comments", 
-      component: Home, // 🔧 留言板，待开发
-      meta: { title: "Veritas - 留言" }
+    {
+      path: "/comments",
+      component: Home,
+      meta: { title: "Veritas - 留言" },
     },
-    { 
-      path: "/contact", 
-      component: Home, // 🔧 联系我，待开发
-      meta: { title: "Veritas - 联系我" }
+    {
+      path: "/contact",
+      component: Home,
+      meta: { title: "Veritas - 联系我" },
     },
 
     // ==================== 记录子菜单 ====================
-    { 
-      path: "/records", 
-      component: Home, // 🔧 记录总览，待开发
-      meta: { title: "Veritas - 记录" }
+    {
+      path: "/records",
+      component: Home,
+      meta: { title: "Veritas - 记录" },
     },
-    { 
-      path: "/records/life", 
-      component: Home, // 🔧 生活倒影，待开发
-      meta: { title: "Veritas - 生活倒影" }
+    {
+      path: "/records/life",
+      component: Home,
+      meta: { title: "Veritas - 生活倒影" },
     },
-    { 
-      path: "/records/media", 
-      component: Home, // 🔧 视听盛宴，待开发
-      meta: { title: "Veritas - 视听盛宴" }
+    {
+      path: "/records/media",
+      component: Home,
+      meta: { title: "Veritas - 视听盛宴" },
     },
-    { 
-      path: "/records/study", 
-      component: Home, // 🔧 学习人生，待开发
-      meta: { title: "Veritas - 学习人生" }
+    {
+      path: "/records/study",
+      component: Home,
+      meta: { title: "Veritas - 学习人生" },
     },
-    { 
-      path: "/records/travel", 
-      component: Home, // 🔧 海外趣事，待开发
-      meta: { title: "Veritas - 海外趣事" }
+    {
+      path: "/records/travel",
+      component: Home,
+      meta: { title: "Veritas - 海外趣事" },
     },
-    { 
-      path: "/records/resources", 
-      component: Home, // 🔧 爱心资源，待开发
-      meta: { title: "Veritas - 爱心资源" }
+    {
+      path: "/records/resources",
+      component: Home,
+      meta: { title: "Veritas - 爱心资源" },
     },
 
     // ==================== 404 页面 ====================
@@ -116,7 +117,6 @@ const router = createRouter({
     },
   ],
 
-  // 页面切换时滚动到顶部
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) {
       return savedPosition;
@@ -135,14 +135,20 @@ router.beforeEach((to, from, next) => {
 
   // 2. 权限验证（仅后台需要）
   if (to.meta.requiresAuth) {
-    const isLoggedIn = localStorage.getItem("isLoggedIn");
-    const role = localStorage.getItem("role");
+    // ⚡️ 关键修复：改用 Pinia 检查登录状态
+    const userStore = useUserStore();
 
-    if (isLoggedIn && role === "admin") {
+    // 检查是否登录且是管理员
+    if (userStore.isLoggedIn && userStore.user?.role === "admin") {
       next(); // 管理员放行
-    } else {
+    } else if (userStore.isLoggedIn && userStore.user?.role !== "admin") {
+      // 已登录但不是管理员
       alert("🚫 只有管理员才能进入后台！");
-      next("/"); // 非管理员跳转首页
+      next("/"); // 跳转首页
+    } else {
+      // 未登录
+      alert("🚫 请先登录！");
+      next("/login"); // 跳转登录页
     }
   } else {
     next(); // 无需验证的页面直接放行

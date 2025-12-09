@@ -1,7 +1,9 @@
 <script setup>
-import { ref, onMounted } from 'vue' // 引入 onMounted
+import { ref, onMounted } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
+// ⚡️ 关键修复：导入 useUserStore
+import { useUserStore } from '@/stores/user.js'
 
 const router = useRouter()
 
@@ -20,9 +22,7 @@ const form = ref({
 
 // 初始化：读取主页保存的壁纸
 onMounted(() => {
-    // 尝试从 localStorage 获取主页壁纸
     const savedBg = localStorage.getItem('activeWallpaperUrl')
-    // 如果有就用，没有就用默认图（防止用户直接访问 login 页）
     bgUrl.value = savedBg || 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2940&q=80'
 })
 
@@ -53,40 +53,21 @@ const handleSubmit = async () => {
         const res = await axios.post(url, payload)
         if (res.data.success) {
             if (isLoginMode.value) {
-                localStorage.setItem('isLoggedIn', 'true')
-                localStorage.setItem('username', res.data.user.username)
-                localStorage.setItem('role', res.data.user.role)
+                // ⚡️ 现在可以正常使用了
+                const userStore = useUserStore()
+                userStore.login({
+                    id: res.data.user.id,
+                    username: res.data.user.username,
+                    role: res.data.user.role,
+                    avatar: res.data.user.avatar || null,
+                    nickname: res.data.user.nickname || null,
+                    email: res.data.user.email || null
+                })
 
-                // ⚡️【关键】直接保存 Base64 头像（如果有的话）
-                if (res.data.user.avatar) {
-                    localStorage.setItem('userAvatar', res.data.user.avatar)
-                } else {
-                    localStorage.removeItem('userAvatar') // 没有头像就删除，显示首字母
-                }
+                alert(`欢迎回来,${res.data.user.username}!`)
 
-                // ⚡️ 保存昵称和邮箱
-                if (res.data.user.nickname) {
-                    localStorage.setItem('nickname', res.data.user.nickname)
-                } else {
-                    localStorage.removeItem('nickname')
-                }
-
-                if (res.data.user.email) {
-                    localStorage.setItem('email', res.data.user.email)
-                } else {
-                    localStorage.removeItem('email')
-                }
-
-                alert(`🔓 欢迎回来，${res.data.user.username}！`)
-
-                // ⚡️【新增】触发事件通知导航栏更新
-                window.dispatchEvent(new Event('login-update'))
-
-                if (res.data.user.role === 'admin') {
-                    router.push('/admin')
-                } else {
-                    router.push('/')
-                }
+                // ⚡️ 所有用户登录后都跳转到首页
+                router.push('/')
             } else {
                 alert('🎉 注册成功！请登录')
                 toggleMode()
@@ -95,6 +76,7 @@ const handleSubmit = async () => {
             alert(`❌ ${res.data.message || '操作失败'}`)
         }
     } catch (error) {
+        console.error('登录错误详情:', error)
         alert('❌ 网络错误或服务器异常')
     }
 }
@@ -102,11 +84,8 @@ const handleSubmit = async () => {
 
 <template>
     <div class="login-page" :style="{ backgroundImage: `url(${bgUrl})` }">
-
         <div class="bg-overlay"></div>
-
         <div class="glass-container">
-
             <div class="title-area">
                 <h2 class="main-title">{{ isLoginMode ? '欢迎登录' : '创建账号' }}</h2>
                 <p class="sub-title">
@@ -157,14 +136,12 @@ const handleSubmit = async () => {
                     {{ isLoginMode ? '还没有账号？' : '已有账号？' }}
                     <span @click="toggleMode">{{ isLoginMode ? '立即注册' : '立即登录' }}</span>
                 </div>
-
             </div>
         </div>
     </div>
 </template>
 
 <style scoped>
-/* ================= 1. 整体布局与背景 ================= */
 .login-page {
     height: 100vh;
     width: 100%;
@@ -173,18 +150,13 @@ const handleSubmit = async () => {
     align-items: center;
     position: relative;
     overflow: hidden;
-
-    /* ⚡️ 核心修改：使用背景图 */
     background-color: #0f172a;
-    /* 兜底色 */
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
-    /* 添加一个过渡，防止图片加载时太生硬 */
     transition: background-image 0.5s ease;
 }
 
-/* 新增：背景遮罩，让背景稍微暗一点，保证登录框清晰 */
 .bg-overlay {
     position: absolute;
     top: 0;
@@ -192,38 +164,29 @@ const handleSubmit = async () => {
     width: 100%;
     height: 100%;
     background: rgba(0, 0, 0, 0.3);
-    /* 30% 黑色遮罩 */
     backdrop-filter: blur(8px);
-    /* ⚡️ 关键：给背景加一点模糊，让它更像登录页 */
     z-index: 0;
 }
 
-/* ================= 2. 毛玻璃卡片核心 ================= */
 .glass-container {
     position: relative;
     z-index: 1;
-    /* 确保在遮罩之上 */
     width: 400px;
     padding: 50px 40px;
-
-    /* 毛玻璃特效 */
+    box-sizing: border-box;
     background: rgba(255, 255, 255, 0.1);
-    /* 稍微亮一点 */
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-top: 1px solid rgba(255, 255, 255, 0.3);
     border-radius: 24px;
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-    /* 阴影加重 */
-
     display: flex;
     flex-direction: column;
     gap: 30px;
     transition: height 0.3s ease;
 }
 
-/* ================= 3. 标题区域 ================= */
 .title-area {
     text-align: center;
 }
@@ -243,21 +206,20 @@ const handleSubmit = async () => {
     font-weight: 300;
 }
 
-/* ================= 4. 输入框组 (流光效果) ================= */
 .input-group {
     position: relative;
     margin-bottom: 25px;
+    width: 100%;
 }
 
 .input-group input {
     width: 100%;
+    box-sizing: border-box;
     padding: 12px 40px 12px 10px;
     background: rgba(0, 0, 0, 0.2);
-    /* 输入框给一点点底色，增加对比度 */
     border: none;
     border-bottom: 2px solid rgba(255, 255, 255, 0.2);
     border-radius: 8px 8px 0 0;
-    /* 上方圆角 */
     color: #fff;
     font-size: 1rem;
     outline: none;
@@ -288,7 +250,6 @@ const handleSubmit = async () => {
     text-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
 }
 
-/* 底部流光条 */
 .glow-bar {
     position: absolute;
     bottom: 0;
@@ -305,7 +266,6 @@ const handleSubmit = async () => {
     width: 100%;
 }
 
-/* 图标 */
 .icon {
     position: absolute;
     right: 10px;
@@ -320,7 +280,6 @@ const handleSubmit = async () => {
     color: #42b883;
 }
 
-/* ================= 5. 按钮 ================= */
 .submit-btn {
     position: relative;
     width: 100%;
@@ -368,7 +327,6 @@ const handleSubmit = async () => {
     left: 100%;
 }
 
-/* ================= 6. 模式切换 ================= */
 .switch-mode {
     text-align: center;
     color: rgba(255, 255, 255, 0.8);
@@ -391,7 +349,6 @@ const handleSubmit = async () => {
     text-shadow: 0 0 5px #42b883;
 }
 
-/* 动画 */
 .slide-fade-enter-active {
     transition: all 0.4s ease-out;
 }
