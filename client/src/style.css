@@ -4,15 +4,33 @@
 
 /* 2. 定义变量 */
 :root {
-  /* 网页大背景 (虽然body透明了，但这个变量留着给其他组件用) */
-  --bg-color: #f4f7f6; 
-  /* 卡片背景 (实心颜色) */
+  /* 颜色系统 */
+  --bg-color: #f4f7f6;
   --card-bg: #ffffff;
-  /* 文字颜色 */
   --text-color: #2c3e50;
   --text-secondary: #666;
-  --border-color: rgba(0, 0, 0, 0.1); /* 优化：用透明度边框，适配背景图 */
+  --border-color: rgba(0, 0, 0, 0.1);
   --primary-color: #42b883;
+  --primary-hover: #33a06f;
+  --accent-color: #647eff;
+
+  /* 阴影系统 */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.12);
+
+  /* 圆角系统 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  /* 过渡动画 */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.3s ease;
+  --transition-slow: 0.5s ease;
+
+  /* 背景遮罩 */
+  --bg-overlay: linear-gradient(135deg, rgba(0, 0, 0, 0.4) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.4) 100%);
 }
 
 html.dark {
@@ -20,92 +38,409 @@ html.dark {
   --card-bg: #252525;
   --text-color: #e0e0e0;
   --text-secondary: #a0a0a0;
-  --border-color: rgba(255, 255, 255, 0.1); /* 优化：深色模式下的透明边框 */
+  --border-color: rgba(255, 255, 255, 0.1);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.3);
+  --bg-overlay: linear-gradient(135deg, rgba(0, 0, 0, 0.7) 0%, rgba(0, 0, 0, 0.4) 50%, rgba(0, 0, 0, 0.7) 100%);
 }
 
-/* 3. 全局 body 设置 */
+/* 3. 全局基础设置 */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 body {
   margin: 0;
-  /* 核心：背景透明，让轮播图露出来 */
-  background-color: transparent; 
+  background-color: transparent;
   color: var(--text-color);
   font-family: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
   line-height: 1.6;
   min-height: 100vh;
-  transition: color 0.3s; 
-  /* 优化：防止移动端横向溢出 */
-  overflow-x: hidden; 
+  transition: color var(--transition-normal);
+  overflow-x: hidden;
 }
 
-/* 4. 背景轮播动画 */
+/* 4. 背景轮播系统 */
 .background-animate {
-    position: fixed;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -2;
+  overflow: hidden;
+
+  /* 基础遮罩层 */
+  &::before {
+    content: '';
+    position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: -1;
-    overflow: hidden;
-    /* 遮罩：让图片稍微暗一点，凸显文字 */
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.3) 0%, rgba(0, 0, 0, 0.6) 100%);
-    
-    /* 替换为你的高清图 */
-    background-image: url('https://picsum.photos/1920/1080?random=1'), 
-                      url('https://picsum.photos/1920/1080?random=2');
-    background-size: cover; /* 优化：cover 比 100% 100% 更自然，不变形 */
+    background: var(--bg-overlay);
+    z-index: 1;
+  }
+
+  /* 背景图片容器 */
+  .bg-image {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
-    animation: bg-slide 30s infinite alternate;
+    opacity: 0;
+    transition: opacity 1.5s var(--transition-normal);
+    will-change: opacity;
+
+    &.active {
+      opacity: 1;
+      z-index: 0;
+    }
+
+    /* 可选：添加微妙的缩放动画 */
+    animation: subtleZoom 20s infinite alternate ease-in-out;
+  }
 }
 
-@keyframes bg-slide {
-    0% { transform: scale(1); }
-    100% { transform: scale(1.1); } /* 优化：用缩放代替位移，效果更高级 */
+@keyframes subtleZoom {
+  0% {
+    transform: scale(1);
+  }
+
+  100% {
+    transform: scale(1.05);
+  }
 }
 
-html.dark .background-animate {
-    opacity: 0.6; /* 深色模式下背景更暗 */
-}
-
-/* 5. 全局卡片样式 (已修复) */
+/* 5. 卡片和容器样式 */
 .resume-card,
 .article-card,
 .admin-container,
-.detail-container {
-  /* ❌ 删除了 background-color 的 !important，允许组件使用毛玻璃 */
-  /* 这里只提供兜底颜色，如果组件没写 background，就用这个 */
-  background-color: var(--card-bg); 
-  
+.detail-container,
+.card {
+  background-color: var(--card-bg);
   color: var(--text-color);
   border: 1px solid var(--border-color);
-  /* 统一的阴影 */
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-normal);
+  backdrop-filter: blur(10px);
+
+  &:hover {
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-2px);
+  }
 }
 
-/* 链接文字颜色适配 */
-h1, h2, h3, h4 { color: var(--text-color); }
-p { color: var(--text-secondary); }
+/* 6. 排版系统 */
+h1,
+h2,
+h3,
+h4 {
+  color: var(--text-color);
+  font-weight: 600;
+  line-height: 1.3;
+  margin-bottom: 0.5em;
+}
 
-/* 6. 全局滚动条美化 (悬浮感) */
+h1 {
+  font-size: 2.5rem;
+}
+
+h2 {
+  font-size: 2rem;
+}
+
+h3 {
+  font-size: 1.5rem;
+}
+
+h4 {
+  font-size: 1.25rem;
+}
+
+p {
+  color: var(--text-secondary);
+  margin-bottom: 1rem;
+}
+
+a {
+  color: var(--primary-color);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+
+  &:hover {
+    color: var(--primary-hover);
+  }
+}
+
+/* 7. 按钮基础样式 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-sm);
+  border: none;
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  &.btn-primary {
+    background-color: var(--primary-color);
+    color: white;
+
+    &:hover:not(:disabled) {
+      background-color: var(--primary-hover);
+      transform: translateY(-1px);
+    }
+  }
+
+  &.btn-outline {
+    background-color: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+
+    &:hover:not(:disabled) {
+      border-color: var(--primary-color);
+      color: var(--primary-color);
+    }
+  }
+}
+
+/* 8. 表单元素 */
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background-color: var(--card-bg);
+  color: var(--text-color);
+  transition: border-color var(--transition-fast);
+
+  &:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(66, 184, 131, 0.1);
+  }
+
+  &::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.7;
+  }
+}
+
+/* 9. 滚动条美化 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
-/* 轨道透明，这样滚动条就像悬浮在背景图上 */
 ::-webkit-scrollbar-track {
-  background: transparent; 
+  background: transparent;
 }
 
-/* 滑块样式 */
 ::-webkit-scrollbar-thumb {
-  background: rgba(150, 150, 150, 0.3); /* 半透明灰 */
-  border-radius: 4px;
-  border: 2px solid transparent; /* 增加一点间隙 */
+  background: rgba(150, 150, 150, 0.3);
+  border-radius: var(--radius-sm);
+  border: 2px solid transparent;
   background-clip: content-box;
 }
 
-/* 滑块悬停变明显 */
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(150, 150, 150, 0.6);
+  background: rgba(150, 150, 150, 0.5);
+}
+
+/* 10. 工具类 */
+.text-center {
+  text-align: center;
+}
+
+.text-right {
+  text-align: right;
+}
+
+.text-left {
+  text-align: left;
+}
+
+.flex {
+  display: flex;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.justify-center {
+  justify-content: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.mt-1 {
+  margin-top: 0.25rem;
+}
+
+.mt-2 {
+  margin-top: 0.5rem;
+}
+
+.mt-4 {
+  margin-top: 1rem;
+}
+
+.mt-8 {
+  margin-top: 2rem;
+}
+
+.mb-1 {
+  margin-bottom: 0.25rem;
+}
+
+.mb-2 {
+  margin-bottom: 0.5rem;
+}
+
+.mb-4 {
+  margin-bottom: 1rem;
+}
+
+.mb-8 {
+  margin-bottom: 2rem;
+}
+
+.p-4 {
+  padding: 1rem;
+}
+
+.p-6 {
+  padding: 1.5rem;
+}
+
+.p-8 {
+  padding: 2rem;
+}
+
+/* 11. 响应式设计 */
+@media (max-width: 768px) {
+  h1 {
+    font-size: 2rem;
+  }
+
+  h2 {
+    font-size: 1.75rem;
+  }
+
+  h3 {
+    font-size: 1.25rem;
+  }
+
+  h4 {
+    font-size: 1.125rem;
+  }
+
+  .card,
+  .resume-card,
+  .article-card {
+    border-radius: var(--radius-sm);
+    margin: 0.5rem;
+    padding: 1rem;
+  }
+
+  .btn {
+    padding: 0.625rem 1.25rem;
+    font-size: 0.9375rem;
+  }
+
+  input,
+  textarea,
+  select {
+    padding: 0.625rem 0.875rem;
+    font-size: 0.9375rem;
+  }
+}
+
+@media (max-width: 480px) {
+  h1 {
+    font-size: 1.75rem;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+  }
+
+  .card,
+  .resume-card,
+  .article-card {
+    margin: 0.25rem;
+    padding: 0.75rem;
+  }
+
+  .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* 12. 深色模式优化 */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg-color: #1a1a1a;
+    --card-bg: #252525;
+    --text-color: #e0e0e0;
+    --text-secondary: #a0a0a0;
+  }
+}
+
+/* 13. 打印样式 */
+@media print {
+
+  .background-animate,
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .card,
+  .resume-card,
+  .article-card {
+    border: 1px solid #ddd !important;
+    box-shadow: none !important;
+    page-break-inside: avoid;
+  }
 }

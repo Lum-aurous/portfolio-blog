@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useUserStore } from '@/stores/user.js'
@@ -12,6 +12,39 @@ const userStore = useUserStore()
 const bgUrl = ref('')
 const activeTab = ref('personal')
 const isSaving = ref(false)
+
+// ========== 🖼️ 壁纸同步逻辑 ==========
+const globalConfig = ref(null)
+
+// 1. 获取全局默认配置 (所有人通用的) —— 终极修复版
+const loadGlobalWallpaper = async () => {
+    try {
+        const res = await fetch('/api/wallpaper/global')
+        if (!res.ok) throw new Error('Network response was not ok')
+        const data = await res.json()
+        globalConfig.value = data
+
+        // 关键：根据 mode 把真实壁纸地址赋值给 bgUrl！！
+        let url = data.websiteUrl
+
+        if (data.mode === 'daily' && data.dailyUrl) {
+            url = data.dailyUrl
+        } else if (data.mode === 'random' && data.randomUrls?.length > 0) {
+            const list = data.randomUrls
+            url = list[Math.floor(Math.random() * list.length)]
+            // random 模式下每 12 秒换一张（Account 页也能看到轮播）
+            setInterval(() => {
+                bgUrl.value = list[Math.floor(Math.random() * list.length)]
+            }, 12000)
+        }
+
+        bgUrl.value = url
+    } catch (err) {
+        console.error('加载全局壁纸失败', err)
+    }
+}
+
+
 
 // 用户数据
 const user = ref({
@@ -38,19 +71,41 @@ const menuItems = [
     { id: 'people', label: '用户与分享', iconPath: 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z' }
 ]
 
+const avatarSrc = computed(() => {
+    if (!user.value.avatar) return ''
+
+    // base64，直接用
+    if (user.value.avatar.startsWith('data:image')) {
+        return user.value.avatar
+    }
+
+    // 已经是 http(s)
+    if (user.value.avatar.startsWith('http')) {
+        return user.value.avatar
+    }
+
+    // 后端相对路径，补全域名
+    return `${import.meta.env.VITE_API_BASE_URL}${user.value.avatar}`
+})
+
+
 // ========== 🎂 生日日历选择器 ==========
 const showDatePicker = ref(false)
 const selectedYear = ref(new Date().getFullYear())
 const selectedMonth = ref(new Date().getMonth() + 1)
 const selectedDay = ref(new Date().getDate())
+
 const years = Array.from({ length: 100 }, (_, i) => new Date().getFullYear() - i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
+
 const daysInMonth = computed(() => {
     return new Date(selectedYear.value, selectedMonth.value, 0).getDate()
 })
+
 const days = computed(() => {
     return Array.from({ length: daysInMonth.value }, (_, i) => i + 1)
 })
+
 const confirmBirthday = () => {
     user.value.birthday = `${selectedYear.value}-${String(selectedMonth.value).padStart(2, '0')}-${String(selectedDay.value).padStart(2, '0')}`
     showDatePicker.value = false
@@ -59,9 +114,11 @@ const confirmBirthday = () => {
 // ========== 🚻 性别下拉选择器 ==========
 const showGenderDropdown = ref(false)
 const genders = [
-    { value: 'male', label: '男' },
-    { value: 'female', label: '女' }
+    { value: '男', label: '男' },
+    { value: '女', label: '女' },
+    { value: '不展示', label: '不展示' }
 ]
+
 const selectGender = (gender) => {
     user.value.gender = gender.value
     showGenderDropdown.value = false
@@ -72,6 +129,7 @@ const showRegionPicker = ref(false)
 const selectedCountryCode = ref('') // 存储国家代码 (如 'CN', 'US')
 const selectedStateCode = ref('') // 存储州/省代码
 const selectedCityName = ref('') // 存储城市名称
+
 // 🌍 获取所有国家 (按中文名称排序，中国置顶)
 const countries = computed(() => {
     const allCountries = Country.getAllCountries().map(country => ({
@@ -80,12 +138,14 @@ const countries = computed(() => {
         nativeName: country.native || country.name,
         flag: country.flag || '🌐'
     }))
+
     // 中国置顶，其他按名称排序
     const china = allCountries.find(c => c.code === 'CN')
     const others = allCountries.filter(c => c.code !== 'CN').sort((a, b) => a.name.localeCompare(b.name))
 
     return china ? [china, ...others] : others
 })
+
 // 🏙️ 获取选中国家的所有州/省
 const states = computed(() => {
     if (!selectedCountryCode.value) return []
@@ -96,6 +156,7 @@ const states = computed(() => {
         name: state.name
     }))
 })
+
 // 🏘️ 获取选中州/省的所有城市
 const cities = computed(() => {
     if (!selectedCountryCode.value || !selectedStateCode.value) return []
@@ -105,15 +166,18 @@ const cities = computed(() => {
         name: city.name
     }))
 })
+
 // 当选择国家时，重置州和城市
 const handleCountryChange = () => {
     selectedStateCode.value = ''
     selectedCityName.value = ''
 }
+
 // 当选择州时，重置城市
 const handleStateChange = () => {
     selectedCityName.value = ''
 }
+
 // 确认地区选择
 const confirmRegion = () => {
     if (!selectedCountryCode.value) {
@@ -138,6 +202,7 @@ const confirmRegion = () => {
     user.value.region = regionStr
     showRegionPicker.value = false
 }
+
 // 打开地区选择器时，解析已有地区数据
 const openRegionPicker = () => {
     showRegionPicker.value = true
@@ -172,10 +237,12 @@ const openRegionPicker = () => {
         }
     }
 }
+
 // ========== 📱 电话国际区号选择器 ==========
 const showPhoneDropdown = ref(false)
 const phoneInput = ref('')
 const phoneError = ref('')
+
 // 全球主要国家区号配置
 const phoneCountries = [
     { code: '+86', country: '中国', flag: '🇨🇳', minLength: 11, maxLength: 11, pattern: /^1[3-9]\d{9}$/ },
@@ -187,12 +254,15 @@ const phoneCountries = [
     { code: '+61', country: '澳大利亚', flag: '🇦🇺', minLength: 9, maxLength: 9, pattern: /^[0-9]{9}$/ },
     { code: '+49', country: '德国', flag: '🇩🇪', minLength: 10, maxLength: 11, pattern: /^[0-9]{10,11}$/ }
 ]
+
 const selectedPhoneCountry = ref(phoneCountries[0]) // 默认中国
+
 const selectPhoneCountry = (country) => {
     selectedPhoneCountry.value = country
     showPhoneDropdown.value = false
     validatePhone()
 }
+
 const validatePhone = () => {
     const config = selectedPhoneCountry.value
     const cleanNumber = phoneInput.value.replace(/\s/g, '')
@@ -220,10 +290,12 @@ const validatePhone = () => {
     phoneError.value = ''
     user.value.phone = `${config.code} ${cleanNumber}`
 }
+
 // 监听电话输入并实时校验
 const handlePhoneInput = () => {
     validatePhone()
 }
+
 // ========== 获取用户信息 ==========
 const fetchUserInfo = async () => {
     const currentUsername = userStore.user?.username || localStorage.getItem('username')
@@ -231,13 +303,15 @@ const fetchUserInfo = async () => {
         console.warn('未找到用户名')
         return
     }
+
     try {
         const res = await axios.get('/api/user/profile', {
             params: { username: currentUsername }
         })
+
         if (res.data.success) {
             const dbUser = res.data.user
-            user.value = {
+            Object.assign(user.value, {
                 username: dbUser.username,
                 nickname: dbUser.nickname || dbUser.username,
                 email: dbUser.email || '',
@@ -248,7 +322,9 @@ const fetchUserInfo = async () => {
                 region: dbUser.region || '',
                 bio: dbUser.bio || '',
                 social_link: dbUser.social_link || ''
-            }
+            })
+
+
             // 解析已存储的电话号码
             if (user.value.phone) {
                 const phoneMatch = user.value.phone.match(/^(\+\d+)\s(.+)$/)
@@ -259,7 +335,9 @@ const fetchUserInfo = async () => {
                     if (country) selectedPhoneCountry.value = country
                 }
             }
-            originalUser.value = { ...user.value }
+
+            originalUser.value = JSON.parse(JSON.stringify(user.value))
+
             userStore.updateUser({
                 nickname: user.value.nickname,
                 email: user.value.email,
@@ -272,33 +350,42 @@ const fetchUserInfo = async () => {
         console.error('获取用户信息失败', error)
     }
 }
+
 // ========== 取消修改 ==========
 const handleCancel = () => {
     const hasChanges = JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
+
     if (!hasChanges) {
         router.back()
         return
     }
+
     if (confirm('您有未保存的修改,确定要放弃吗?')) {
         user.value = { ...originalUser.value }
         router.back()
     }
 }
+
 // ========== 保存修改 ==========
 const handlePublish = async () => {
     if (!user.value.nickname) {
         alert('昵称不能为空')
         return
     }
+
     if (phoneError.value) {
         alert('请修正电话号码格式')
         return
     }
+
     isSaving.value = true
+
     try {
         const res = await axios.post('/api/user/update', user.value)
+
         if (res.data.success) {
             alert('🎉 保存成功!数据已同步到数据库')
+
             const updatedData = {
                 nickname: user.value.nickname,
                 email: user.value.email,
@@ -306,12 +393,15 @@ const handlePublish = async () => {
                 region: user.value.region,
                 bio: user.value.bio
             }
+
             userStore.updateUser(updatedData)
             originalUser.value = { ...user.value }
             await userStore.refreshUserInfo()
+
         } else {
             alert('保存失败:' + res.data.message)
         }
+
     } catch (error) {
         console.error(error)
         alert('❌ 保存失败,服务器错误')
@@ -319,6 +409,7 @@ const handlePublish = async () => {
         isSaving.value = false
     }
 }
+
 // ========== 头像上传 ==========
 const fileInput = ref(null)
 const triggerUpload = () => fileInput.value.click()
@@ -330,6 +421,7 @@ const handleFileChange = (event) => {
             alert('图片太大啦,请上传 1MB 以内的图片')
             return
         }
+
         const reader = new FileReader()
         reader.onload = (e) => {
             user.value.avatar = e.target.result
@@ -337,17 +429,22 @@ const handleFileChange = (event) => {
         reader.readAsDataURL(file)
     }
 }
-onMounted(() => {
-    const savedBg = localStorage.getItem('activeWallpaperUrl')
-    bgUrl.value = savedBg || 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2940&q=80'
-    fetchUserInfo()
-})
+
 const hasUnsavedChanges = computed(() => {
     return JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
 })
+
+onMounted(async () => {
+    await loadGlobalWallpaper()
+    await fetchUserInfo()
+})
+
+onUnmounted(() => clearInterval(timer))
+
 </script>
+
 <template>
-    <div class="account-container" :style="{ backgroundImage: `url(${bgUrl})` }">
+    <div class="account-container">
         <!-- 统一的毛玻璃背景卡片 -->
         <div class="unified-card">
             <!-- 左侧菜单 -->
@@ -362,16 +459,18 @@ const hasUnsavedChanges = computed(() => {
                     </div>
                 </div>
             </aside>
+
             <!-- 右侧内容区 -->
             <main class="content">
                 <!-- 个人信息面板 -->
                 <div v-if="activeTab === 'personal'" class="panel">
                     <h2 class="panel-title">个人信息</h2>
+
                     <!-- 头像 -->
                     <div class="form-group">
                         <label class="label">头像 (最大1MB)</label>
                         <div class="avatar-upload">
-                            <img v-if="user.avatar" :src="user.avatar" alt="头像" class="avatar-preview" />
+                            <img v-if="avatarSrc" :src="avatarSrc" alt="头像" class="avatar-preview" />
                             <div v-else class="avatar-placeholder">
                                 <svg viewBox="0 0 24 24" width="40" height="40">
                                     <path
@@ -384,21 +483,25 @@ const hasUnsavedChanges = computed(() => {
                                 style="display: none" />
                         </div>
                     </div>
+
                     <!-- 用户名(不可修改) -->
                     <div class="form-group">
                         <label class="label">用户名</label>
                         <input type="text" v-model="user.username" class="input" disabled />
                     </div>
+
                     <!-- 昵称 -->
                     <div class="form-group">
                         <label class="label">昵称</label>
                         <input type="text" v-model="user.nickname" class="input" placeholder="请输入昵称" />
                     </div>
+
                     <!-- 邮箱 -->
                     <div class="form-group">
                         <label class="label">邮箱</label>
                         <input type="email" v-model="user.email" class="input" placeholder="请输入邮箱" />
                     </div>
+
                     <!-- 生日(日历选择器) -->
                     <div class="form-group">
                         <label class="label">生日</label>
@@ -420,6 +523,7 @@ const hasUnsavedChanges = computed(() => {
                                                 </option>
                                             </select>
                                         </div>
+
                                         <!-- 月份选择 -->
                                         <div class="date-column">
                                             <label>月份</label>
@@ -428,6 +532,7 @@ const hasUnsavedChanges = computed(() => {
                                                 </option>
                                             </select>
                                         </div>
+
                                         <!-- 日期选择 -->
                                         <div class="date-column">
                                             <label>日期</label>
@@ -436,6 +541,7 @@ const hasUnsavedChanges = computed(() => {
                                             </select>
                                         </div>
                                     </div>
+
                                     <div class="date-picker-actions">
                                         <button @click="showDatePicker = false" class="btn-cancel">取消</button>
                                         <button @click="confirmBirthday" class="btn-confirm">确定</button>
@@ -444,6 +550,7 @@ const hasUnsavedChanges = computed(() => {
                             </div>
                         </div>
                     </div>
+
                     <!-- 性别(下拉选择) -->
                     <div class="form-group">
                         <label class="label">性别</label>
@@ -463,6 +570,7 @@ const hasUnsavedChanges = computed(() => {
                             </div>
                         </div>
                     </div>
+
                     <!-- 电话(国际区号) -->
                     <div class="form-group">
                         <label class="label">电话</label>
@@ -478,6 +586,7 @@ const hasUnsavedChanges = computed(() => {
                             <input type="tel" v-model="phoneInput" @input="handlePhoneInput" class="phone-input"
                                 :class="{ error: phoneError }"
                                 :placeholder="`请输入${selectedPhoneCountry.minLength}位号码`" />
+
                             <!-- 区号下拉菜单 -->
                             <div v-if="showPhoneDropdown" class="phone-dropdown">
                                 <div v-for="country in phoneCountries" :key="country.code" class="phone-dropdown-item"
@@ -490,12 +599,14 @@ const hasUnsavedChanges = computed(() => {
                         </div>
                         <p v-if="phoneError" class="error-text">{{ phoneError }}</p>
                     </div>
+
                     <!-- 地区(三级联动) -->
                     <div class="form-group">
                         <label class="label">地区</label>
                         <div class="region-wrapper">
                             <input type="text" v-model="user.region" class="input" placeholder="请选择地区"
                                 @click="openRegionPicker" readonly />
+
                             <!-- 地区选择弹窗 -->
                             <div v-if="showRegionPicker" class="region-modal" @click.self="showRegionPicker = false">
                                 <div class="region-content">
@@ -514,6 +625,7 @@ const hasUnsavedChanges = computed(() => {
                                                 </option>
                                             </select>
                                         </div>
+
                                         <!-- 省/州 -->
                                         <div class="region-column">
                                             <label>省/州</label>
@@ -528,6 +640,7 @@ const hasUnsavedChanges = computed(() => {
                                             <p v-if="selectedCountryCode && states.length === 0" class="no-data-hint">
                                                 该国家暂无省/州数据</p>
                                         </div>
+
                                         <!-- 市/县 -->
                                         <div class="region-column">
                                             <label>市/县</label>
@@ -542,6 +655,7 @@ const hasUnsavedChanges = computed(() => {
                                                 该地区暂无城市数据</p>
                                         </div>
                                     </div>
+
                                     <div class="region-actions">
                                         <button @click="showRegionPicker = false" class="btn-cancel">取消</button>
                                         <button @click="confirmRegion" class="btn-confirm"
@@ -551,16 +665,19 @@ const hasUnsavedChanges = computed(() => {
                             </div>
                         </div>
                     </div>
+
                     <!-- 自我介绍 -->
                     <div class="form-group">
                         <label class="label">自我介绍</label>
                         <textarea v-model="user.bio" class="textarea" placeholder="介绍一下你自己吧" rows="4"></textarea>
                     </div>
+
                     <!-- 社交媒体链接 -->
                     <div class="form-group">
                         <label class="label">社交媒体链接</label>
                         <input type="url" v-model="user.social_link" class="input" placeholder="https://..." />
                     </div>
+
                     <!-- 底部按钮 -->
                     <div class="actions">
                         <button @click="handleCancel" class="btn-secondary">取消</button>
@@ -569,6 +686,7 @@ const hasUnsavedChanges = computed(() => {
                         </button>
                     </div>
                 </div>
+
                 <!-- 其他标签页(占位) -->
                 <div v-else class="panel">
                     <h2 class="panel-title">{{menuItems.find(m => m.id === activeTab)?.label}}</h2>
@@ -578,6 +696,7 @@ const hasUnsavedChanges = computed(() => {
         </div>
     </div>
 </template>
+
 <style scoped>
 .account-container {
     min-height: calc(100vh - 80px);

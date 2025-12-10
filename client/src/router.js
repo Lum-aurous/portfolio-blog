@@ -15,44 +15,63 @@ const router = createRouter({
     {
       path: "/",
       component: Home,
-      meta: { title: "Veritas - 首页" },
+      meta: {
+        title: "Veritas - 首页",
+        guestAccess: true, // 明确标记允许游客访问
+      },
     },
     {
       path: "/blog",
       component: Blog,
-      meta: { title: "Veritas - 博客" },
+      meta: {
+        title: "Veritas - 博客",
+        guestAccess: true,
+      },
     },
     {
       path: "/article/:id",
       component: ArticleDetail,
-      meta: { title: "Veritas - 文章详情" },
+      meta: {
+        title: "Veritas - 文章详情",
+        guestAccess: true,
+      },
     },
 
     // ==================== 用户系统 ====================
     {
       path: "/login",
       component: Login,
-      meta: { title: "Veritas - 登录" },
+      meta: {
+        title: "Veritas - 登录",
+        guestAccess: true,
+        // 已登录用户不能访问登录/注册页
+        preventIfLoggedIn: true,
+      },
     },
     {
       path: "/register",
       component: Register,
-      meta: { title: "Veritas - 注册" },
+      meta: {
+        title: "Veritas - 注册",
+        guestAccess: true,
+        preventIfLoggedIn: true,
+      },
     },
     {
       path: "/admin",
       component: Admin,
       meta: {
-        requiresAuth: true,
         title: "Veritas - 后台管理",
+        requiresAuth: true,
+        requiresRole: "admin", // 明确指定需要管理员角色
       },
     },
     {
       path: "/account",
       component: Account,
       meta: {
-        requiresAuth: true,
         title: "Veritas - 个人账号中心",
+        requiresAuth: true, // 只需登录，不需要特定角色
       },
     },
 
@@ -60,54 +79,84 @@ const router = createRouter({
     {
       path: "/travel",
       component: Home,
-      meta: { title: "Veritas - 游记" },
+      meta: {
+        title: "Veritas - 游记",
+        guestAccess: true,
+      },
     },
     {
       path: "/toolkit",
       component: Home,
-      meta: { title: "Veritas - 百宝箱" },
+      meta: {
+        title: "Veritas - 百宝箱",
+        guestAccess: true,
+      },
     },
     {
       path: "/comments",
       component: Home,
-      meta: { title: "Veritas - 留言" },
+      meta: {
+        title: "Veritas - 留言",
+        guestAccess: true,
+      },
     },
     {
       path: "/contact",
       component: Home,
-      meta: { title: "Veritas - 联系我" },
+      meta: {
+        title: "Veritas - 联系我",
+        guestAccess: true,
+      },
     },
 
     // ==================== 记录子菜单 ====================
     {
       path: "/records",
       component: Home,
-      meta: { title: "Veritas - 记录" },
+      meta: {
+        title: "Veritas - 记录",
+        guestAccess: true,
+      },
     },
     {
       path: "/records/life",
       component: Home,
-      meta: { title: "Veritas - 生活倒影" },
+      meta: {
+        title: "Veritas - 生活倒影",
+        guestAccess: true,
+      },
     },
     {
       path: "/records/media",
       component: Home,
-      meta: { title: "Veritas - 视听盛宴" },
+      meta: {
+        title: "Veritas - 视听盛宴",
+        guestAccess: true,
+      },
     },
     {
       path: "/records/study",
       component: Home,
-      meta: { title: "Veritas - 学习人生" },
+      meta: {
+        title: "Veritas - 学习人生",
+        guestAccess: true,
+      },
     },
     {
       path: "/records/travel",
       component: Home,
-      meta: { title: "Veritas - 海外趣事" },
+      meta: {
+        title: "Veritas - 海外趣事",
+        guestAccess: true,
+      },
     },
     {
       path: "/records/resources",
       component: Home,
-      meta: { title: "Veritas - 爱心资源" },
+      meta: {
+        title: "Veritas - 爱心资源",
+        guestAccess: true,
+      },
     },
 
     // ==================== 404 页面 ====================
@@ -128,25 +177,43 @@ const router = createRouter({
 
 // ==================== 全局前置守卫 ====================
 router.beforeEach((to, from, next) => {
-  // 2. 权限验证
-  if (to.meta.requiresAuth) {
-    const userStore = useUserStore();
+  const userStore = useUserStore();
+  const isLoggedIn = userStore.isLoggedIn;
+  const userRole = userStore.user?.role;
 
-    if (!userStore.isLoggedIn) {
-      // 未登录 → 跳转登录页
-      alert("🚫 请先登录！");
-      next("/login");
-    } else if (to.path === "/admin" && userStore.user?.role !== "admin") {
-      // 🔥 关键修改：只有访问 /admin 才检查管理员权限
-      alert("🚫 只有管理员才能进入后台！");
-      next("/");
-    } else {
-      // 已登录 + (访问非 /admin 页面 或 是管理员) → 放行
-      next();
-    }
-  } else {
-    next(); // 无需验证的页面直接放行
+  // 1. 设置页面标题
+  if (to.meta.title) {
+    document.title = to.meta.title;
   }
+
+  // 2. 防止已登录用户访问登录/注册页
+  if (to.meta.preventIfLoggedIn && isLoggedIn) {
+    next("/");
+    return;
+  }
+
+  // 3. 不需要权限的页面直接放行
+  if (to.meta.guestAccess) {
+    next();
+    return;
+  }
+
+  // 4. 检查是否需要登录
+  if (to.meta.requiresAuth && !isLoggedIn) {
+    alert("🚫 请先登录！");
+    next("/login");
+    return;
+  }
+
+  // 5. 检查角色权限
+  if (to.meta.requiresRole && to.meta.requiresRole !== userRole) {
+    alert("🚫 权限不足，无法访问该页面！");
+    next("/");
+    return;
+  }
+
+  // 6. 所有检查通过，放行
+  next();
 });
 
 export default router;

@@ -138,27 +138,6 @@ app.get("/api/articles/:id", (req, res) => {
   });
 });
 
-// ==========================================
-// 👇 新增：发布文章接口 (POST)
-// ==========================================
-// app.post('/api/articles', (req, res) => {
-//     // 1. 从前端发来的包裹里拿出数据
-//     const { title, summary, content } = req.body;
-
-//     // 2. 准备 SQL：插入数据
-//     const sql = 'INSERT INTO articles (title, summary, content) VALUES (?, ?, ?)';
-
-//     // 3. 执行插入
-//     db.query(sql, [title, summary, content], (err, result) => {
-//         if (err) {
-//             console.error('发布失败:', err);
-//             return res.status(500).send('发布失败');
-//         }
-//         // 成功！返回新文章的 ID
-//         res.json({ id: result.insertId, message: '发布成功' });
-//     });
-// });
-
 // 👇 修改原来的发布文章接口
 app.post("/api/articles", (req, res) => {
   // 1. 多接收一个 cover_image 字段
@@ -177,50 +156,6 @@ app.post("/api/articles", (req, res) => {
     res.json({ id: result.insertId, message: "发布成功" });
   });
 });
-
-// ==========================================
-// 👇 新增：管理员登录接口
-// ==========================================
-// app.post('/api/login', (req, res) => {
-//     const { password } = req.body;
-
-//     // ⚠️ 这里为了演示方便，我们把密码硬编码为 'admin123'
-//     // 在真实商业项目中，密码应该加密存在数据库里
-//     if (password === 'admin123') {
-//         res.json({ success: true, message: '登录成功' });
-//     } else {
-//         res.status(401).json({ success: false, message: '密码错误' });
-//     }
-// });
-
-// ==========================================
-// 👇 1. 新增：用户注册接口
-// ==========================================
-// app.post('/api/register', (req, res) => {
-//     const { username, password } = req.body;
-
-//     // 简单校验
-//     if (!username || !password) {
-//         return res.status(400).json({ message: '账号密码不能为空' });
-//     }
-
-//     // 检查用户名是否已存在
-//     const checkSql = 'SELECT * FROM users WHERE username = ?';
-//     db.query(checkSql, [username], (err, results) => {
-//         if (results.length > 0) {
-//             return res.status(409).json({ message: '用户名已被占用' });
-//         }
-
-//         // 插入新用户
-//         const insertSql = 'INSERT INTO users (username, password) VALUES (?, ?)';
-//         db.query(insertSql, [username, password], (err, result) => {
-//             if (err) {
-//                 return res.status(500).json({ message: '注册失败' });
-//             }
-//             res.json({ success: true, message: '注册成功！请登录' });
-//         });
-//     });
-// });
 
 // 加密用户注册密码
 app.post("/api/register", (req, res) => {
@@ -245,35 +180,6 @@ app.post("/api/register", (req, res) => {
     });
   });
 });
-
-// ==========================================
-// 👇 2. 修改：用户登录接口 (查数据库)
-// ==========================================
-// app.post('/api/login', (req, res) => {
-//     const { username, password } = req.body; // 注意：前端现在发 username 了
-
-//     // 去数据库查：有没有这个账号 + 密码对不对
-//     const sql = 'SELECT * FROM users WHERE username = ? AND password = ?';
-
-//     db.query(sql, [username, password], (err, results) => {
-//         if (err) {
-//             return res.status(500).json({ message: '服务器错误' });
-//         }
-
-//         // 如果查到了数据 (results数组不为空)
-//         if (results.length > 0) {
-//             const user = results[0];
-//             // 返回成功，并附带用户信息 (id, username)
-//             res.json({
-//                 success: true,
-//                 message: '登录成功',
-//                 user: { id: user.id, username: user.username, role: user.role }
-//             });
-//         } else {
-//             res.status(401).json({ success: false, message: '账号或密码错误' });
-//         }
-//     });
-// });
 
 // 加密用户登录密码
 app.post("/api/login", (req, res) => {
@@ -437,13 +343,15 @@ app.post("/api/user/update", (req, res) => {
   db.query(sql, values, (err, result) => {
     if (err) {
       console.error("更新失败:", err);
-      return res.status(500).json({ success: false, message: "数据库更新失败" });
+      return res
+        .status(500)
+        .json({ success: false, message: "数据库更新失败" });
     }
-    
+
     if (result.affectedRows === 0) {
       return res.status(404).json({ success: false, message: "用户不存在" });
     }
-    
+
     // 🔥 返回更新后的完整用户数据
     const selectSql = `
       SELECT id, username, nickname, email, avatar, phone, gender, 
@@ -451,62 +359,112 @@ app.post("/api/user/update", (req, res) => {
       FROM users 
       WHERE username = ?
     `;
-    
+
     db.query(selectSql, [username], (selectErr, selectResults) => {
       if (selectErr || selectResults.length === 0) {
-        return res.json({ 
-          success: true, 
-          message: "更新成功，但获取更新后数据失败" 
+        return res.json({
+          success: true,
+          message: "更新成功，但获取更新后数据失败",
         });
       }
-      
+
       const updatedUser = selectResults[0];
-      
-      res.json({ 
-        success: true, 
+
+      res.json({
+        success: true,
         message: "个人信息已保存到数据库",
-        user: updatedUser
+        user: updatedUser,
       });
     });
   });
 });
 
-// ==================== 壁纸相关接口 ====================
+// ==================== 壁纸相关接口优化 ====================
 
-// 1. 获取全局壁纸配置（所有人可访问）
-app.get("/api/wallpaper/global", (req, res) => {
-  const sql = "SELECT * FROM global_wallpapers LIMIT 1";
-  db.query(sql, (err, results) => {
-    if (err || results.length === 0) {
-      return res.status(500).json({ error: "获取全局壁纸失败" });
-    }
-    const data = results[0];
-    res.json({
-      mode: data.mode || "website",
-      dailyUrl: data.daily_url || "",
-      websiteUrl: data.website_url || "",
-      randomUrls:
-        data.random_urls && typeof data.random_urls === "string"
-          ? data.random_urls
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : [],
+// 1. 全局壁纸配置缓存（减少数据库查询）
+let globalWallpaperCache = null;
+let cacheTime = 0;
+const CACHE_DURATION = 5 * 60 * 1000; // 5分钟缓存
+
+// 获取全局壁纸配置（带缓存）
+app.get("/api/wallpaper/global", async (req, res) => {
+  const now = Date.now();
+
+  // 使用缓存（如果有效）
+  if (globalWallpaperCache && now - cacheTime < CACHE_DURATION) {
+    console.log("📦 使用缓存的全局壁纸配置");
+    return res.json(globalWallpaperCache);
+  }
+
+  try {
+    const sql = "SELECT * FROM global_wallpapers LIMIT 1";
+    db.query(sql, (err, results) => {
+      if (err || results.length === 0) {
+        // 返回默认配置
+        const defaultConfig = {
+          mode: "website",
+          dailyUrl:
+            "https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2940&q=80",
+          websiteUrl:
+            "https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2940&q=80",
+          randomUrls: [],
+        };
+        globalWallpaperCache = defaultConfig;
+        cacheTime = now;
+        return res.json(defaultConfig);
+      }
+
+      const data = results[0];
+      const config = {
+        mode: data.mode || "website",
+        dailyUrl: data.daily_url || "",
+        websiteUrl: data.website_url || "",
+        randomUrls:
+          data.random_urls && typeof data.random_urls === "string"
+            ? data.random_urls
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : [],
+      };
+
+      globalWallpaperCache = config;
+      cacheTime = now;
+      res.json(config);
     });
-  });
+  } catch (error) {
+    console.error("获取全局壁纸失败:", error);
+    res.status(500).json({ error: "获取全局壁纸失败" });
+  }
 });
 
-// 2. 【需登录】获取用户个人壁纸（也加上日志）
+// 2. 获取用户壁纸（优化查询）
 app.get("/api/wallpaper/user", (req, res) => {
   const userId = req.query.userId;
+  const username = req.query.username; // 新增：支持通过username查询
 
-  if (!userId) {
-    console.warn("⚠️ 未提供用户ID");
+  if (!userId && !username) {
+    console.warn("⚠️ 未提供用户ID或用户名");
     return res.status(401).json({ error: "未登录" });
   }
 
-  const sql = "SELECT wallpaper_url FROM user_wallpapers WHERE user_id = ?";
-  db.query(sql, [userId], (err, results) => {
+  let sql, params;
+
+  if (userId) {
+    sql = "SELECT wallpaper_url FROM user_wallpapers WHERE user_id = ?";
+    params = [userId];
+  } else {
+    // 通过username查询用户的壁纸
+    sql = `
+      SELECT uw.wallpaper_url 
+      FROM user_wallpapers uw
+      JOIN users u ON uw.user_id = u.id
+      WHERE u.username = ?
+    `;
+    params = [username];
+  }
+
+  db.query(sql, params, (err, results) => {
     if (err) {
       console.error("❌ 查询壁纸失败:", err);
       return res.status(500).json({ error: "查询失败" });
@@ -514,23 +472,53 @@ app.get("/api/wallpaper/user", (req, res) => {
 
     if (results.length > 0) {
       const url = results[0].wallpaper_url;
-      console.log("✅ 找到用户壁纸:", { userId, url });
+      console.log("✅ 找到用户壁纸:", { userId, username, url });
       res.json({ hasCustom: true, url });
     } else {
-      console.log("ℹ️ 用户无自定义壁纸:", userId);
+      console.log("ℹ️ 用户无自定义壁纸");
       res.json({ hasCustom: false });
     }
   });
 });
 
-// 3. 【需登录】上传用户个人壁纸（简化版）
-app.post("/api/wallpaper/user", upload.single("image"), (req, res) => {
-  console.log("🔍 收到上传请求，userId:", req.body.userId);
-  console.log("🔍 上传文件:", req.file);
+// 3. 新增：批量获取用户壁纸（用于页面初始化预加载）
+app.post("/api/wallpaper/batch", (req, res) => {
+  const { userIds } = req.body;
+
+  if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+    return res.json({});
+  }
+
+  const placeholders = userIds.map(() => "?").join(",");
+  const sql = `
+    SELECT user_id, wallpaper_url 
+    FROM user_wallpapers 
+    WHERE user_id IN (${placeholders})
+  `;
+
+  db.query(sql, userIds, (err, results) => {
+    if (err) {
+      console.error("批量查询壁纸失败:", err);
+      return res.status(500).json({ error: "批量查询失败" });
+    }
+
+    const wallpapers = {};
+    results.forEach((row) => {
+      wallpapers[row.user_id] = row.wallpaper_url;
+    });
+
+    res.json({ wallpapers });
+  });
+});
+
+// 4. 优化用户壁纸上传
+app.post("/api/wallpaper/user", upload.single("image"), async (req, res) => {
+  console.log("🔍 收到上传请求", req.body);
 
   const userId = req.body.userId;
+  const username = req.body.username; // 新增支持
 
-  if (!userId || !req.file) {
+  if ((!userId && !username) || !req.file) {
     console.error("❌ 参数错误");
     return res.status(400).json({
       success: false,
@@ -538,57 +526,60 @@ app.post("/api/wallpaper/user", upload.single("image"), (req, res) => {
     });
   }
 
-  const filePath = req.file.path.replace(/\\/g, "/");
-  const dbPath = "/" + filePath; // 确保有前导斜杠
+  try {
+    let actualUserId = userId;
 
-  console.log("📁 文件路径:", dbPath);
-
-  // 使用 REPLACE INTO 而不是复杂的 UPSERT
-  const sql = `
-    REPLACE INTO user_wallpapers (user_id, wallpaper_url, updated_at) 
-    VALUES (?, ?, NOW())
-  `;
-
-  db.query(sql, [userId, dbPath], (err, result) => {
-    if (err) {
-      console.error("❌ 数据库操作失败:", err);
-      return res.status(500).json({
-        success: false,
-        error: "保存到数据库失败",
+    // 如果传的是username，需要先获取用户ID
+    if (!userId && username) {
+      const userResult = await new Promise((resolve, reject) => {
+        const sql = "SELECT id FROM users WHERE username = ?";
+        db.query(sql, [username], (err, results) => {
+          if (err) reject(err);
+          else resolve(results);
+        });
       });
+
+      if (userResult.length === 0) {
+        return res.status(404).json({ success: false, error: "用户不存在" });
+      }
+      actualUserId = userResult[0].id;
     }
 
-    console.log("✅ 壁纸保存成功，影响行数:", result.affectedRows);
+    const filePath = req.file.path.replace(/\\/g, "/");
+    const dbPath = "/" + filePath;
 
-    res.json({
-      success: true,
-      url: `/${filePath}`,
-      message: "壁纸上传成功",
+    console.log("📁 文件路径:", dbPath);
+
+    // 清空全局缓存（因为壁纸有更新）
+    globalWallpaperCache = null;
+
+    const sql = `
+      REPLACE INTO user_wallpapers (user_id, wallpaper_url, updated_at) 
+      VALUES (?, ?, NOW())
+    `;
+
+    db.query(sql, [actualUserId, dbPath], (err, result) => {
+      if (err) {
+        console.error("❌ 数据库操作失败:", err);
+        return res.status(500).json({
+          success: false,
+          error: "保存到数据库失败",
+        });
+      }
+
+      console.log("✅ 壁纸保存成功，影响行数:", result.affectedRows);
+
+      res.json({
+        success: true,
+        url: `/${filePath}`,
+        userId: actualUserId,
+        message: "壁纸上传成功",
+      });
     });
-  });
-});
-
-// 4. 【管理员专用】更新全局壁纸（你以后可以做一个管理页面调用这个）
-app.post("/api/admin/wallpaper/global", (req, res) => {
-  // 简单判断一下是不是管理员（实际项目可以用 JWT 中间件）
-  if (req.body.secret !== "your-super-secret-key") {
-    return res.status(403).json({ error: "权限不足" });
+  } catch (error) {
+    console.error("处理上传时出错:", error);
+    res.status(500).json({ success: false, error: "服务器错误" });
   }
-
-  const { mode, dailyUrl, websiteUrl, randomUrls } = req.body;
-  const sql = `
-    UPDATE global_wallpapers 
-    SET mode = ?, daily_url = ?, website_url = ?, random_urls = ?
-    WHERE id = 1
-  `;
-  db.query(
-    sql,
-    [mode, dailyUrl, websiteUrl, JSON.stringify(randomUrls)],
-    (err) => {
-      if (err) return res.status(500).json({ error: "更新失败" });
-      res.json({ success: true });
-    }
-  );
 });
 
 // 👇 新增：把 'uploads' 文件夹变成公开的静态资源目录
