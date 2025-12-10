@@ -1,12 +1,12 @@
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue'
-import { useRouter } from 'vue-router' // 👈 添加 router
+import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useUserStore } from '@/stores/user.js'
+import { Country, State, City } from 'country-state-city' // 🌍 导入全球地区数据库
 
-const router = useRouter() // 👈 初始化 router
+const router = useRouter()
 const userStore = useUserStore()
-const isAdmin = computed(() => userStore.user?.role === 'admin')
 
 // 背景图状态
 const bgUrl = ref('')
@@ -27,7 +27,7 @@ const user = ref({
     social_link: ''
 })
 
-// 💾 数据备份 (用于"取消"操作回滚)
+// 数据备份
 const originalUser = ref({})
 
 // 侧边栏菜单
@@ -35,36 +35,208 @@ const menuItems = [
     { id: 'personal', label: '个人信息', iconPath: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z' },
     { id: 'security', label: '安全与登录', iconPath: 'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-9-2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z' },
     { id: 'data', label: '数据与隐私', iconPath: 'M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z' },
-    { id: 'people', label: '用户与分享', iconPath: 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z' },
+    { id: 'people', label: '用户与分享', iconPath: 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z' }
 ]
 
-// 👇 新增：如果是管理员，动态添加"后台管理"菜单
-if (isAdmin.value) {
-    menuItems.push({
-        id: 'admin',
-        label: '后台管理',
-        iconPath: 'M19.43 12.98c.04-.32.07-.64.07-.98 0-.34-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.06-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65-.63.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98 0 .33.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.06.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.63-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z'
-    })
+// ========== 🎂 生日日历选择器 ==========
+const showDatePicker = ref(false)
+const selectedYear = ref(new Date().getFullYear())
+const selectedMonth = ref(new Date().getMonth() + 1)
+const selectedDay = ref(new Date().getDate())
+const years = Array.from({ length: 100 }, (_, i) => new Date().getFullYear() - i)
+const months = Array.from({ length: 12 }, (_, i) => i + 1)
+const daysInMonth = computed(() => {
+    return new Date(selectedYear.value, selectedMonth.value, 0).getDate()
+})
+const days = computed(() => {
+    return Array.from({ length: daysInMonth.value }, (_, i) => i + 1)
+})
+const confirmBirthday = () => {
+    user.value.birthday = `${selectedYear.value}-${String(selectedMonth.value).padStart(2, '0')}-${String(selectedDay.value).padStart(2, '0')}`
+    showDatePicker.value = false
 }
 
-// 1. 获取用户信息 (从后端数据库拉取)
+// ========== 🚻 性别下拉选择器 ==========
+const showGenderDropdown = ref(false)
+const genders = [
+    { value: 'male', label: '男' },
+    { value: 'female', label: '女' }
+]
+const selectGender = (gender) => {
+    user.value.gender = gender.value
+    showGenderDropdown.value = false
+}
+
+// ========== 🌍 地区三级联动选择器 (真实全球数据) ==========
+const showRegionPicker = ref(false)
+const selectedCountryCode = ref('') // 存储国家代码 (如 'CN', 'US')
+const selectedStateCode = ref('') // 存储州/省代码
+const selectedCityName = ref('') // 存储城市名称
+// 🌍 获取所有国家 (按中文名称排序，中国置顶)
+const countries = computed(() => {
+    const allCountries = Country.getAllCountries().map(country => ({
+        code: country.isoCode,
+        name: country.name,
+        nativeName: country.native || country.name,
+        flag: country.flag || '🌐'
+    }))
+    // 中国置顶，其他按名称排序
+    const china = allCountries.find(c => c.code === 'CN')
+    const others = allCountries.filter(c => c.code !== 'CN').sort((a, b) => a.name.localeCompare(b.name))
+
+    return china ? [china, ...others] : others
+})
+// 🏙️ 获取选中国家的所有州/省
+const states = computed(() => {
+    if (!selectedCountryCode.value) return []
+
+    const stateList = State.getStatesOfCountry(selectedCountryCode.value)
+    return stateList.map(state => ({
+        code: state.isoCode,
+        name: state.name
+    }))
+})
+// 🏘️ 获取选中州/省的所有城市
+const cities = computed(() => {
+    if (!selectedCountryCode.value || !selectedStateCode.value) return []
+
+    const cityList = City.getCitiesOfState(selectedCountryCode.value, selectedStateCode.value)
+    return cityList.map(city => ({
+        name: city.name
+    }))
+})
+// 当选择国家时，重置州和城市
+const handleCountryChange = () => {
+    selectedStateCode.value = ''
+    selectedCityName.value = ''
+}
+// 当选择州时，重置城市
+const handleStateChange = () => {
+    selectedCityName.value = ''
+}
+// 确认地区选择
+const confirmRegion = () => {
+    if (!selectedCountryCode.value) {
+        alert('请选择国家')
+        return
+    }
+
+    const country = countries.value.find(c => c.code === selectedCountryCode.value)
+    const state = states.value.find(s => s.code === selectedStateCode.value)
+
+    // 构建地区字符串
+    let regionStr = country.name
+
+    if (selectedStateCode.value && state) {
+        regionStr += ` - ${state.name}`
+    }
+
+    if (selectedCityName.value) {
+        regionStr += ` - ${selectedCityName.value}`
+    }
+
+    user.value.region = regionStr
+    showRegionPicker.value = false
+}
+// 打开地区选择器时，解析已有地区数据
+const openRegionPicker = () => {
+    showRegionPicker.value = true
+
+    // 如果已有地区数据，尝试解析并回填
+    if (user.value.region) {
+        const parts = user.value.region.split(' - ')
+
+        if (parts.length > 0) {
+            // 查找国家
+            const country = countries.value.find(c => c.name === parts[0])
+            if (country) {
+                selectedCountryCode.value = country.code
+
+                // 如果有省/州
+                if (parts.length > 1) {
+                    setTimeout(() => {
+                        const state = states.value.find(s => s.name === parts[1])
+                        if (state) {
+                            selectedStateCode.value = state.code
+
+                            // 如果有城市
+                            if (parts.length > 2) {
+                                setTimeout(() => {
+                                    selectedCityName.value = parts[2]
+                                }, 100)
+                            }
+                        }
+                    }, 100)
+                }
+            }
+        }
+    }
+}
+// ========== 📱 电话国际区号选择器 ==========
+const showPhoneDropdown = ref(false)
+const phoneInput = ref('')
+const phoneError = ref('')
+// 全球主要国家区号配置
+const phoneCountries = [
+    { code: '+86', country: '中国', flag: '🇨🇳', minLength: 11, maxLength: 11, pattern: /^1[3-9]\d{9}$/ },
+    { code: '+1', country: '美国', flag: '🇺🇸', minLength: 10, maxLength: 10, pattern: /^\d{10}$/ },
+    { code: '+81', country: '日本', flag: '🇯🇵', minLength: 10, maxLength: 11, pattern: /^[0-9]{10,11}$/ },
+    { code: '+33', country: '法国', flag: '🇫🇷', minLength: 9, maxLength: 9, pattern: /^[0-9]{9}$/ },
+    { code: '+44', country: '英国', flag: '🇬🇧', minLength: 10, maxLength: 10, pattern: /^[0-9]{10}$/ },
+    { code: '+82', country: '韩国', flag: '🇰🇷', minLength: 10, maxLength: 11, pattern: /^[0-9]{10,11}$/ },
+    { code: '+61', country: '澳大利亚', flag: '🇦🇺', minLength: 9, maxLength: 9, pattern: /^[0-9]{9}$/ },
+    { code: '+49', country: '德国', flag: '🇩🇪', minLength: 10, maxLength: 11, pattern: /^[0-9]{10,11}$/ }
+]
+const selectedPhoneCountry = ref(phoneCountries[0]) // 默认中国
+const selectPhoneCountry = (country) => {
+    selectedPhoneCountry.value = country
+    showPhoneDropdown.value = false
+    validatePhone()
+}
+const validatePhone = () => {
+    const config = selectedPhoneCountry.value
+    const cleanNumber = phoneInput.value.replace(/\s/g, '')
+
+    if (!cleanNumber) {
+        phoneError.value = ''
+        return
+    }
+
+    if (cleanNumber.length < config.minLength) {
+        phoneError.value = `号码至少需要 ${config.minLength} 位数字`
+        return
+    }
+
+    if (cleanNumber.length > config.maxLength) {
+        phoneError.value = `号码最多 ${config.maxLength} 位数字`
+        return
+    }
+
+    if (!config.pattern.test(cleanNumber)) {
+        phoneError.value = `请输入有效的${config.country}手机号码`
+        return
+    }
+
+    phoneError.value = ''
+    user.value.phone = `${config.code} ${cleanNumber}`
+}
+// 监听电话输入并实时校验
+const handlePhoneInput = () => {
+    validatePhone()
+}
+// ========== 获取用户信息 ==========
 const fetchUserInfo = async () => {
-    // 优先从 Pinia Store 获取当前用户名
     const currentUsername = userStore.user?.username || localStorage.getItem('username')
     if (!currentUsername) {
         console.warn('未找到用户名')
         return
     }
-
     try {
-        // 向后端请求数据
         const res = await axios.get('/api/user/profile', {
             params: { username: currentUsername }
         })
-
         if (res.data.success) {
             const dbUser = res.data.user
-            // 将数据库的数据填充到前端 user 对象
             user.value = {
                 username: dbUser.username,
                 nickname: dbUser.nickname || dbUser.username,
@@ -77,11 +249,17 @@ const fetchUserInfo = async () => {
                 bio: dbUser.bio || '',
                 social_link: dbUser.social_link || ''
             }
-
-            // 备份一份，用于"取消"功能
+            // 解析已存储的电话号码
+            if (user.value.phone) {
+                const phoneMatch = user.value.phone.match(/^(\+\d+)\s(.+)$/)
+                if (phoneMatch) {
+                    const code = phoneMatch[1]
+                    phoneInput.value = phoneMatch[2]
+                    const country = phoneCountries.find(c => c.code === code)
+                    if (country) selectedPhoneCountry.value = country
+                }
+            }
             originalUser.value = { ...user.value }
-
-            // 🔥 重要：同步更新 Pinia Store
             userStore.updateUser({
                 nickname: user.value.nickname,
                 email: user.value.email,
@@ -94,43 +272,33 @@ const fetchUserInfo = async () => {
         console.error('获取用户信息失败', error)
     }
 }
-
-// 2. 取消修改 (Cancel)
+// ========== 取消修改 ==========
 const handleCancel = () => {
-    // 检查是否有未保存的修改
     const hasChanges = JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
-
     if (!hasChanges) {
-        // 没有修改，直接返回上一页
         router.back()
         return
     }
-
-    // 有修改，询问用户
-    if (confirm('您有未保存的修改，确定要放弃吗？')) {
-        // 恢复到刚进入页面时的数据
+    if (confirm('您有未保存的修改,确定要放弃吗?')) {
         user.value = { ...originalUser.value }
         router.back()
     }
 }
-
-// 3. 发布/保存修改 (Publish) - 存入数据库
+// ========== 保存修改 ==========
 const handlePublish = async () => {
     if (!user.value.nickname) {
         alert('昵称不能为空')
         return
     }
-
+    if (phoneError.value) {
+        alert('请修正电话号码格式')
+        return
+    }
     isSaving.value = true
-
     try {
-        // 发送给后端
         const res = await axios.post('/api/user/update', user.value)
-
         if (res.data.success) {
-            alert('🎉 保存成功！数据已同步到数据库')
-
-            // 🔥 关键：更新 Pinia Store 中的用户信息
+            alert('🎉 保存成功!数据已同步到数据库')
             const updatedData = {
                 nickname: user.value.nickname,
                 email: user.value.email,
@@ -138,39 +306,30 @@ const handlePublish = async () => {
                 region: user.value.region,
                 bio: user.value.bio
             }
-
             userStore.updateUser(updatedData)
-
-            // 更新备份数据
             originalUser.value = { ...user.value }
-
-            // 🔥 可选：刷新用户信息（确保与数据库完全一致）
             await userStore.refreshUserInfo()
-
         } else {
-            alert('保存失败：' + res.data.message)
+            alert('保存失败:' + res.data.message)
         }
-
     } catch (error) {
         console.error(error)
-        alert('❌ 保存失败，服务器错误')
+        alert('❌ 保存失败,服务器错误')
     } finally {
         isSaving.value = false
     }
 }
-
-// 头像上传
+// ========== 头像上传 ==========
 const fileInput = ref(null)
 const triggerUpload = () => fileInput.value.click()
 const handleFileChange = (event) => {
     const file = event.target.files[0]
     if (file) {
-        // 限制图片大小 (建议限制在 1MB 以内)
+        // 限制图片大小为 1MB
         if (file.size > 1024 * 1024) {
-            alert('头像大小不能超过 1MB');
-            return;
+            alert('图片太大啦,请上传 1MB 以内的图片')
+            return
         }
-
         const reader = new FileReader()
         reader.onload = (e) => {
             user.value.avatar = e.target.result
@@ -178,609 +337,804 @@ const handleFileChange = (event) => {
         reader.readAsDataURL(file)
     }
 }
-
 onMounted(() => {
     const savedBg = localStorage.getItem('activeWallpaperUrl')
     bgUrl.value = savedBg || 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2940&q=80'
-
-    fetchUserInfo() // 页面加载时，从数据库拉取数据
+    fetchUserInfo()
 })
-
-// 👇 监听用户数据变化，如果有变动就启用保存按钮
 const hasUnsavedChanges = computed(() => {
     return JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
 })
 </script>
-
 <template>
-    <div class="account-page" :style="{ backgroundImage: `url(${bgUrl})` }">
-        <div class="bg-overlay"></div>
-
-        <div class="glass-container animate__animated animate__fadeInUp">
-
-            <div class="action-bar">
-                <button class="btn-cancel" @click="handleCancel" :disabled="isSaving">取消</button>
-                <button class="btn-publish" @click="handlePublish" :disabled="isSaving">
-                    {{ isSaving ? '保存中...' : '发布' }}
-                </button>
-            </div>
-
+    <div class="account-container" :style="{ backgroundImage: `url(${bgUrl})` }">
+        <!-- 统一的毛玻璃背景卡片 -->
+        <div class="unified-card">
+            <!-- 左侧菜单 -->
             <aside class="sidebar">
-                <div class="sidebar-header">
-                    <div class="mini-avatar">
-                        <img v-if="user.avatar" :src="user.avatar" />
-                        <span v-else>{{ user.username ? user.username.charAt(0).toUpperCase() : 'U' }}</span>
-                    </div>
-                    <div class="sidebar-title">
-                        <h3>{{ user.nickname }}</h3>
-                        <p>@{{ user.username }}</p>
-                    </div>
-                </div>
-
-                <ul class="nav-list">
-                    <li v-for="item in menuItems" :key="item.id" class="nav-item"
-                        :class="{ active: activeTab === item.id }"
-                        @click="item.id === 'admin' ? $router.push('/admin') : activeTab = item.id">
-                        <!-- 👆 关键修改：点击"后台管理"时跳转 -->
-                        <svg viewBox="0 0 24 24" class="nav-icon">
+                <div class="menu">
+                    <div v-for="item in menuItems" :key="item.id" class="menu-item"
+                        :class="{ active: activeTab === item.id }" @click="activeTab = item.id">
+                        <svg class="menu-icon" viewBox="0 0 24 24">
                             <path :d="item.iconPath" fill="currentColor" />
                         </svg>
-                        <span class="nav-label">{{ item.label }}</span>
-                    </li>
-                </ul>
-            </aside>
-
-            <main class="main-content">
-                <div class="content-header">
-                    <h1>{{ activeTab === 'personal' ? '个人信息' : '用户设置' }}</h1>
-                    <p class="sub-text">管理您的个人资料及安全设置</p>
+                        <span>{{ item.label }}</span>
+                    </div>
                 </div>
-
-                <div v-if="activeTab === 'personal'" class="info-group">
-                    <div class="info-block">
-                        <div class="block-header">
-                            <h3>基本信息</h3>
-                            <p>查看并编辑您的基本资料</p>
+            </aside>
+            <!-- 右侧内容区 -->
+            <main class="content">
+                <!-- 个人信息面板 -->
+                <div v-if="activeTab === 'personal'" class="panel">
+                    <h2 class="panel-title">个人信息</h2>
+                    <!-- 头像 -->
+                    <div class="form-group">
+                        <label class="label">头像 (最大1MB)</label>
+                        <div class="avatar-upload">
+                            <img v-if="user.avatar" :src="user.avatar" alt="头像" class="avatar-preview" />
+                            <div v-else class="avatar-placeholder">
+                                <svg viewBox="0 0 24 24" width="40" height="40">
+                                    <path
+                                        d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"
+                                        fill="currentColor" />
+                                </svg>
+                            </div>
+                            <button @click="triggerUpload" class="upload-btn">更换头像</button>
+                            <input ref="fileInput" type="file" accept="image/*" @change="handleFileChange"
+                                style="display: none" />
                         </div>
+                    </div>
+                    <!-- 用户名(不可修改) -->
+                    <div class="form-group">
+                        <label class="label">用户名</label>
+                        <input type="text" v-model="user.username" class="input" disabled />
+                    </div>
+                    <!-- 昵称 -->
+                    <div class="form-group">
+                        <label class="label">昵称</label>
+                        <input type="text" v-model="user.nickname" class="input" placeholder="请输入昵称" />
+                    </div>
+                    <!-- 邮箱 -->
+                    <div class="form-group">
+                        <label class="label">邮箱</label>
+                        <input type="email" v-model="user.email" class="input" placeholder="请输入邮箱" />
+                    </div>
+                    <!-- 生日(日历选择器) -->
+                    <div class="form-group">
+                        <label class="label">生日</label>
+                        <div class="date-picker-wrapper">
+                            <input type="text" v-model="user.birthday" class="input" placeholder="请选择出生日期"
+                                @click="showDatePicker = true" readonly />
 
-                        <div class="info-row avatar-row" @click="triggerUpload">
-                            <div class="row-left">头像</div>
-                            <div class="row-center">添加照片以个性化您的账户</div>
-                            <div class="row-right">
-                                <div class="current-avatar">
-                                    <img v-if="user.avatar" :src="user.avatar" />
-                                    <span v-else>{{ user.username ? user.username.charAt(0).toUpperCase() : 'U'
-                                    }}</span>
-                                    <div class="camera-icon">📷</div>
+                            <!-- 日历弹窗 -->
+                            <div v-if="showDatePicker" class="date-picker-modal" @click.self="showDatePicker = false">
+                                <div class="date-picker-content">
+                                    <h3>选择出生日期</h3>
+
+                                    <div class="date-selectors">
+                                        <!-- 年份选择 -->
+                                        <div class="date-column">
+                                            <label>年份</label>
+                                            <select v-model="selectedYear" class="date-select">
+                                                <option v-for="year in years" :key="year" :value="year">{{ year }}
+                                                </option>
+                                            </select>
+                                        </div>
+                                        <!-- 月份选择 -->
+                                        <div class="date-column">
+                                            <label>月份</label>
+                                            <select v-model="selectedMonth" class="date-select">
+                                                <option v-for="month in months" :key="month" :value="month">{{ month }}月
+                                                </option>
+                                            </select>
+                                        </div>
+                                        <!-- 日期选择 -->
+                                        <div class="date-column">
+                                            <label>日期</label>
+                                            <select v-model="selectedDay" class="date-select">
+                                                <option v-for="day in days" :key="day" :value="day">{{ day }}日</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="date-picker-actions">
+                                        <button @click="showDatePicker = false" class="btn-cancel">取消</button>
+                                        <button @click="confirmBirthday" class="btn-confirm">确定</button>
+                                    </div>
                                 </div>
                             </div>
-                            <input type="file" ref="fileInput" @change="handleFileChange" accept="image/*" hidden />
-                        </div>
-
-                        <div class="info-row">
-                            <div class="row-left">昵称</div>
-                            <div class="row-center">
-                                <input type="text" v-model="user.nickname" class="transparent-input"
-                                    placeholder="输入昵称" />
-                            </div>
-                            <div class="row-right edit-icon">✎</div>
-                        </div>
-
-                        <div class="info-row">
-                            <div class="row-left">生日</div>
-                            <div class="row-center">
-                                <input type="text" v-model="user.birthday" class="transparent-input" />
-                            </div>
-                            <div class="row-right edit-icon">✎</div>
-                        </div>
-
-                        <div class="info-row no-border">
-                            <div class="row-left">性别</div>
-                            <div class="row-center">
-                                <input type="text" v-model="user.gender" class="transparent-input" />
-                            </div>
-                            <div class="row-right edit-icon">✎</div>
-                        </div>
-
-                        <div class="info-row">
-                            <div class="row-left">地区</div>
-                            <div class="row-center">
-                                <input type="text" v-model="user.region" class="transparent-input" placeholder="添加地区" />
-                            </div>
-                            <div class="row-right edit-icon">✎</div>
-                        </div>
-
-                        <div class="info-row bio-row">
-                            <div class="row-left">自我介绍</div>
-                            <div class="row-center">
-                                <textarea v-model="user.bio" class="transparent-textarea" placeholder="写一句话介绍自己..."
-                                    rows="1"></textarea>
-                            </div>
-                            <div class="row-right edit-icon">✎</div>
                         </div>
                     </div>
-
-                    <div class="info-block mt-40">
-                        <div class="block-header">
-                            <h3>联系信息</h3>
-                            <p>管理您的联系方式</p>
-                        </div>
-
-                        <div class="info-row">
-                            <div class="row-left">电子邮件</div>
-                            <div class="row-center">
-                                <input type="email" v-model="user.email" class="transparent-input" />
+                    <!-- 性别(下拉选择) -->
+                    <div class="form-group">
+                        <label class="label">性别</label>
+                        <div class="dropdown-wrapper">
+                            <div class="dropdown-input" @click="showGenderDropdown = !showGenderDropdown">
+                                <span v-if="user.gender">{{genders.find(g => g.value === user.gender)?.label}}</span>
+                                <span v-else class="placeholder">请选择性别</span>
+                                <svg class="dropdown-icon" viewBox="0 0 24 24" width="20" height="20">
+                                    <path d="M7 10l5 5 5-5z" fill="currentColor" />
+                                </svg>
                             </div>
-                            <div class="row-right edit-icon">✎</div>
-                        </div>
-
-                        <div class="info-row no-border">
-                            <div class="row-left">电话</div>
-                            <div class="row-center">
-                                <input type="tel" v-model="user.phone" class="transparent-input" placeholder="未设置" />
+                            <div v-if="showGenderDropdown" class="dropdown-menu">
+                                <div v-for="gender in genders" :key="gender.value" class="dropdown-item"
+                                    @click="selectGender(gender)">
+                                    {{ gender.label }}
+                                </div>
                             </div>
-                            <div class="row-right edit-icon">✎</div>
                         </div>
-
-                        <div class="info-row">
-                            <div class="row-left">社交媒体</div>
-                            <div class="row-center">
-                                <input type="text" v-model="user.social_link" class="transparent-input"
-                                    placeholder="输入链接 (如 GitHub/Twitter)" />
+                    </div>
+                    <!-- 电话(国际区号) -->
+                    <div class="form-group">
+                        <label class="label">电话</label>
+                        <div class="phone-wrapper">
+                            <div class="phone-code" @click="showPhoneDropdown = !showPhoneDropdown">
+                                <span class="flag">{{ selectedPhoneCountry.flag }}</span>
+                                <span>{{ selectedPhoneCountry.code }}</span>
+                                <svg class="dropdown-icon" viewBox="0 0 24 24" width="16" height="16">
+                                    <path d="M7 10l5 5 5-5z" fill="currentColor" />
+                                </svg>
                             </div>
-                            <div class="row-right edit-icon">✎</div>
+
+                            <input type="tel" v-model="phoneInput" @input="handlePhoneInput" class="phone-input"
+                                :class="{ error: phoneError }"
+                                :placeholder="`请输入${selectedPhoneCountry.minLength}位号码`" />
+                            <!-- 区号下拉菜单 -->
+                            <div v-if="showPhoneDropdown" class="phone-dropdown">
+                                <div v-for="country in phoneCountries" :key="country.code" class="phone-dropdown-item"
+                                    @click="selectPhoneCountry(country)">
+                                    <span class="flag">{{ country.flag }}</span>
+                                    <span class="country-name">{{ country.country }}</span>
+                                    <span class="country-code">{{ country.code }}</span>
+                                </div>
+                            </div>
                         </div>
+                        <p v-if="phoneError" class="error-text">{{ phoneError }}</p>
+                    </div>
+                    <!-- 地区(三级联动) -->
+                    <div class="form-group">
+                        <label class="label">地区</label>
+                        <div class="region-wrapper">
+                            <input type="text" v-model="user.region" class="input" placeholder="请选择地区"
+                                @click="openRegionPicker" readonly />
+                            <!-- 地区选择弹窗 -->
+                            <div v-if="showRegionPicker" class="region-modal" @click.self="showRegionPicker = false">
+                                <div class="region-content">
+                                    <h3>🌍 选择地区</h3>
+
+                                    <div class="region-selectors">
+                                        <!-- 国家 -->
+                                        <div class="region-column">
+                                            <label>国家/地区</label>
+                                            <select v-model="selectedCountryCode" @change="handleCountryChange"
+                                                class="region-select">
+                                                <option value="">请选择</option>
+                                                <option v-for="country in countries" :key="country.code"
+                                                    :value="country.code">
+                                                    {{ country.flag }} {{ country.name }}
+                                                </option>
+                                            </select>
+                                        </div>
+                                        <!-- 省/州 -->
+                                        <div class="region-column">
+                                            <label>省/州</label>
+                                            <select v-model="selectedStateCode" @change="handleStateChange"
+                                                class="region-select"
+                                                :disabled="!selectedCountryCode || states.length === 0">
+                                                <option value="">请选择</option>
+                                                <option v-for="state in states" :key="state.code" :value="state.code">
+                                                    {{ state.name }}
+                                                </option>
+                                            </select>
+                                            <p v-if="selectedCountryCode && states.length === 0" class="no-data-hint">
+                                                该国家暂无省/州数据</p>
+                                        </div>
+                                        <!-- 市/县 -->
+                                        <div class="region-column">
+                                            <label>市/县</label>
+                                            <select v-model="selectedCityName" class="region-select"
+                                                :disabled="!selectedStateCode || cities.length === 0">
+                                                <option value="">请选择</option>
+                                                <option v-for="city in cities" :key="city.name" :value="city.name">
+                                                    {{ city.name }}
+                                                </option>
+                                            </select>
+                                            <p v-if="selectedStateCode && cities.length === 0" class="no-data-hint">
+                                                该地区暂无城市数据</p>
+                                        </div>
+                                    </div>
+                                    <div class="region-actions">
+                                        <button @click="showRegionPicker = false" class="btn-cancel">取消</button>
+                                        <button @click="confirmRegion" class="btn-confirm"
+                                            :disabled="!selectedCountryCode">确定</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 自我介绍 -->
+                    <div class="form-group">
+                        <label class="label">自我介绍</label>
+                        <textarea v-model="user.bio" class="textarea" placeholder="介绍一下你自己吧" rows="4"></textarea>
+                    </div>
+                    <!-- 社交媒体链接 -->
+                    <div class="form-group">
+                        <label class="label">社交媒体链接</label>
+                        <input type="url" v-model="user.social_link" class="input" placeholder="https://..." />
+                    </div>
+                    <!-- 底部按钮 -->
+                    <div class="actions">
+                        <button @click="handleCancel" class="btn-secondary">取消</button>
+                        <button @click="handlePublish" class="btn-primary" :disabled="isSaving || !hasUnsavedChanges">
+                            {{ isSaving ? '保存中...' : '保存修改' }}
+                        </button>
                     </div>
                 </div>
-
-                <div v-else class="content-view placeholder-view">
-                    <div class="empty-state">
-                        <h2>功能开发中</h2>
-                        <p>请点击“个人信息”查看演示。</p>
-                    </div>
+                <!-- 其他标签页(占位) -->
+                <div v-else class="panel">
+                    <h2 class="panel-title">{{menuItems.find(m => m.id === activeTab)?.label}}</h2>
+                    <p style="color: rgba(255,255,255,0.6);">该功能正在开发中...</p>
                 </div>
             </main>
         </div>
     </div>
 </template>
-
 <style scoped>
-/* ================= 页面容器 ================= */
-.account-page {
-    min-height: 100vh;
-    width: 100%;
+.account-container {
+    min-height: calc(100vh - 80px);
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding-top: 120px;
-    padding-bottom: 60px;
-    position: relative;
     background-size: cover;
     background-position: center;
     background-attachment: fixed;
-    box-sizing: border-box;
+    padding: 40px 20px;
+    margin-top: 80px;
 }
 
-.bg-overlay {
-    position: absolute;
-    inset: 0;
-    background: rgba(15, 23, 42, 0.6);
-    backdrop-filter: blur(15px);
-    z-index: 0;
-}
-
-/* ================= 大毛玻璃容器 ================= */
-.glass-container {
-    position: relative;
-    z-index: 1;
-    width: 1100px;
-    max-width: 90%;
-    min-height: 700px;
-    background: rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(40px);
-    -webkit-backdrop-filter: blur(40px);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 24px;
-    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
+/* 🎨 统一的毛玻璃背景卡片 */
+.unified-card {
     display: flex;
-    overflow: hidden;
-    /* 这里很重要，保证 Action Bar 不溢出 */
-}
-
-/* ================= 🌟 顶部操作栏 (Action Bar) ================= */
-.action-bar {
-    position: absolute;
-    top: 0;
-    right: 0;
     width: 100%;
-    height: 60px;
-    padding: 0 30px;
-    display: flex;
-    justify-content: flex-end;
-    /* 按钮靠右 */
-    align-items: center;
-    gap: 15px;
-    background: rgba(0, 0, 0, 0.1);
-    /* 轻微的底色区分 */
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    z-index: 10;
-    pointer-events: none;
-    /* 让鼠标能穿透空白区域 */
-}
-
-.action-bar button {
-    pointer-events: auto;
-    /* 按钮恢复点击 */
-    font-size: 0.9rem;
-    font-weight: 600;
-    padding: 8px 24px;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.btn-cancel {
-    background: transparent;
-    border: none;
-    color: #aaa;
-}
-
-.btn-cancel:hover {
-    color: #fff;
+    max-width: 1200px;
+    /* 缩小最大宽度，更紧凑 */
     background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(20px);
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+    gap: 0;
 }
 
-.btn-publish {
-    background: #3ea6ff;
-    /* YouTube 蓝 */
-    border: none;
-    color: #0f0f0f;
-    /* 黑色文字对比度高 */
+/* 侧边栏 */
+.sidebar {
+    width: 260px;
+    /* 稍微增加宽度 */
+    flex-shrink: 0;
+    padding: 20px;
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.btn-publish:hover {
-    background: #65b8ff;
+.menu-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.7);
+    transition: all 0.3s;
 }
 
-.btn-publish:disabled {
-    background: #555;
-    color: #888;
+.menu-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.menu-item.active {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+}
+
+.menu-icon {
+    width: 20px;
+    height: 20px;
+    margin-right: 12px;
+}
+
+/* 内容区 */
+.content {
+    flex: 1;
+    padding: 40px 50px;
+    /* 增加左右内边距 */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    /* 水平居中内容 */
+}
+
+.panel {
+    width: 100%;
+    /* 占满容器宽度 */
+    max-width: 600px;
+    /* 限制内容最大宽度 */
+}
+
+.panel-title {
+    font-size: 28px;
+    font-weight: 600;
+    color: white;
+    margin-bottom: 30px;
+}
+
+/* 表单 */
+.form-group {
+    margin-bottom: 24px;
+}
+
+.label {
+    display: block;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.9);
+    margin-bottom: 8px;
+    font-weight: 500;
+}
+
+.input,
+.textarea {
+    width: 100%;
+    /* 占满父容器 */
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    color: white;
+    font-size: 15px;
+    transition: all 0.3s;
+}
+
+.input:focus,
+.textarea:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.input:disabled {
+    opacity: 0.5;
     cursor: not-allowed;
 }
 
-/* ================= 左侧：侧边导航 ================= */
-.sidebar {
-    width: 280px;
-    flex-shrink: 0;
-    background: rgba(0, 0, 0, 0.2);
-    border-right: 1px solid rgba(255, 255, 255, 0.1);
-    padding: 80px 20px 20px;
-    /* 顶部留出 Action Bar 的位置 */
-    display: flex;
-    flex-direction: column;
+.textarea {
+    resize: vertical;
+    min-height: 100px;
 }
 
-.sidebar-header {
+/* 头像上传 */
+.avatar-upload {
     display: flex;
     align-items: center;
-    gap: 15px;
-    margin-bottom: 40px;
-    padding: 0 10px;
+    gap: 20px;
 }
 
-.mini-avatar {
-    width: 40px;
-    height: 40px;
+.avatar-preview,
+.avatar-placeholder {
+    width: 100px;
+    height: 100px;
     border-radius: 50%;
-    background: #1296db;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    font-weight: bold;
-    color: white;
-    overflow: hidden;
-}
-
-.mini-avatar img {
-    width: 100%;
-    height: 100%;
     object-fit: cover;
+    border: 3px solid rgba(255, 255, 255, 0.3);
 }
 
-/* 👇 修改处：头部信息样式优化 */
-.sidebar-title {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    overflow: hidden;
-    /* 防止长名字溢出 */
-}
-
-.sidebar-title h3 {
-    margin: 0 0 2px 0;
-    font-size: 1.1rem;
-    color: #fff;
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    /* 长名字显示省略号 */
-}
-
-.sidebar-title p {
-    margin: 0;
-    font-size: 0.85rem;
-    color: rgba(255, 255, 255, 0.6);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.nav-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-}
-
-.nav-item {
+.avatar-placeholder {
     display: flex;
     align-items: center;
-    padding: 14px 20px;
-    margin-bottom: 5px;
-    border-radius: 50px;
-    cursor: pointer;
-    transition: all 0.2s;
-    color: rgba(255, 255, 255, 0.7);
-    font-size: 0.95rem;
-}
-
-.nav-item:hover {
+    justify-content: center;
     background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-}
-
-.nav-item.active {
-    background: rgba(66, 184, 131, 0.2);
-    color: #42b883;
-    font-weight: 500;
-}
-
-.nav-icon {
-    width: 22px;
-    height: 22px;
-    margin-right: 15px;
-    fill: currentColor;
-}
-
-/* ================= 右侧：内容区 ================= */
-.main-content {
-    flex: 1;
-    padding: 80px 80px 40px;
-    /* 顶部留出 Action Bar 空间 */
-    overflow-y: auto;
-}
-
-/* 头部 */
-.content-header {
-    text-align: center;
-    margin-bottom: 50px;
-}
-
-.content-header h1 {
-    font-size: 2.2rem;
-    color: #fff;
-    margin-bottom: 10px;
-    font-weight: 500;
-}
-
-.sub-text {
-    font-size: 1rem;
-    color: rgba(255, 255, 255, 0.6);
-}
-
-/* 信息区块 */
-.info-block {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 12px;
-    overflow: hidden;
-    background: transparent;
-}
-
-.block-header {
-    padding: 24px;
-}
-
-.block-header h3 {
-    margin: 0 0 5px 0;
-    font-size: 1.3rem;
-    color: #fff;
-    font-weight: 400;
-}
-
-.block-header p {
-    margin: 0;
-    font-size: 0.95rem;
     color: rgba(255, 255, 255, 0.5);
 }
 
-/* 列表行 */
-.info-row {
+.upload-btn {
+    padding: 10px 20px;
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 8px;
+    color: white;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.upload-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* 日期选择器包装 */
+.date-picker-wrapper {
+    max-width: 500px;
+    /* 限制最大宽度 */
+}
+
+.date-picker-wrapper .input {
+    max-width: 100%;
+    /* 继承父容器宽度 */
+}
+
+.date-picker-modal,
+.region-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(5px);
     display: flex;
     align-items: center;
-    padding: 20px 24px;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
-    cursor: text;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.date-picker-content,
+.region-content {
+    background: rgba(30, 30, 30, 0.95);
+    backdrop-filter: blur(20px);
+    border-radius: 16px;
+    padding: 30px;
+    min-width: 400px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.date-picker-content h3,
+.region-content h3 {
+    color: white;
+    margin-bottom: 24px;
+    font-size: 20px;
+}
+
+.date-selectors,
+.region-selectors {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.date-column,
+.region-column {
+    flex: 1;
+}
+
+.date-column label,
+.region-column label {
+    display: block;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.date-select,
+.region-select {
+    width: 100%;
+    padding: 10px;
+    background: rgba(50, 50, 50, 0.95);
+    /* 深色背景，确保可读 */
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    color: white;
+    /* 白色文字 */
+    font-size: 14px;
+    cursor: pointer;
+}
+
+/* 🔥 修复 select 下拉选项的显示问题 */
+.date-select option,
+.region-select option {
+    background: rgba(30, 30, 30, 0.98);
+    /* 深色背景 */
+    color: white;
+    /* 白色文字 */
+    padding: 10px;
+}
+
+/* hover 效果 */
+.date-select option:hover,
+.region-select option:hover {
+    background: rgba(100, 100, 100, 0.9);
+}
+
+.date-select:disabled,
+.region-select:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* 无数据提示 */
+.no-data-hint {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+    margin-top: 6px;
+    font-style: italic;
+}
+
+.date-picker-actions,
+.region-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+.btn-cancel,
+.btn-confirm {
+    padding: 10px 24px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.3s;
+}
+
+.btn-cancel {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.btn-cancel:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.btn-confirm {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.btn-confirm:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+}
+
+.btn-confirm:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 下拉选择器 */
+.dropdown-wrapper {
+    position: relative;
+    width: 100%;
+    /* 占满父容器 */
+}
+
+.dropdown-input {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    cursor: pointer;
+    color: white;
+    transition: all 0.3s;
+}
+
+.dropdown-input:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.placeholder {
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.dropdown-icon {
+    transition: transform 0.3s;
+}
+
+.dropdown-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    background: rgba(30, 30, 30, 0.95);
+    backdrop-filter: blur(20px);
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+    overflow: hidden;
+}
+
+.dropdown-item {
+    padding: 12px 16px;
+    color: white;
+    cursor: pointer;
     transition: background 0.2s;
 }
 
-.info-row:hover {
-    background: rgba(255, 255, 255, 0.05);
+.dropdown-item:hover {
+    background: rgba(255, 255, 255, 0.1);
 }
 
-.row-left {
-    width: 25%;
-    font-size: 0.9rem;
-    color: rgba(255, 255, 255, 0.6);
-    font-weight: 500;
-}
-
-.row-center {
-    flex: 1;
-    font-size: 1.1rem;
-    color: #fff;
-}
-
-.row-right {
-    margin-left: 20px;
-    color: rgba(255, 255, 255, 0.4);
-}
-
-/* 透明输入框 */
-.transparent-input {
-    background: transparent;
-    border: none;
-    color: white;
-    font-size: 1.1rem;
-    width: 100%;
-    outline: none;
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.3s;
-    padding: 4px 0;
-}
-
-.transparent-input:focus {
-    border-bottom: 1px solid #42b883;
-}
-
-.edit-icon {
-    font-size: 1.2rem;
-    cursor: pointer;
-}
-
-/* 头像行 */
-.avatar-row {
-    padding: 12px 24px;
-    cursor: pointer;
-}
-
-.current-avatar {
-    width: 60px;
-    height: 60px;
+/* 电话输入 */
+.phone-wrapper {
+    display: flex;
+    gap: 8px;
     position: relative;
+    width: 100%;
+    /* 占满父容器 */
 }
 
-.current-avatar img {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    object-fit: cover;
-}
-
-.current-avatar span {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    background: #1e293b;
-    color: #1296db;
+.phone-code {
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-size: 1.5rem;
-    font-weight: bold;
-}
-
-.camera-icon {
-    position: absolute;
-    bottom: 0;
-    right: 0;
-    background: #333;
-    padding: 4px;
-    border-radius: 50%;
-    font-size: 12px;
-}
-
-.mt-40 {
-    margin-top: 40px;
-}
-
-.placeholder-view {
-    text-align: center;
-    color: rgba(255, 255, 255, 0.5);
-    padding-top: 100px;
-}
-
-/* 自我介绍行的特殊处理：允许变高 */
-.bio-row {
-    align-items: flex-start;
-    /* 顶部对齐 */
-}
-
-/* 透明多行文本框 */
-.transparent-textarea {
-    background: transparent;
-    border: none;
+    gap: 8px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    cursor: pointer;
     color: white;
-    font-size: 1.1rem;
-    width: 100%;
+    white-space: nowrap;
+    transition: all 0.3s;
+}
+
+.phone-code:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.flag {
+    font-size: 20px;
+}
+
+.phone-input {
+    flex: 1;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    color: white;
+    font-size: 15px;
+    transition: all 0.3s;
+}
+
+.phone-input:focus {
     outline: none;
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.3s;
-    padding: 4px 0;
-    resize: none;
-    /* 禁止手动拖拽大小，保持整洁 */
-    font-family: inherit;
-    line-height: 1.5;
+    border-color: rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.2);
 }
 
-.transparent-textarea:focus {
-    border-bottom: 1px solid #42b883;
+.phone-input.error {
+    border-color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.1);
 }
 
-@media (max-width: 900px) {
-    .glass-container {
+.error-text {
+    color: #ff6b6b;
+    font-size: 13px;
+    margin-top: 6px;
+}
+
+.phone-dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    width: 300px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: rgba(30, 30, 30, 0.95);
+    backdrop-filter: blur(20px);
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+}
+
+.phone-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    color: white;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.phone-dropdown-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.country-name {
+    flex: 1;
+}
+
+.country-code {
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 13px;
+}
+
+/* 底部按钮 */
+.actions {
+    display: flex;
+    gap: 16px;
+    justify-content: flex-end;
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    width: 100%;
+    /* 确保按钮区域占满宽度 */
+}
+
+.btn-primary,
+.btn-secondary {
+    padding: 12px 32px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: 15px;
+    font-weight: 500;
+    transition: all 0.3s;
+}
+
+.btn-secondary {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+}
+
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+    .account-container {
+        padding: 20px 10px;
+        margin-top: 70px;
+    }
+
+    .unified-card {
         flex-direction: column;
-        height: auto;
     }
 
     .sidebar {
         width: 100%;
         border-right: none;
         border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        padding-top: 20px;
     }
 
-    .main-content {
-        padding: 30px 20px;
+    .content {
+        padding: 20px;
     }
 
-    .action-bar {
-        position: relative;
-        width: 100%;
-        height: auto;
-        padding: 15px;
-        justify-content: flex-end;
-        background: rgba(0, 0, 0, 0.2);
+    .date-picker-content,
+    .region-content {
+        min-width: auto;
+        width: 90%;
+        padding: 20px;
     }
 
-    .info-row {
+    .date-selectors,
+    .region-selectors {
         flex-direction: column;
-        align-items: flex-start;
-        gap: 8px;
     }
 
-    .row-left {
+    .phone-wrapper {
+        flex-direction: column;
+    }
+
+    .phone-code {
         width: 100%;
-    }
-
-    .row-right {
-        position: absolute;
-        right: 20px;
-        top: 50%;
-        transform: translateY(-50%);
-    }
-
-    .info-row {
-        position: relative;
+        justify-content: center;
     }
 }
 </style>

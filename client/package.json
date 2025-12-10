@@ -17,6 +17,7 @@
   "dependencies": {
     "animate.css": "^4.1.1",
     "axios": "^1.13.2",
+    "country-state-city": "^3.2.1",
     "lunar-javascript": "^1.7.7",
     "pinia": "^3.0.4",
     "pinia-plugin-persistedstate": "^4.7.1",
