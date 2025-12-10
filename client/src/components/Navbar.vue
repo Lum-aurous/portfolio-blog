@@ -4,6 +4,13 @@ import { useRouter, useRoute } from 'vue-router'
 // ⚡️ 关键修复：导入 Pinia Store
 import { useUserStore } from '@/stores/user.js'
 
+
+// 切换主题并关闭菜单
+const toggleThemeAndCloseMenu = () => {
+  toggleTheme(); // 调用原来的toggleTheme函数
+  showUserMenu.value = false; // 关闭下拉菜单
+}
+
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore() // ⚡️ 获取 Store 实例
@@ -35,6 +42,7 @@ const userAvatar = computed(() => {
   }
   return ''
 })
+
 const email = computed(() => userStore.user?.email || '')
 const nickname = computed(() => {
   // 优先使用 Pinia Store 中的 nickname
@@ -55,6 +63,86 @@ const nickname = computed(() => {
   }
   return username.value
 })
+
+
+// 切换账号（跳转到登录页面，不立即退出当前账号）
+const switchAccount = () => {
+  console.log('切换账号按钮被点击') // 添加调试日志
+
+  // 不退出当前账号，只是跳转到登录页面
+  showUserMenu.value = false
+
+  // 设置一个标志，告诉登录页面这是"切换账号"操作
+  sessionStorage.setItem('isSwitchingAccount', 'true')
+  sessionStorage.setItem('previousUsername', username.value) // 可选：保存原用户名
+
+  console.log('设置 sessionStorage 完成:', {
+    isSwitchingAccount: sessionStorage.getItem('isSwitchingAccount'),
+    previousUsername: sessionStorage.getItem('previousUsername')
+  })
+
+  // 跳转到登录页面
+  console.log('开始路由跳转到 /login')
+  router.push('/login')
+    .then(() => {
+      console.log('路由跳转成功')
+    })
+    .catch(err => {
+      console.error('路由跳转失败:', err)
+      console.log('尝试备用方案: window.location.href')
+      // 备用方案
+      window.location.href = '/login'
+    })
+}
+
+// 位置点击处理
+const handleLocationClick = () => {
+  if (!isLoggedIn.value) {
+    alert('请先登录以获取位置信息');
+    return;
+  }
+
+  if (userStore.isLoadingLocation) {
+    return; // 正在加载中，不响应点击
+  }
+
+  if (!userStore.location) {
+    // 如果还没有位置信息，则获取
+    userStore.getLocation();
+  } else {
+    // 如果有位置信息，则刷新
+    userStore.refreshLocation();
+  }
+
+  // 点击后不关闭菜单，让用户看到更新过程
+  // showUserMenu.value = false;
+};
+
+// 监听登录状态，自动获取位置
+watch(
+  () => isLoggedIn.value,
+  (loggedIn) => {
+    if (loggedIn && !userStore.location) {
+      // 登录后自动获取位置（延迟1秒，避免影响登录体验）
+      setTimeout(() => {
+        userStore.getLocation();
+      }, 1000);
+    }
+  },
+  { immediate: true }
+);
+
+// 监听登录状态变化，自动获取位置
+watch(
+  () => isLoggedIn.value,
+  (loggedIn) => {
+    if (loggedIn && !userStore.location) {
+      // 登录后自动获取位置
+      userStore.getLocation()
+    }
+  },
+  { immediate: true }
+)
 
 
 const showUserMenu = ref(false)
@@ -461,6 +549,7 @@ onUnmounted(() => {
 
           <!-- 用户下拉菜单 -->
           <transition name="fade-slide">
+            <!-- 确保用户下拉菜单容器没有阻止点击事件 -->
             <div v-if="showUserMenu" class="user-dropdown-horizontal" @click.stop>
               <div class="user-header-horizontal">
                 <div class="user-avatar-big rainbow-ring">
@@ -497,7 +586,7 @@ onUnmounted(() => {
                   后台管理
                 </router-link>
 
-                <div class="dropdown-item">
+                <div class="dropdown-item" @click="switchAccount">
                   <svg viewBox="0 0 1024 1024" class="menu-icon switch-account-icon">
                     <path
                       d="M736.305 546.133c9.752-19.504 4.876-39.01-14.629-48.762-24.38-14.628-48.762-24.38-73.143-34.133 53.638-43.886 92.648-107.276 92.648-185.295C746.057 151.162 638.781 48.762 512 48.762s-234.057 102.4-234.057 234.057c0 73.143 34.133 141.41 92.647 180.42C204.8 521.751 82.895 677.79 82.895 867.961c0 19.505 14.629 39.01 39.01 39.01s39.01-14.63 39.01-39.01c0-195.048 160.914-351.086 351.085-351.086 63.39 0 121.905 14.629 175.543 48.762 19.505 4.876 39.01 0 48.762-19.505zM355.962 282.82c0-87.771 68.267-160.914 156.038-160.914s156.038 73.143 156.038 156.038S599.771 438.857 512 438.857 355.962 365.714 355.962 282.82z"
@@ -530,20 +619,39 @@ onUnmounted(() => {
                   你的数据
                 </div>
 
-                <div class="dropdown-item" @click="toggleTheme; showUserMenu = false">
+                <div class="dropdown-item" @click="toggleThemeAndCloseMenu">
                   <svg viewBox="0 0 24 24" class="menu-icon">
                     <path
                       d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
                   </svg>
-                  外观: {{ isDark ? '深色模式' : '浅色模式' }}<span class="arrow">></span>
+                  外观: {{ isDark ? '深色模式' : '浅色模式' }}
+                  <span class="arrow">></span>
                 </div>
 
-                <div class="dropdown-item">
+                <!-- 在模板中找到位置菜单项，修改为： -->
+                <div class="dropdown-item" @click="handleLocationClick">
                   <svg viewBox="0 0 24 24" class="menu-icon">
                     <path
                       d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
                   </svg>
-                  位置: United States<span class="arrow">></span>
+                  <div class="location-content">
+                    <div class="location-label">位置</div>
+                    <div class="location-value">
+                      <template v-if="!isLoggedIn">
+                        请先登录
+                      </template>
+                      <template v-else-if="userStore.isLoadingLocation">
+                        <span class="loading-dots">正在获取位置</span>
+                      </template>
+                      <template v-else-if="userStore.location">
+                        {{ userStore.location.text }}
+                      </template>
+                      <template v-else>
+                        点击获取位置
+                      </template>
+                    </div>
+                  </div>
+                  <span class="arrow">↻</span>
                 </div>
 
                 <div class="dropdown-item">
@@ -559,9 +667,9 @@ onUnmounted(() => {
         </div>
 
         <!-- 主题切换按钮 -->
-        <button @click="toggleTheme" class="theme-btn">
+        <!-- <button @click="toggleTheme" class="theme-btn">
           {{ isDark ? '🌞' : '🌙' }}
-        </button>
+        </button> -->
       </div>
     </div>
   </nav>
@@ -770,8 +878,17 @@ onUnmounted(() => {
   margin-bottom: 2px;
 }
 
-:global(html.dark) .dropdown-item {
-  color: #eee;
+
+/* 确保箭头在右侧 */
+.dropdown-item .arrow {
+  margin-left: auto;
+  color: #5f6368;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+:global(html.dark) .dropdown-item .arrow {
+  color: #9aa0a6;
 }
 
 .dropdown-item:hover {
@@ -1117,36 +1234,6 @@ onUnmounted(() => {
   color: #8ab4f8;
 }
 
-/* ==================== 7. 主题按钮 ==================== */
-.theme-btn {
-  background: rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  padding: 8px;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 1.2rem;
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-}
-
-.navbar-active .theme-btn {
-  border-color: rgba(0, 0, 0, 0.1);
-  color: var(--text-color);
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.theme-btn:hover {
-  transform: scale(1.15) rotate(15deg);
-  background: rgba(255, 255, 255, 0.3);
-  color: #3b82f6;
-}
-
 /* ==================== 8. 响应式 ==================== */
 @media (max-width: 768px) {
   .nav-content {
@@ -1158,6 +1245,82 @@ onUnmounted(() => {
     flex-wrap: wrap;
     justify-content: center;
     gap: 20px;
+  }
+}
+
+/* 位置菜单项样式 */
+.location-content {
+  flex: 1;
+  min-width: 0;
+  margin-right: 10px;
+}
+
+.location-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  margin-bottom: 2px;
+  color: #202124;
+}
+
+:global(html.dark) .location-label {
+  color: #e8eaed;
+}
+
+.location-value {
+  font-size: 0.8rem;
+  color: #5f6368;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+:global(html.dark) .location-value {
+  color: #9aa0a6;
+}
+
+/* 加载动画 */
+.loading-dots::after {
+  content: '...';
+  animation: dots 1.5s steps(4, end) infinite;
+  display: inline-block;
+  width: 1.5em;
+  text-align: left;
+}
+
+@keyframes dots {
+
+  0%,
+  20% {
+    content: '';
+  }
+
+  40% {
+    content: '.';
+  }
+
+  60% {
+    content: '..';
+  }
+
+  80%,
+  100% {
+    content: '...';
+  }
+}
+
+/* 刷新箭头动画 */
+.dropdown-item:hover .arrow {
+  animation: rotate 0.5s ease;
+}
+
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
   }
 }
 </style>

@@ -44,8 +44,7 @@ const router = createRouter({
       meta: {
         title: "Veritas - 登录",
         guestAccess: true,
-        // 已登录用户不能访问登录/注册页
-        preventIfLoggedIn: true,
+        preventIfLoggedIn: true, // 这可能会导致问题，需要特殊处理
       },
     },
     {
@@ -188,6 +187,15 @@ router.beforeEach((to, from, next) => {
 
   // 2. 防止已登录用户访问登录/注册页
   if (to.meta.preventIfLoggedIn && isLoggedIn) {
+    // 如果是切换账号操作，允许访问登录页面
+    if (
+      to.path === "/login" &&
+      sessionStorage.getItem("isSwitchingAccount") === "true"
+    ) {
+      console.log("检测到切换账号操作，允许访问登录页面");
+      next();
+      return;
+    }
     next("/");
     return;
   }

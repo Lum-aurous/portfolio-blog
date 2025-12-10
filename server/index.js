@@ -157,42 +157,187 @@ app.post("/api/articles", (req, res) => {
   });
 });
 
-// 加密用户注册密码
+// 修改后端注册接口，确保手机号格式统一
 app.post("/api/register", (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, email, phone } = req.body;
 
-  // 1. 检查用户名是否存在
-  const checkSql = "SELECT * FROM users WHERE username = ?";
-  db.query(checkSql, [username], (err, results) => {
-    if (results.length > 0)
-      return res.status(409).json({ message: "用户名已被占用" });
+  // 验证至少提供一种登录方式
+  if (!username && !email && !phone) {
+    return res
+      .status(400)
+      .json({ message: "至少提供用户名、邮箱或手机号中的一种" });
+  }
 
-    // 2. 🔐 核心改变：对密码进行加密
-    // 10 是“加盐”的强度，数值越大越安全但越慢，10 是标准值
-    const hash = bcrypt.hashSync(password, 10);
+  // 验证密码
+  if (!password) {
+    return res.status(400).json({ message: "密码不能为空" });
+  }
 
-    // 3. 存入数据库的是 'hash' (乱码)，不再是 'password' (明文)
-    const insertSql = "INSERT INTO users (username, password) VALUES (?, ?)";
+  // 如果提供了邮箱，验证邮箱格式
+  if (email && !isValidEmail(email)) {
+    return res.status(400).json({ message: "邮箱格式不正确" });
+  }
 
-    db.query(insertSql, [username, hash], (err, result) => {
-      if (err) return res.status(500).json({ message: "注册失败" });
-      res.json({ success: true, message: "注册成功" });
-    });
-  });
+  // 辅助函数：验证邮箱格式
+  function isValidEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  }
+
+  // 辅助函数：处理手机号格式（统一为 +86 开头）
+  function formatPhoneNumber(phone) {
+    if (!phone) return null;
+
+    // 如果已经包含+86，直接返回
+    if (phone.startsWith("+86")) {
+      return phone;
+    }
+
+    // 如果是中国手机号（1开头，11位），添加+86前缀
+    const cleanPhone = phone.replace(/\D/g, ""); // 移除所有非数字字符
+
+    // 检查是否是中国手机号格式
+    if (/^1[3-9]\d{9}$/.test(cleanPhone)) {
+      return `+86 ${cleanPhone}`;
+    }
+
+    // 其他格式的手机号，保持原样
+    return phone;
+  }
+
+  // 如果提供了手机号，处理格式
+  let formattedPhone = null;
+  if (phone) {
+    formattedPhone = formatPhoneNumber(phone);
+
+    // 验证处理后的手机号格式
+    if (!formattedPhone) {
+      return res.status(400).json({ message: "手机号格式不正确" });
+    }
+
+    // 如果是中国手机号格式，验证长度
+    if (
+      formattedPhone.startsWith("+86") &&
+      !/^\+86\s1[3-9]\d{9}$/.test(formattedPhone)
+    ) {
+      return res.status(400).json({ message: "请输入有效的中国手机号" });
+    }
+  }
+
+  // 确定要使用的登录标识
+  let loginIdentifier;
+  if (username) {
+    loginIdentifier = username;
+  } else if (email) {
+    loginIdentifier = email;
+  } else {
+    loginIdentifier = formattedPhone || phone;
+  }
+
+  // 检查用户名/邮箱/手机号是否已被占用
+  const checkSql = `
+    SELECT * FROM users 
+    WHERE username = ? OR email = ? OR phone = ?
+  `;
+
+  db.query(
+    checkSql,
+    [loginIdentifier, email, formattedPhone],
+    (err, results) => {
+      if (err) {
+        console.error("数据库查询错误:", err);
+        return res.status(500).json({ message: "服务器错误" });
+      }
+
+      // 检查是否有重复
+      if (results.length > 0) {
+        const existingUser = results[0];
+        if (existingUser.username === loginIdentifier) {
+          return res.status(409).json({ message: "用户名已被占用" });
+        }
+        if (email && existingUser.email === email) {
+          return res.status(409).json({ message: "邮箱已被注册" });
+        }
+        if (formattedPhone && existingUser.phone === formattedPhone) {
+          return res.status(409).json({ message: "手机号已被注册" });
+        }
+      }
+
+      // 对密码进行加密
+      const hash = bcrypt.hashSync(password, 10);
+
+      // 插入新用户，使用格式化后的手机号
+      const insertSql = `
+      INSERT INTO users (username, password, email, phone) 
+      VALUES (?, ?, ?, ?)
+    `;
+
+      db.query(
+        insertSql,
+        [loginIdentifier, hash, email, formattedPhone],
+        (err, result) => {
+          if (err) {
+            console.error("注册失败:", err);
+            return res.status(500).json({ message: "注册失败" });
+          }
+
+          res.json({
+            success: true,
+            message: "注册成功",
+            loginIdentifier: loginIdentifier,
+            phone: formattedPhone, // 返回格式化后的手机号
+          });
+        }
+      );
+    }
+  );
 });
 
-// 加密用户登录密码
+// 修改登录接口，支持手机号格式处理
 app.post("/api/login", (req, res) => {
-  const { username, password } = req.body;
+  const { account, password } = req.body;
 
-  // ⚡️ 确保 SELECT 包含 avatar
-  const sql =
-    "SELECT id, username, password, role, avatar, nickname, email FROM users WHERE username = ?";
+  if (!account || !password) {
+    return res.status(400).json({
+      success: false,
+      message: "请输入账号和密码",
+    });
+  }
 
-  db.query(sql, [username], (err, results) => {
-    if (err) return res.status(500).json({ message: "服务器错误" });
-    if (results.length === 0)
-      return res.status(401).json({ success: false, message: "用户不存在" });
+  // 处理手机号格式（如果是手机号登录）
+  let formattedAccount = account;
+
+  // 判断是否是手机号（可能是纯数字，也可能是+86格式）
+  if (/^1[3-9]\d{9}$/.test(account)) {
+    // 如果是11位中国手机号，添加+86前缀
+    formattedAccount = `+86 ${account}`;
+  } else if (/^\+86\s?1[3-9]\d{9}$/.test(account)) {
+    // 如果已经是+86格式，确保空格格式统一
+    formattedAccount = account.replace(/\+86\s?/, "+86 ");
+  }
+
+  // 查询用户（支持用户名、邮箱、手机号登录）
+  const sql = `
+    SELECT id, username, password, role, avatar, nickname, email, phone 
+    FROM users 
+    WHERE username = ? OR email = ? OR phone = ?
+  `;
+
+  db.query(sql, [account, account, formattedAccount], (err, results) => {
+    if (err) {
+      console.error("登录查询错误:", err);
+      return res.status(500).json({
+        success: false,
+        message: "服务器错误",
+      });
+    }
+
+    if (results.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "账号不存在",
+      });
+    }
 
     const user = results[0];
     const isMatch = bcrypt.compareSync(password, user.password);
@@ -205,13 +350,17 @@ app.post("/api/login", (req, res) => {
           id: user.id,
           username: user.username,
           role: user.role,
-          avatar: user.avatar || null, // ⚡️ 返回 Base64 或 null
+          avatar: user.avatar || null,
           nickname: user.nickname || null,
           email: user.email || null,
+          phone: user.phone || null,
         },
       });
     } else {
-      res.status(401).json({ success: false, message: "密码错误" });
+      res.status(401).json({
+        success: false,
+        message: "密码错误",
+      });
     }
   });
 });
