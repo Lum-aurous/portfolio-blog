@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useWallpaperStore } from '@/stores/wallpaper'
-import Clock from '@/components/Clock.vue' // 导入时钟组件
+import Clock from '@/components/Clock.vue'
 import logger from '@/utils/logger'
 
 const userStore = useUserStore()
@@ -12,7 +12,7 @@ const wallpaperStore = useWallpaperStore()
 const isSettingsOpen = ref(false)
 const fileInput = ref(null)
 
-// 时钟设置（现在传递给Clock组件）
+// 时钟设置
 const showSeconds = ref(false)
 const showLunar = ref(true)
 const use12Hour = ref(true)
@@ -21,15 +21,29 @@ const use12Hour = ref(true)
 const searchQuery = ref('')
 const selectedEngineName = ref('Bing')
 const showEngineDropdown = ref(false)
-const showSuggestions = ref(false)
+
+// 🔥 新增：切换反馈状态
+const isSwitchingWallpaper = ref(false)
 
 // ==================== 计算属性 ====================
 const hasUserCustomWallpaper = computed(() => wallpaperStore.userHasCustom)
 
-// 壁纸模式的双向绑定
+// 🔥 优化：壁纸模式切换（即时响应）
 const wallpaperSource = computed({
     get: () => wallpaperStore.wallpaperMode,
-    set: (value) => wallpaperStore.changeWallpaper(value)
+    set: (value) => {
+        // 防抖：防止快速连续点击
+        if (isSwitchingWallpaper.value) return;
+
+        isSwitchingWallpaper.value = true;
+
+        // 🔥 立即切换
+        wallpaperStore.changeWallpaper(value).finally(() => {
+            setTimeout(() => {
+                isSwitchingWallpaper.value = false;
+            }, 300);
+        });
+    }
 })
 
 const wallpaperBlur = computed({
@@ -115,44 +129,50 @@ const shortcutLinks = [
     { name: '更多', url: '#', viewBox: '0 0 1024 1024', paths: [{ d: 'M62 401.8V167.73c0-44.02 35.69-79.71 79.71-79.71h234.07c44.02 0 79.71 35.69 79.71 79.71V401.8c0 44.02-35.69 79.71-79.71 79.71H141.71C97.69 481.52 62 445.83 62 401.8z', fill: '#FF4F4F' }, { d: 'M62 856.27V622.2c0-44.02 35.69-79.71 79.71-79.71h234.07c44.02 0 79.71 35.69 79.71 79.71v234.2c0 43.95-35.63 79.58-79.58 79.58h-234.2c-44.02 0-79.71-35.69-79.71-79.71z', fill: '#FFBC55' }, { d: 'M509.02 401.8V167.73c0-44.02 35.69-79.71 79.71-79.71H822.8c44.02 0 79.71 35.69 79.71 79.71V401.8c0 44.02-35.69 79.71-79.71 79.71H588.73c-44.02 0.01-79.71-35.68-79.71-79.71z', fill: '#1AADF9' }, { d: 'M705.77 542.48c-108.66 0-196.75 88.09-196.75 196.75s88.09 196.75 196.75 196.75c53.61 0 102.1-21.58 137.59-56.36l61.13 39.36a37.107 37.107 0 0 0 20.16 5.94c12.28 0 24.28-6.04 31.43-17.12 11.14-17.33 6.15-40.43-11.18-51.57l-59.11-38.06c10.64-24.2 16.75-50.82 16.75-78.95-0.02-108.65-88.11-196.74-196.77-196.74', fill: '#4381F1' }] }
 ]
 
-// ==================== 生命周期 ====================
-onMounted(() => {
-    logger.info('Home 页面初始化开始')
-    document.body.style.overflow = 'hidden'
+// ==================== 生命周期优化 ====================
 
-    // ⚡️ 关键修复：确保时钟组件能正常显示
-    nextTick(() => {
-        // 这里可以添加任何需要在DOM更新后执行的逻辑
-        logger.info('Home 页面DOM更新完成')
-    })
+onMounted(() => {
+    logger.info('🏠 Home 页面初始化')
+
+    // 🔥 优化：删除这里强行调用 initialize 的代码
+    // 因为 App.vue 已经调用过了。
+    // 如果你非要保留，可以加一个判断：
+    if (!wallpaperStore.currentWallpaper) {
+        wallpaperStore.initialize()
+    }
 })
 
 onUnmounted(() => {
-    document.body.style.overflow = 'auto'
-    logger.info('Home 页面卸载')
+    logger.info('🏠 Home 页面卸载')
+    // 🔥 注意：不再手动管理body滚动，由全局管理器处理
 })
 
-// ⚡️ 关键修复：使用Vue Router的onBeforeRouteUpdate确保路由切换时时钟正常
-import { onBeforeRouteUpdate } from 'vue-router'
-
-onBeforeRouteUpdate((to, from, next) => {
-    console.log('路由更新：从', from.path, '到', to.path)
-
-    // 确保时钟组件在路由更新后能正常工作
-    next()
+// 🔥 监听壁纸变化（仅用于日志）
+watch(() => wallpaperStore.currentWallpaper, (newVal) => {
+    if (newVal) {
+        logger.debug('Home: 壁纸已更新')
+    }
 })
 </script>
 
 <template>
     <div class="home-container">
+        <!-- 🔥 壁纸切换指示器 -->
+        <transition name="fade">
+            <div v-if="isSwitchingWallpaper" class="wallpaper-switch-indicator">
+                <div class="switch-spinner"></div>
+                <span class="switch-text">切换中...</span>
+            </div>
+        </transition>
+
         <!-- 页面内容 -->
         <div class="hero-section">
-            <!-- 使用独立的时钟组件 -->
+            <!-- 时钟组件 -->
             <Clock :show-seconds="showSeconds" :show-lunar="showLunar" :use12-hour="use12Hour" />
 
+            <!-- 搜索框 -->
             <div class="search-section">
                 <div class="glass-search-box" :class="{ 'dropdown-open': showEngineDropdown }">
-
                     <div class="engine-trigger" @click.stop="toggleDropdown">
                         <svg class="engine-icon-svg" :viewBox="currentEngine.viewBox || '0 0 24 24'"
                             xmlns="http://www.w3.org/2000/svg">
@@ -184,7 +204,7 @@ onBeforeRouteUpdate((to, from, next) => {
 
                 <div class="shortcut-dock animate__animated animate__fadeInUp animate__delay-1s">
                     <a v-for="link in shortcutLinks" :key="link.name" :href="link.url" class="shortcut-icon-btn"
-                        :title="link.name">
+                        :title="link.name" target="_blank" rel="noopener noreferrer">
                         <svg :viewBox="link.viewBox" xmlns="http://www.w3.org/2000/svg" class="icon-svg">
                             <path v-for="(path, idx) in link.paths" :key="idx" :d="path.d" :fill="path.fill" />
                         </svg>
@@ -217,15 +237,24 @@ onBeforeRouteUpdate((to, from, next) => {
                         <div class="setting-row">
                             <div class="row-info">
                                 <div class="row-name">壁纸偏好</div>
-                                <div class="row-desc">立即生效</div> <!-- 修改描述 -->
+                                <div class="row-desc">⚡ 即时切换</div>
                             </div>
                             <div class="segmented-control">
-                                <div class="segment-item" :class="{ active: wallpaperSource === 'daily' }"
-                                    @click="wallpaperSource = 'daily'">每日一图</div>
-                                <div class="segment-item" :class="{ active: wallpaperSource === 'random' }"
-                                    @click="wallpaperSource = 'random'">随机封面</div>
-                                <div class="segment-item" :class="{ active: wallpaperSource === 'website' }"
-                                    @click="wallpaperSource = 'website'">网站背景</div>
+                                <div class="segment-item"
+                                    :class="{ active: wallpaperSource === 'daily', switching: isSwitchingWallpaper && wallpaperSource === 'daily' }"
+                                    @click="wallpaperSource = 'daily'">
+                                    每日一图
+                                </div>
+                                <div class="segment-item"
+                                    :class="{ active: wallpaperSource === 'random', switching: isSwitchingWallpaper && wallpaperSource === 'random' }"
+                                    @click="wallpaperSource = 'random'">
+                                    随机封面
+                                </div>
+                                <div class="segment-item"
+                                    :class="{ active: wallpaperSource === 'website', switching: isSwitchingWallpaper && wallpaperSource === 'website' }"
+                                    @click="wallpaperSource = 'website'">
+                                    网站背景
+                                </div>
                                 <div class="segment-item custom-wallpaper-btn"
                                     :class="{ active: hasUserCustomWallpaper && wallpaperSource === 'userCustom' }"
                                     @click="triggerCustomWallpaper()">
@@ -305,7 +334,117 @@ onBeforeRouteUpdate((to, from, next) => {
     padding: 0 20px;
     box-sizing: border-box;
     overflow: hidden;
+    /* 🔥 首页需要隐藏溢出 */
     position: relative;
+}
+
+/* 🔥 壁纸切换指示器 */
+.wallpaper-switch-indicator {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(20px);
+    padding: 20px 30px;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    z-index: 99999;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.switch-spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    border-top-color: #42b883;
+    animation: spin 0.8s linear infinite;
+}
+
+.switch-text {
+    color: white;
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+
+/* 🔥 新增：分段控制器切换状态 */
+.segment-item.switching {
+    position: relative;
+    overflow: hidden;
+}
+
+.segment-item.switching::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(66, 184, 131, 0.1);
+    animation: switchingPulse 1.5s infinite;
+}
+
+.switch-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: #42b883;
+    border-radius: 50%;
+    margin-left: 6px;
+    animation: dotPulse 0.6s infinite alternate;
+}
+
+@keyframes switchingPulse {
+
+    0%,
+    100% {
+        opacity: 0.1;
+    }
+
+    50% {
+        opacity: 0.3;
+    }
+}
+
+@keyframes dotPulse {
+    from {
+        transform: scale(0.8);
+        opacity: 0.6;
+    }
+
+    to {
+        transform: scale(1.2);
+        opacity: 1;
+    }
+}
+
+
+/* 🔥 修复9：添加加载状态样式 */
+.home-loading {
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.home-loading .loading-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: #42b883;
+    animation: spin 1s ease-in-out infinite;
 }
 
 .hero-section {
@@ -327,6 +466,19 @@ onBeforeRouteUpdate((to, from, next) => {
     display: flex;
     flex-direction: column;
     align-items: center;
+    animation: clockAppear 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+@keyframes clockAppear {
+    0% {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .time-row {
@@ -634,11 +786,26 @@ onBeforeRouteUpdate((to, from, next) => {
     box-shadow: 0 15px 50px rgba(0, 0, 0, 0.2);
     padding: 30px;
     color: white;
+    animation: modalAppear 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
 }
+
+@keyframes modalAppear {
+    0% {
+        opacity: 0;
+        transform: scale(0.95) translateY(-10px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
 
 .settings-modal::-webkit-scrollbar {
     display: none;
 }
+
 
 .settings-title {
     text-align: center;

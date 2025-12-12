@@ -2,7 +2,6 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { Lunar } from 'lunar-javascript'
 
-// 接收props
 const props = defineProps({
     showSeconds: {
         type: Boolean,
@@ -18,14 +17,14 @@ const props = defineProps({
     }
 })
 
-// 时钟状态
+// 🔥 优化：分别定义状态，减少不必要的更新
 const currentTime = ref('')
 const currentAmPm = ref('')
 const currentDate = ref('')
 const lunarDate = ref('')
 let timer = null
 
-// 更新时间的函数
+// 更新时间
 const updateTime = () => {
     const now = new Date()
     let hours = now.getHours()
@@ -39,27 +38,33 @@ const updateTime = () => {
         currentAmPm.value = ''
     }
 
-    currentTime.value = props.showSeconds
+    const newTime = props.showSeconds
         ? `${hours.toString().padStart(2, '0')}:${minutes}:${seconds}`
         : `${hours.toString().padStart(2, '0')}:${minutes}`
 
-    const month = (now.getMonth() + 1).toString().padStart(2, '0')
-    const day = now.getDate().toString().padStart(2, '0')
-    const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
-    currentDate.value = `${month}月${day}日 ${weekDays[now.getDay()]}`
+    // 🔥 优化：只在时间真正改变时更新
+    if (newTime !== currentTime.value) {
+        currentTime.value = newTime
+    }
 
-    if (props.showLunar) {
-        const lunar = Lunar.fromDate(now)
-        lunarDate.value = `${lunar.getYearInGanZhi()}年 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`
-    } else {
-        lunarDate.value = ''
+    // 🔥 优化：日期和农历只在必要时更新（每分钟）
+    if (now.getSeconds() === 0 || !currentDate.value) {
+        const month = (now.getMonth() + 1).toString().padStart(2, '0')
+        const day = now.getDate().toString().padStart(2, '0')
+        const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+        currentDate.value = `${month}月${day}日 ${weekDays[now.getDay()]}`
+
+        if (props.showLunar) {
+            const lunar = Lunar.fromDate(now)
+            lunarDate.value = `${lunar.getYearInGanZhi()}年 ${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`
+        }
     }
 }
 
 // 启动时钟
 const startClock = () => {
     if (timer) clearInterval(timer)
-    updateTime() // 立即更新一次
+    updateTime()
     timer = setInterval(updateTime, 1000)
 }
 
@@ -91,7 +96,6 @@ watch(
     { deep: true }
 )
 
-// 暴露方法，供父组件调用
 defineExpose({
     startClock,
     stopClock,
@@ -100,7 +104,8 @@ defineExpose({
 </script>
 
 <template>
-    <div class="clock-section">
+    <!-- 🔥 优化：使用 v-memo 减少重新渲染 -->
+    <div class="clock-section" v-memo="[currentTime, currentDate, lunarDate, currentAmPm]">
         <div class="time-row">
             <span class="time">{{ currentTime }}</span>
             <span class="am-pm" v-if="use12Hour">{{ currentAmPm }}</span>
@@ -136,7 +141,8 @@ defineExpose({
     font-weight: 500;
     letter-spacing: -2px;
     font-family: 'Segoe UI', sans-serif;
-    transition: all 0.3s ease;
+    /* 🔥 优化：使用 will-change 提示浏览器优化 */
+    will-change: contents;
 }
 
 .am-pm {
@@ -166,7 +172,6 @@ defineExpose({
     letter-spacing: 1px;
 }
 
-/* 响应式设计 */
 @media (max-width: 768px) {
     .time {
         font-size: 4rem;

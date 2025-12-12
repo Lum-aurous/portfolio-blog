@@ -1,3 +1,4 @@
+// stores/wallpaper.js
 import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import { useUserStore } from "@/stores/user";
@@ -11,8 +12,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   const wallpaperMask = ref(true);
   const isLoading = ref(false);
   const userHasCustom = ref(false);
+  const isInitialized = ref(false); // 🔥 新增：防止重复初始化
 
-  // ⚡️ 新增：缓存壁纸URL
+  // 缓存配置
   const wallpaperCache = ref({
     website: "",
     daily: "",
@@ -20,7 +22,6 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     userCustom: "",
   });
 
-  // ⚡️ 新增：预加载图片缓存
   const imageCache = new Map();
 
   // ==================== 计算属性 ====================
@@ -35,7 +36,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       url = encodeURI(url);
     }
 
-    const style = {
+    return {
       backgroundImage: url ? `url("${url}")` : "none",
       backgroundSize: "cover",
       backgroundPosition: "center",
@@ -48,21 +49,18 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       right: 0,
       bottom: 0,
       zIndex: -1,
-      // ⚡️ 优化：更快的过渡动画
-      transition: "background-image 0.3s ease-in-out, filter 0.2s ease",
+      transition: "filter 0.2s ease, opacity 0.3s ease-in-out", // 🔥 优化过渡
+      opacity: url ? 1 : 0, // 🔥 平滑加载
+      backgroundColor: wallpaperMask.value
+        ? "rgba(0, 0, 0, 0.2)"
+        : "transparent",
+      backgroundBlendMode: wallpaperMask.value ? "overlay" : "normal",
     };
-
-    if (wallpaperMask.value) {
-      style.backgroundColor = "rgba(0, 0, 0, 0.2)";
-      style.backgroundBlendMode = "overlay";
-    }
-
-    return style;
   });
 
   // ==================== 私有方法 ====================
 
-  // ⚡️ 优化：异步预加载，不阻塞主线程
+  // 🔥 优化：快速预加载，超时控制
   const preloadImage = (url) => {
     return new Promise((resolve) => {
       if (!url || imageCache.has(url)) {
@@ -71,16 +69,10 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       }
 
       const img = new Image();
-      const timestamp = Date.now();
-      const finalUrl = url.includes("?")
-        ? `${url}&t=${timestamp}`
-        : `${url}?t=${timestamp}`;
-
-      // 设置超时时间更短
       const timeoutId = setTimeout(() => {
         logger.debug("图片预加载超时，继续执行");
         resolve(false);
-      }, 2000);
+      }, 1500); // 🔥 缩短超时时间
 
       img.onload = () => {
         clearTimeout(timeoutId);
@@ -95,27 +87,21 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
         resolve(false);
       };
 
-      img.src = finalUrl;
+      img.src = url;
     });
-  };
-
-  // ⚡️ 优化：批量预加载
-  const preloadWallpapers = async (urls) => {
-    const promises = urls.map((url) => preloadImage(url));
-    return Promise.allSettled(promises);
   };
 
   // 获取全局壁纸配置（带缓存）
   const fetchGlobalConfig = async () => {
     try {
       const cacheKey = "global_wallpaper_config";
-      const cached = localStorage.getItem(cacheKey);
+      const cached = sessionStorage.getItem(cacheKey); // 🔥 改用 sessionStorage
 
-      // 检查缓存是否有效（5分钟）
       if (cached) {
         try {
           const { data, timestamp } = JSON.parse(cached);
-          if (Date.now() - timestamp < 5 * 60 * 1000) {
+          if (Date.now() - timestamp < 10 * 60 * 1000) {
+            // 🔥 延长缓存时间到10分钟
             logger.debug("使用缓存的全局配置");
             return data;
           }
@@ -131,7 +117,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       const data = await res.json();
 
       // 缓存配置
-      localStorage.setItem(
+      sessionStorage.setItem(
         cacheKey,
         JSON.stringify({
           data,
@@ -139,27 +125,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
         })
       );
 
-      // 预加载所有壁纸
-      const urlsToPreload = [];
-      if (data.websiteUrl) urlsToPreload.push(data.websiteUrl);
-      if (data.dailyUrl) urlsToPreload.push(data.dailyUrl);
-      if (data.randomUrls && data.randomUrls.length > 0) {
-        // 只预加载前3张随机壁纸
-        urlsToPreload.push(...data.randomUrls.slice(0, 3));
-      }
-
-      // 异步预加载，不阻塞
-      setTimeout(() => {
-        preloadWallpapers(urlsToPreload).catch(() => {
-          // 静默失败
-        });
-      }, 100);
-
       return data;
     } catch (err) {
       logger.error("获取全局配置失败:", err);
-
-      // 返回默认配置
       return {
         mode: "website",
         websiteUrl:
@@ -181,22 +149,16 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
 
     try {
       const cacheKey = `user_wallpaper_${userStore.user.id}`;
-      const cached = localStorage.getItem(cacheKey);
+      const cached = sessionStorage.getItem(cacheKey); // 🔥 改用 sessionStorage
 
-      // 检查用户壁纸缓存（10分钟）
       if (cached) {
         try {
           const { url, timestamp } = JSON.parse(cached);
-          if (Date.now() - timestamp < 10 * 60 * 1000) {
+          if (Date.now() - timestamp < 15 * 60 * 1000) {
+            // 🔥 延长到15分钟
             logger.debug("使用缓存的用户壁纸");
             userHasCustom.value = true;
             wallpaperCache.value.userCustom = url;
-
-            // 异步预加载
-            setTimeout(() => {
-              preloadImage(url).catch(() => {});
-            }, 50);
-
             return url;
           }
         } catch (e) {
@@ -216,8 +178,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       if (data.hasCustom && data.url) {
         const cleanUrl = data.url.startsWith("/") ? data.url : "/" + data.url;
 
-        // 缓存用户壁纸
-        localStorage.setItem(
+        sessionStorage.setItem(
           cacheKey,
           JSON.stringify({
             url: cleanUrl,
@@ -227,12 +188,6 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
 
         userHasCustom.value = true;
         wallpaperCache.value.userCustom = cleanUrl;
-
-        // 异步预加载
-        setTimeout(() => {
-          preloadImage(cleanUrl).catch(() => {});
-        }, 50);
-
         return cleanUrl;
       }
     } catch (err) {
@@ -243,7 +198,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     return null;
   };
 
-  // ⚡️ 优化：立即切换壁纸（使用缓存）
+  // 🔥 优化：立即切换壁纸
   const switchWallpaperImmediately = async (mode, config) => {
     let url = "";
 
@@ -271,17 +226,14 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     }
 
     if (url) {
-      // ⚡️ 立即更新显示，不等待预加载
-      const timestamp = Date.now();
-      const encodedUrl = encodeURI(url) + `?t=${timestamp}`;
-      currentWallpaper.value = encodedUrl;
-
-      // 异步预加载（用于下次切换）
-      setTimeout(() => {
-        preloadImage(url).catch(() => {});
-      }, 100);
-
+      // 🔥 立即更新显示
+      currentWallpaper.value = url;
       logger.debug("壁纸已切换:", mode, url);
+
+      // 🔥 异步预加载（不阻塞）
+      requestIdleCallback(() => {
+        preloadImage(url).catch(() => {});
+      });
     }
 
     return url;
@@ -289,67 +241,79 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
 
   // ==================== 公共方法 ====================
 
-  // 初始化壁纸系统
+  // 🔥 优化：防止重复初始化
   const initialize = async () => {
-    if (isLoading.value) return;
+    if (isInitialized.value || isLoading.value) {
+      logger.info("壁纸已初始化，跳过重复请求");
+      return;
+    }
 
     isLoading.value = true;
-    logger.info("初始化壁纸系统");
+    logger.info("🎨 初始化壁纸系统");
 
     try {
-      // 1. 获取配置
-      const config = await fetchGlobalConfig();
+      // 1. 并行获取配置
+      const [config, userCustomUrl] = await Promise.all([
+        fetchGlobalConfig(),
+        fetchUserWallpaper(),
+      ]);
+
+      logger.debug("全局配置:", config);
+      logger.debug("用户壁纸:", userCustomUrl);
 
       // 2. 缓存配置
       wallpaperCache.value.website = config.websiteUrl || "";
       wallpaperCache.value.daily = config.dailyUrl || "";
       wallpaperCache.value.random = config.randomUrls || [];
 
-      // 3. 获取用户壁纸（如果已登录）
-      const userCustomUrl = await fetchUserWallpaper();
       if (userCustomUrl) {
         wallpaperCache.value.userCustom = userCustomUrl;
       }
 
-      // 4. 决定当前模式
+      // 3. 决定当前模式
       const savedMode = localStorage.getItem("preferredWallpaperMode");
       const effectiveMode = savedMode || config.mode || "website";
 
-      // 5. 立即切换壁纸
+      logger.debug("壁纸模式:", effectiveMode);
+
+      // 4. 🔥 立即切换壁纸
       await switchWallpaperImmediately(effectiveMode, config);
       wallpaperMode.value = effectiveMode;
 
-      logger.info("壁纸初始化完成");
+      // 5. 🔥 确保壁纸已设置
+      if (!currentWallpaper.value) {
+        logger.warn("壁纸未设置，使用默认");
+        currentWallpaper.value =
+          config.websiteUrl ||
+          "https://images.unsplash.com/photo-1493246507139-91e8fad9978e";
+      }
+
+      logger.info("✅ 壁纸初始化完成:", currentWallpaper.value);
+      isInitialized.value = true;
     } catch (error) {
-      logger.error("壁纸初始化失败:", error);
+      logger.error("❌ 壁纸初始化失败:", error);
       // 使用默认壁纸
       const defaultUrl =
         "https://images.unsplash.com/photo-1493246507139-91e8fad9978e";
-      const timestamp = Date.now();
-      currentWallpaper.value = encodeURI(defaultUrl) + `?t=${timestamp}`;
+      currentWallpaper.value = defaultUrl;
+      logger.info("使用默认壁纸:", defaultUrl);
     } finally {
       isLoading.value = false;
     }
   };
 
-  // 切换壁纸（优化版）
+  // 切换壁纸
   const changeWallpaper = async (mode) => {
     if (mode === wallpaperMode.value && mode !== "random") {
-      // 相同模式（随机模式除外）不重复切换
       return;
     }
 
-    // 立即更新模式
     wallpaperMode.value = mode;
     localStorage.setItem("preferredWallpaperMode", mode);
 
     try {
-      // 获取最新配置
       const config = await fetchGlobalConfig();
-
-      // 立即切换
       await switchWallpaperImmediately(mode, config);
-
       logger.debug("壁纸切换完成:", mode);
     } catch (error) {
       logger.error("壁纸切换失败:", error);
@@ -384,9 +348,8 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       if (data.success) {
         const newUrl = data.url;
 
-        // 更新缓存
         const cacheKey = `user_wallpaper_${userStore.user.id}`;
-        localStorage.setItem(
+        sessionStorage.setItem(
           cacheKey,
           JSON.stringify({
             url: newUrl,
@@ -397,17 +360,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
         wallpaperCache.value.userCustom = newUrl;
         userHasCustom.value = true;
 
-        // 立即切换
-        const timestamp = Date.now();
-        const encodedUrl = encodeURI(newUrl) + `?t=${timestamp}`;
-        currentWallpaper.value = encodedUrl;
+        currentWallpaper.value = newUrl;
         wallpaperMode.value = "userCustom";
         localStorage.setItem("preferredWallpaperMode", "userCustom");
-
-        // 异步预加载
-        setTimeout(() => {
-          preloadImage(newUrl).catch(() => {});
-        }, 100);
 
         logger.success("壁纸上传成功");
         return data;
@@ -420,6 +375,11 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     }
   };
 
+  // 🔥 新增：重置初始化状态
+  const resetInitialization = () => {
+    isInitialized.value = false;
+  };
+
   // 清除缓存
   const clearCache = () => {
     wallpaperCache.value = {
@@ -430,10 +390,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     };
     imageCache.clear();
 
-    // 清除localStorage中的壁纸缓存
     const keys = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
       if (
         key.startsWith("user_wallpaper_") ||
         key === "global_wallpaper_config"
@@ -441,7 +400,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
         keys.push(key);
       }
     }
-    keys.forEach((key) => localStorage.removeItem(key));
+    keys.forEach((key) => sessionStorage.removeItem(key));
+
+    resetInitialization(); // 🔥 重置初始化状态
   };
 
   // 监听用户登录状态
@@ -449,13 +410,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     () => useUserStore().isLoggedIn,
     (isLoggedIn) => {
       if (isLoggedIn) {
-        // 用户登录时刷新用户壁纸
         fetchUserWallpaper().then((customUrl) => {
           if (customUrl && wallpaperMode.value === "userCustom") {
-            // 如果当前是自定义模式，更新壁纸
-            const timestamp = Date.now();
-            const encodedUrl = encodeURI(customUrl) + `?t=${timestamp}`;
-            currentWallpaper.value = encodedUrl;
+            currentWallpaper.value = customUrl;
           }
         });
       } else {
@@ -463,9 +420,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
         wallpaperCache.value.userCustom = "";
 
         if (wallpaperMode.value === "userCustom") {
-          // 回退到网站背景
           wallpaperMode.value = "website";
           localStorage.setItem("preferredWallpaperMode", "website");
+          resetInitialization(); // 🔥 允许重新初始化
           initialize();
         }
       }
@@ -473,22 +430,21 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   );
 
   return {
-    // 状态
     currentWallpaper,
     wallpaperMode,
     wallpaperBlur,
     wallpaperMask,
     isLoading,
     userHasCustom,
+    isInitialized, // 🔥 暴露初始化状态
 
-    // 计算属性
     wallpaperStyle,
 
-    // 方法
     initialize,
     changeWallpaper,
     uploadUserWallpaper,
     clearCache,
+    resetInitialization, // 🔥 暴露重置方法
     fetchGlobalConfig,
     fetchUserWallpaper,
   };

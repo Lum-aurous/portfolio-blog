@@ -1,53 +1,20 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, onUnmounted } from 'vue' // 🔥 记得引入 onUnmounted
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useUserStore } from '@/stores/user.js'
-import { Country, State, City } from 'country-state-city' // 🌍 导入全球地区数据库
+import { Country, State, City } from 'country-state-city'
+import { message } from '@/utils/message.js'
 
 const router = useRouter()
 const userStore = useUserStore()
 
-// 背景图状态
-const bgUrl = ref('')
 const activeTab = ref('personal')
 const isSaving = ref(false)
 
-// ========== 🖼️ 壁纸同步逻辑 ==========
-const globalConfig = ref(null)
-
-// 1. 获取全局默认配置 (所有人通用的) —— 终极修复版
-const loadGlobalWallpaper = async () => {
-    try {
-        const res = await fetch('/api/wallpaper/global')
-        if (!res.ok) throw new Error('Network response was not ok')
-        const data = await res.json()
-        globalConfig.value = data
-
-        // 关键：根据 mode 把真实壁纸地址赋值给 bgUrl！！
-        let url = data.websiteUrl
-
-        if (data.mode === 'daily' && data.dailyUrl) {
-            url = data.dailyUrl
-        } else if (data.mode === 'random' && data.randomUrls?.length > 0) {
-            const list = data.randomUrls
-            url = list[Math.floor(Math.random() * list.length)]
-            // random 模式下每 12 秒换一张（Account 页也能看到轮播）
-            setInterval(() => {
-                bgUrl.value = list[Math.floor(Math.random() * list.length)]
-            }, 12000)
-        }
-
-        bgUrl.value = url
-    } catch (err) {
-        console.error('加载全局壁纸失败', err)
-    }
-}
-
-
-
 // 用户数据
 const user = ref({
+    id: null,
     username: '',
     nickname: '',
     email: '',
@@ -73,18 +40,8 @@ const menuItems = [
 
 const avatarSrc = computed(() => {
     if (!user.value.avatar) return ''
-
-    // base64，直接用
-    if (user.value.avatar.startsWith('data:image')) {
-        return user.value.avatar
-    }
-
-    // 已经是 http(s)
-    if (user.value.avatar.startsWith('http')) {
-        return user.value.avatar
-    }
-
-    // 后端相对路径，补全域名
+    if (user.value.avatar.startsWith('data:image')) return user.value.avatar
+    if (user.value.avatar.startsWith('http')) return user.value.avatar
     return `${import.meta.env.VITE_API_BASE_URL}${user.value.avatar}`
 })
 
@@ -98,13 +55,8 @@ const selectedDay = ref(new Date().getDate())
 const years = Array.from({ length: 100 }, (_, i) => new Date().getFullYear() - i)
 const months = Array.from({ length: 12 }, (_, i) => i + 1)
 
-const daysInMonth = computed(() => {
-    return new Date(selectedYear.value, selectedMonth.value, 0).getDate()
-})
-
-const days = computed(() => {
-    return Array.from({ length: daysInMonth.value }, (_, i) => i + 1)
-})
+const daysInMonth = computed(() => new Date(selectedYear.value, selectedMonth.value, 0).getDate())
+const days = computed(() => Array.from({ length: daysInMonth.value }, (_, i) => i + 1))
 
 const confirmBirthday = () => {
     user.value.birthday = `${selectedYear.value}-${String(selectedMonth.value).padStart(2, '0')}-${String(selectedDay.value).padStart(2, '0')}`
@@ -118,117 +70,78 @@ const genders = [
     { value: '女', label: '女' },
     { value: '不展示', label: '不展示' }
 ]
-
 const selectGender = (gender) => {
     user.value.gender = gender.value
     showGenderDropdown.value = false
 }
 
-// ========== 🌍 地区三级联动选择器 (真实全球数据) ==========
+// ========== 🌍 地区三级联动选择器 ==========
 const showRegionPicker = ref(false)
-const selectedCountryCode = ref('') // 存储国家代码 (如 'CN', 'US')
-const selectedStateCode = ref('') // 存储州/省代码
-const selectedCityName = ref('') // 存储城市名称
+const selectedCountryCode = ref('')
+const selectedStateCode = ref('')
+const selectedCityName = ref('')
 
-// 🌍 获取所有国家 (按中文名称排序，中国置顶)
 const countries = computed(() => {
     const allCountries = Country.getAllCountries().map(country => ({
         code: country.isoCode,
         name: country.name,
-        nativeName: country.native || country.name,
         flag: country.flag || '🌐'
     }))
-
-    // 中国置顶，其他按名称排序
     const china = allCountries.find(c => c.code === 'CN')
     const others = allCountries.filter(c => c.code !== 'CN').sort((a, b) => a.name.localeCompare(b.name))
-
     return china ? [china, ...others] : others
 })
 
-// 🏙️ 获取选中国家的所有州/省
 const states = computed(() => {
     if (!selectedCountryCode.value) return []
-
-    const stateList = State.getStatesOfCountry(selectedCountryCode.value)
-    return stateList.map(state => ({
+    return State.getStatesOfCountry(selectedCountryCode.value).map(state => ({
         code: state.isoCode,
         name: state.name
     }))
 })
 
-// 🏘️ 获取选中州/省的所有城市
 const cities = computed(() => {
     if (!selectedCountryCode.value || !selectedStateCode.value) return []
-
-    const cityList = City.getCitiesOfState(selectedCountryCode.value, selectedStateCode.value)
-    return cityList.map(city => ({
+    return City.getCitiesOfState(selectedCountryCode.value, selectedStateCode.value).map(city => ({
         name: city.name
     }))
 })
 
-// 当选择国家时，重置州和城市
 const handleCountryChange = () => {
     selectedStateCode.value = ''
     selectedCityName.value = ''
 }
+const handleStateChange = () => { selectedCityName.value = '' }
 
-// 当选择州时，重置城市
-const handleStateChange = () => {
-    selectedCityName.value = ''
-}
-
-// 确认地区选择
 const confirmRegion = () => {
     if (!selectedCountryCode.value) {
-        alert('请选择国家')
+        message.warning('请先选择一个国家') // ✨ 替换 alert
         return
     }
-
     const country = countries.value.find(c => c.code === selectedCountryCode.value)
     const state = states.value.find(s => s.code === selectedStateCode.value)
-
-    // 构建地区字符串
     let regionStr = country.name
-
-    if (selectedStateCode.value && state) {
-        regionStr += ` - ${state.name}`
-    }
-
-    if (selectedCityName.value) {
-        regionStr += ` - ${selectedCityName.value}`
-    }
-
+    if (selectedStateCode.value && state) regionStr += ` - ${state.name}`
+    if (selectedCityName.value) regionStr += ` - ${selectedCityName.value}`
     user.value.region = regionStr
     showRegionPicker.value = false
 }
 
-// 打开地区选择器时，解析已有地区数据
 const openRegionPicker = () => {
     showRegionPicker.value = true
-
-    // 如果已有地区数据，尝试解析并回填
     if (user.value.region) {
         const parts = user.value.region.split(' - ')
-
         if (parts.length > 0) {
-            // 查找国家
             const country = countries.value.find(c => c.name === parts[0])
             if (country) {
                 selectedCountryCode.value = country.code
-
-                // 如果有省/州
                 if (parts.length > 1) {
                     setTimeout(() => {
                         const state = states.value.find(s => s.name === parts[1])
                         if (state) {
                             selectedStateCode.value = state.code
-
-                            // 如果有城市
                             if (parts.length > 2) {
-                                setTimeout(() => {
-                                    selectedCityName.value = parts[2]
-                                }, 100)
+                                setTimeout(() => { selectedCityName.value = parts[2] }, 100)
                             }
                         }
                     }, 100)
@@ -238,12 +151,10 @@ const openRegionPicker = () => {
     }
 }
 
-// ========== 📱 电话国际区号选择器 ==========
+// ========== 📱 电话选择器 ==========
 const showPhoneDropdown = ref(false)
 const phoneInput = ref('')
 const phoneError = ref('')
-
-// 全球主要国家区号配置
 const phoneCountries = [
     { code: '+86', country: '中国', flag: '🇨🇳', minLength: 11, maxLength: 11, pattern: /^1[3-9]\d{9}$/ },
     { code: '+1', country: '美国', flag: '🇺🇸', minLength: 10, maxLength: 10, pattern: /^\d{10}$/ },
@@ -254,8 +165,7 @@ const phoneCountries = [
     { code: '+61', country: '澳大利亚', flag: '🇦🇺', minLength: 9, maxLength: 9, pattern: /^[0-9]{9}$/ },
     { code: '+49', country: '德国', flag: '🇩🇪', minLength: 10, maxLength: 11, pattern: /^[0-9]{10,11}$/ }
 ]
-
-const selectedPhoneCountry = ref(phoneCountries[0]) // 默认中国
+const selectedPhoneCountry = ref(phoneCountries[0])
 
 const selectPhoneCountry = (country) => {
     selectedPhoneCountry.value = country
@@ -266,52 +176,30 @@ const selectPhoneCountry = (country) => {
 const validatePhone = () => {
     const config = selectedPhoneCountry.value
     const cleanNumber = phoneInput.value.replace(/\s/g, '')
-
-    if (!cleanNumber) {
-        phoneError.value = ''
+    if (!cleanNumber) { phoneError.value = ''; return }
+    if (cleanNumber.length < config.minLength || cleanNumber.length > config.maxLength) {
+        phoneError.value = `号码需 ${config.minLength}-${config.maxLength} 位`
         return
     }
-
-    if (cleanNumber.length < config.minLength) {
-        phoneError.value = `号码至少需要 ${config.minLength} 位数字`
-        return
-    }
-
-    if (cleanNumber.length > config.maxLength) {
-        phoneError.value = `号码最多 ${config.maxLength} 位数字`
-        return
-    }
-
     if (!config.pattern.test(cleanNumber)) {
-        phoneError.value = `请输入有效的${config.country}手机号码`
+        phoneError.value = `格式不正确`
         return
     }
-
     phoneError.value = ''
     user.value.phone = `${config.code} ${cleanNumber}`
 }
+const handlePhoneInput = () => validatePhone()
 
-// 监听电话输入并实时校验
-const handlePhoneInput = () => {
-    validatePhone()
-}
-
-// ========== 获取用户信息 ==========
+// ========== API 交互 ==========
 const fetchUserInfo = async () => {
     const currentUsername = userStore.user?.username || localStorage.getItem('username')
-    if (!currentUsername) {
-        console.warn('未找到用户名')
-        return
-    }
-
+    if (!currentUsername) return
     try {
-        const res = await axios.get('/api/user/profile', {
-            params: { username: currentUsername }
-        })
-
+        const res = await axios.get('/api/user/profile', { params: { username: currentUsername } })
         if (res.data.success) {
             const dbUser = res.data.user
             Object.assign(user.value, {
+                id: dbUser.id, // 🔥 确保这里拿到了 ID
                 username: dbUser.username,
                 nickname: dbUser.nickname || dbUser.username,
                 email: dbUser.email || '',
@@ -323,9 +211,6 @@ const fetchUserInfo = async () => {
                 bio: dbUser.bio || '',
                 social_link: dbUser.social_link || ''
             })
-
-
-            // 解析已存储的电话号码
             if (user.value.phone) {
                 const phoneMatch = user.value.phone.match(/^(\+\d+)\s(.+)$/)
                 if (phoneMatch) {
@@ -335,119 +220,134 @@ const fetchUserInfo = async () => {
                     if (country) selectedPhoneCountry.value = country
                 }
             }
-
             originalUser.value = JSON.parse(JSON.stringify(user.value))
-
-            userStore.updateUser({
-                nickname: user.value.nickname,
-                email: user.value.email,
-                avatar: user.value.avatar,
-                region: user.value.region,
-                bio: user.value.bio
-            })
+            userStore.updateUser(user.value)
         }
-    } catch (error) {
-        console.error('获取用户信息失败', error)
-    }
+    } catch (error) { console.error(error) }
 }
 
-// ========== 取消修改 ==========
 const handleCancel = () => {
-    const hasChanges = JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
-
-    if (!hasChanges) {
-        router.back()
-        return
-    }
-
-    if (confirm('您有未保存的修改,确定要放弃吗?')) {
+    if (confirm('确定要放弃所有未保存的修改并返回吗?')) {
         user.value = { ...originalUser.value }
         router.back()
     }
 }
 
-// ========== 保存修改 ==========
+
+// 提交
+// 🔥 核心修复：清理空字符串，防止触发数据库唯一键冲突
 const handlePublish = async () => {
+    // 1. 基础校验
     if (!user.value.nickname) {
-        alert('昵称不能为空')
+        message.warning('昵称不能为空哦～')
         return
     }
-
     if (phoneError.value) {
-        alert('请修正电话号码格式')
+        message.warning('请检查电话号码格式')
         return
     }
 
     isSaving.value = true
 
+    // 2. 构建提交数据 (Payload)
+    // 关键点：对于 email, phone 这种可能有唯一索引的字段，
+    // 如果是空字符串，必须转为 null，否则数据库会报 Duplicate entry 错误！
+    const payload = {
+        id: user.value.id,
+        username: user.value.username,
+        nickname: user.value.nickname,
+
+        // 🔥 核心修改：如果是空串，转为 null
+        email: user.value.email ? user.value.email : null,
+        phone: user.value.phone ? user.value.phone : null,
+
+        gender: user.value.gender,
+        birthday: user.value.birthday,
+        bio: user.value.bio,
+        social_link: user.value.social_link,
+        region: user.value.region,
+    }
+
+    // 3. 特殊处理头像
+    if (user.value.avatar && user.value.avatar.startsWith('data:image')) {
+        payload.avatar = user.value.avatar
+    } else {
+        // 如果没改图，通常不传或者传 null，视后端逻辑而定
+        // 这里为了安全，如果不是 base64，我们就不传 avatar 字段，避免覆盖
+        // payload.avatar = user.value.avatar (这一行先注释掉，只传修改过的)
+    }
+
+    console.log('正在提交清洗后的数据:', payload)
+
     try {
-        const res = await axios.post('/api/user/update', user.value)
+        const res = await axios.post('/api/user/update', payload)
 
         if (res.data.success) {
-            alert('🎉 保存成功!数据已同步到数据库')
+            message.success('🎉 保存成功! 数据已同步')
 
-            const updatedData = {
-                nickname: user.value.nickname,
-                email: user.value.email,
-                avatar: user.value.avatar,
-                region: user.value.region,
-                bio: user.value.bio
-            }
+            // 更新 Store 和 备份
+            userStore.updateUser(user.value) // 注意：这里 userStore 可能需要完整的 user 对象
+            originalUser.value = JSON.parse(JSON.stringify(user.value))
 
-            userStore.updateUser(updatedData)
-            originalUser.value = { ...user.value }
-            await userStore.refreshUserInfo()
-
+            // 刷新页面数据
+            await fetchUserInfo()
         } else {
-            alert('保存失败:' + res.data.message)
+            message.error('保存失败: ' + (res.data.message || '未知错误'))
         }
-
     } catch (error) {
-        console.error(error)
-        alert('❌ 保存失败,服务器错误')
+        console.error('提交失败详情:', error)
+
+        // 针对性错误提示
+        if (error.response) {
+            if (error.response.status === 413) {
+                message.error('❌ 保存失败：头像文件太大了')
+            } else if (error.response.data && error.response.data.message && error.response.data.message.includes('Duplicate entry')) {
+                // 如果后端返回了具体的 duplicate 信息
+                message.error('❌ 保存失败：邮箱或手机号已被其他账号占用')
+            } else {
+                message.error('❌ 保存失败，请稍后重试')
+            }
+        } else {
+            message.error('❌ 网络连接失败')
+        }
     } finally {
         isSaving.value = false
     }
 }
-
-// ========== 头像上传 ==========
 const fileInput = ref(null)
 const triggerUpload = () => fileInput.value.click()
 const handleFileChange = (event) => {
     const file = event.target.files[0]
     if (file) {
-        // 限制图片大小为 1MB
         if (file.size > 1024 * 1024) {
-            alert('图片太大啦,请上传 1MB 以内的图片')
+            message.warning('图片太大了，请上传 1MB 以内的图片')
             return
         }
-
         const reader = new FileReader()
-        reader.onload = (e) => {
-            user.value.avatar = e.target.result
-        }
+        reader.onload = (e) => { user.value.avatar = e.target.result }
         reader.readAsDataURL(file)
     }
 }
+const hasUnsavedChanges = computed(() => JSON.stringify(user.value) !== JSON.stringify(originalUser.value))
 
-const hasUnsavedChanges = computed(() => {
-    return JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
+const closeAllDropdowns = () => {
+    showGenderDropdown.value = false
+    showPhoneDropdown.value = false
+}
+
+onMounted(() => {
+    fetchUserInfo()
+    window.addEventListener('click', closeAllDropdowns)
 })
 
-onMounted(async () => {
-    await loadGlobalWallpaper()
-    await fetchUserInfo()
+onUnmounted(() => {
+    window.removeEventListener('click', closeAllDropdowns)
 })
-
-onUnmounted(() => clearInterval(timer))
-
 </script>
 
 <template>
     <div class="account-container">
-        <!-- 统一的毛玻璃背景卡片 -->
         <div class="unified-card">
-            <!-- 左侧菜单 -->
             <aside class="sidebar">
                 <div class="menu">
                     <div v-for="item in menuItems" :key="item.id" class="menu-item"
@@ -460,13 +360,18 @@ onUnmounted(() => clearInterval(timer))
                 </div>
             </aside>
 
-            <!-- 右侧内容区 -->
             <main class="content">
-                <!-- 个人信息面板 -->
                 <div v-if="activeTab === 'personal'" class="panel">
-                    <h2 class="panel-title">个人信息</h2>
+                    <div class="panel-header">
+                        <button class="back-btn" @click="router.back()" title="返回上一页">
+                            <svg viewBox="0 0 24 24" class="back-icon">
+                                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
+                                    fill="currentColor" />
+                            </svg>
+                        </button>
+                        <h2 class="panel-title">个人信息</h2>
+                    </div>
 
-                    <!-- 头像 -->
                     <div class="form-group">
                         <label class="label">头像 (最大1MB)</label>
                         <div class="avatar-upload">
@@ -484,38 +389,30 @@ onUnmounted(() => clearInterval(timer))
                         </div>
                     </div>
 
-                    <!-- 用户名(不可修改) -->
                     <div class="form-group">
                         <label class="label">用户名</label>
                         <input type="text" v-model="user.username" class="input" disabled />
                     </div>
 
-                    <!-- 昵称 -->
                     <div class="form-group">
                         <label class="label">昵称</label>
                         <input type="text" v-model="user.nickname" class="input" placeholder="请输入昵称" />
                     </div>
 
-                    <!-- 邮箱 -->
                     <div class="form-group">
                         <label class="label">邮箱</label>
                         <input type="email" v-model="user.email" class="input" placeholder="请输入邮箱" />
                     </div>
 
-                    <!-- 生日(日历选择器) -->
                     <div class="form-group">
                         <label class="label">生日</label>
                         <div class="date-picker-wrapper">
                             <input type="text" v-model="user.birthday" class="input" placeholder="请选择出生日期"
                                 @click="showDatePicker = true" readonly />
-
-                            <!-- 日历弹窗 -->
                             <div v-if="showDatePicker" class="date-picker-modal" @click.self="showDatePicker = false">
                                 <div class="date-picker-content">
                                     <h3>选择出生日期</h3>
-
                                     <div class="date-selectors">
-                                        <!-- 年份选择 -->
                                         <div class="date-column">
                                             <label>年份</label>
                                             <select v-model="selectedYear" class="date-select">
@@ -523,8 +420,6 @@ onUnmounted(() => clearInterval(timer))
                                                 </option>
                                             </select>
                                         </div>
-
-                                        <!-- 月份选择 -->
                                         <div class="date-column">
                                             <label>月份</label>
                                             <select v-model="selectedMonth" class="date-select">
@@ -532,8 +427,6 @@ onUnmounted(() => clearInterval(timer))
                                                 </option>
                                             </select>
                                         </div>
-
-                                        <!-- 日期选择 -->
                                         <div class="date-column">
                                             <label>日期</label>
                                             <select v-model="selectedDay" class="date-select">
@@ -541,7 +434,6 @@ onUnmounted(() => clearInterval(timer))
                                             </select>
                                         </div>
                                     </div>
-
                                     <div class="date-picker-actions">
                                         <button @click="showDatePicker = false" class="btn-cancel">取消</button>
                                         <button @click="confirmBirthday" class="btn-confirm">确定</button>
@@ -551,31 +443,28 @@ onUnmounted(() => clearInterval(timer))
                         </div>
                     </div>
 
-                    <!-- 性别(下拉选择) -->
                     <div class="form-group">
                         <label class="label">性别</label>
                         <div class="dropdown-wrapper">
-                            <div class="dropdown-input" @click="showGenderDropdown = !showGenderDropdown">
+                            <div class="dropdown-input" @click.stop="showGenderDropdown = !showGenderDropdown">
                                 <span v-if="user.gender">{{genders.find(g => g.value === user.gender)?.label}}</span>
                                 <span v-else class="placeholder">请选择性别</span>
                                 <svg class="dropdown-icon" viewBox="0 0 24 24" width="20" height="20">
                                     <path d="M7 10l5 5 5-5z" fill="currentColor" />
                                 </svg>
                             </div>
-                            <div v-if="showGenderDropdown" class="dropdown-menu">
+                            <div v-if="showGenderDropdown" class="dropdown-menu" @click.stop>
                                 <div v-for="gender in genders" :key="gender.value" class="dropdown-item"
-                                    @click="selectGender(gender)">
-                                    {{ gender.label }}
+                                    @click="selectGender(gender); showGenderDropdown = false"> {{ gender.label }}
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- 电话(国际区号) -->
                     <div class="form-group">
                         <label class="label">电话</label>
                         <div class="phone-wrapper">
-                            <div class="phone-code" @click="showPhoneDropdown = !showPhoneDropdown">
+                            <div class="phone-code" @click.stop="showPhoneDropdown = !showPhoneDropdown">
                                 <span class="flag">{{ selectedPhoneCountry.flag }}</span>
                                 <span>{{ selectedPhoneCountry.code }}</span>
                                 <svg class="dropdown-icon" viewBox="0 0 24 24" width="16" height="16">
@@ -587,11 +476,9 @@ onUnmounted(() => clearInterval(timer))
                                 :class="{ error: phoneError }"
                                 :placeholder="`请输入${selectedPhoneCountry.minLength}位号码`" />
 
-                            <!-- 区号下拉菜单 -->
-                            <div v-if="showPhoneDropdown" class="phone-dropdown">
+                            <div v-if="showPhoneDropdown" class="phone-dropdown" @click.stop>
                                 <div v-for="country in phoneCountries" :key="country.code" class="phone-dropdown-item"
-                                    @click="selectPhoneCountry(country)">
-                                    <span class="flag">{{ country.flag }}</span>
+                                    @click="selectPhoneCountry(country)"> <span class="flag">{{ country.flag }}</span>
                                     <span class="country-name">{{ country.country }}</span>
                                     <span class="country-code">{{ country.code }}</span>
                                 </div>
@@ -600,20 +487,15 @@ onUnmounted(() => clearInterval(timer))
                         <p v-if="phoneError" class="error-text">{{ phoneError }}</p>
                     </div>
 
-                    <!-- 地区(三级联动) -->
                     <div class="form-group">
                         <label class="label">地区</label>
                         <div class="region-wrapper">
                             <input type="text" v-model="user.region" class="input" placeholder="请选择地区"
                                 @click="openRegionPicker" readonly />
-
-                            <!-- 地区选择弹窗 -->
                             <div v-if="showRegionPicker" class="region-modal" @click.self="showRegionPicker = false">
                                 <div class="region-content">
                                     <h3>🌍 选择地区</h3>
-
                                     <div class="region-selectors">
-                                        <!-- 国家 -->
                                         <div class="region-column">
                                             <label>国家/地区</label>
                                             <select v-model="selectedCountryCode" @change="handleCountryChange"
@@ -625,8 +507,6 @@ onUnmounted(() => clearInterval(timer))
                                                 </option>
                                             </select>
                                         </div>
-
-                                        <!-- 省/州 -->
                                         <div class="region-column">
                                             <label>省/州</label>
                                             <select v-model="selectedStateCode" @change="handleStateChange"
@@ -637,11 +517,7 @@ onUnmounted(() => clearInterval(timer))
                                                     {{ state.name }}
                                                 </option>
                                             </select>
-                                            <p v-if="selectedCountryCode && states.length === 0" class="no-data-hint">
-                                                该国家暂无省/州数据</p>
                                         </div>
-
-                                        <!-- 市/县 -->
                                         <div class="region-column">
                                             <label>市/县</label>
                                             <select v-model="selectedCityName" class="region-select"
@@ -651,11 +527,8 @@ onUnmounted(() => clearInterval(timer))
                                                     {{ city.name }}
                                                 </option>
                                             </select>
-                                            <p v-if="selectedStateCode && cities.length === 0" class="no-data-hint">
-                                                该地区暂无城市数据</p>
                                         </div>
                                     </div>
-
                                     <div class="region-actions">
                                         <button @click="showRegionPicker = false" class="btn-cancel">取消</button>
                                         <button @click="confirmRegion" class="btn-confirm"
@@ -666,28 +539,27 @@ onUnmounted(() => clearInterval(timer))
                         </div>
                     </div>
 
-                    <!-- 自我介绍 -->
                     <div class="form-group">
                         <label class="label">自我介绍</label>
                         <textarea v-model="user.bio" class="textarea" placeholder="介绍一下你自己吧" rows="4"></textarea>
                     </div>
 
-                    <!-- 社交媒体链接 -->
                     <div class="form-group">
                         <label class="label">社交媒体链接</label>
                         <input type="url" v-model="user.social_link" class="input" placeholder="https://..." />
                     </div>
 
-                    <!-- 底部按钮 -->
                     <div class="actions">
-                        <button @click="handleCancel" class="btn-secondary">取消</button>
+                        <button @click="handleCancel" class="btn-secondary" :disabled="!hasUnsavedChanges">
+                            放弃修改
+                        </button>
+
                         <button @click="handlePublish" class="btn-primary" :disabled="isSaving || !hasUnsavedChanges">
                             {{ isSaving ? '保存中...' : '保存修改' }}
                         </button>
                     </div>
                 </div>
 
-                <!-- 其他标签页(占位) -->
                 <div v-else class="panel">
                     <h2 class="panel-title">{{menuItems.find(m => m.id === activeTab)?.label}}</h2>
                     <p style="color: rgba(255,255,255,0.6);">该功能正在开发中...</p>
@@ -698,150 +570,232 @@ onUnmounted(() => clearInterval(timer))
 </template>
 
 <style scoped>
+/* ==================== 1. 布局容器 ==================== */
+/* 🔥 外部容器：锁定全屏，禁止页面级滚动 */
 .account-container {
-    min-height: calc(100vh - 80px);
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+    /* 关键：禁止外部滚动 */
     display: flex;
     justify-content: center;
-    align-items: flex-start;
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
-    padding: 40px 20px;
-    margin-top: 80px;
+    align-items: center;
+    /* 垂直居中卡片 */
+    padding-top: 60px;
+    /* 留出 Navbar 的空间 */
+    box-sizing: border-box;
 }
 
-/* 🎨 统一的毛玻璃背景卡片 */
+/* 🔥 卡片容器：固定比例高度，作为内部滑动的“窗口” */
 .unified-card {
     display: flex;
-    width: 100%;
+    width: 90%;
     max-width: 1200px;
-    /* 缩小最大宽度，更紧凑 */
+    height: 85%;
+    /* 关键：固定高度比例 */
+    max-height: 800px;
     background: rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(20px);
-    border-radius: 16px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    -webkit-backdrop-filter: blur(20px);
+    border-radius: 20px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
     overflow: hidden;
-    gap: 0;
+    /* 防止卡片圆角被内容破坏 */
 }
 
-/* 侧边栏 */
+/* ==================== 2. 侧边栏 ==================== */
 .sidebar {
     width: 260px;
-    /* 稍微增加宽度 */
     flex-shrink: 0;
-    padding: 20px;
+    padding: 30px 20px;
     border-right: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.1);
 }
 
 .menu-item {
     display: flex;
     align-items: center;
-    padding: 12px 16px;
+    padding: 14px 18px;
     margin-bottom: 8px;
-    border-radius: 8px;
+    border-radius: 12px;
     cursor: pointer;
     color: rgba(255, 255, 255, 0.7);
-    transition: all 0.3s;
+    transition: all 0.3s ease;
+    font-weight: 500;
 }
 
 .menu-item:hover {
     background: rgba(255, 255, 255, 0.1);
     color: white;
+    transform: translateX(5px);
 }
 
 .menu-item.active {
-    background: rgba(255, 255, 255, 0.2);
-    color: white;
+    background: linear-gradient(90deg, rgba(66, 184, 131, 0.2), rgba(66, 184, 131, 0.05));
+    color: #42b883;
+    border-left: 3px solid #42b883;
 }
 
 .menu-icon {
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
     margin-right: 12px;
 }
 
-/* 内容区 */
+/* ==================== 3. 内容区域 ==================== */
 .content {
     flex: 1;
-    padding: 40px 50px;
-    /* 增加左右内边距 */
+    height: 100%;
+    overflow-y: auto;
+    /* 🔥 关键：内容超出时，只在这里出现滚动条 */
+    padding: 40px 60px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    /* 水平居中内容 */
+    scroll-behavior: smooth;
+}
+
+/* 美化滚动条 */
+.content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.content::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+
+.content::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    transition: background 0.3s;
+}
+
+.content::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.4);
 }
 
 .panel {
     width: 100%;
-    /* 占满容器宽度 */
-    max-width: 600px;
-    /* 限制内容最大宽度 */
+    max-width: 650px;
+    padding-bottom: 40px;
 }
 
+/* 顶部导航栏样式 (新增) */
+.panel-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 30px;
+    position: relative;
+}
+
+/* 标题样式 (合并优化版) */
 .panel-title {
     font-size: 28px;
-    font-weight: 600;
+    /* 调小一点更精致 */
+    font-weight: 700;
     color: white;
-    margin-bottom: 30px;
+    margin-bottom: 0;
+    /* 由 header 控制间距 */
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
 }
 
-/* 表单 */
+/* 返回按钮样式 (新增) */
+.back-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+    cursor: pointer;
+    margin-right: 20px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(10px);
+}
+
+.back-btn:hover {
+    background: rgba(255, 255, 255, 0.25);
+    transform: translateX(-3px);
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.2);
+}
+
+.back-btn:active {
+    transform: scale(0.95);
+}
+
+.back-icon {
+    width: 24px;
+    height: 24px;
+    fill: currentColor;
+}
+
+/* ==================== 4. 表单通用样式 ==================== */
 .form-group {
-    margin-bottom: 24px;
+    margin-bottom: 28px;
 }
 
 .label {
     display: block;
     font-size: 14px;
-    color: rgba(255, 255, 255, 0.9);
-    margin-bottom: 8px;
-    font-weight: 500;
+    color: rgba(255, 255, 255, 0.8);
+    margin-bottom: 10px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
 }
 
 .input,
 .textarea {
     width: 100%;
-    /* 占满父容器 */
-    padding: 12px 16px;
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px;
+    padding: 14px 18px;
+    background: rgba(0, 0, 0, 0.2);
+    /* 统一深色背景 */
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
     color: white;
     font-size: 15px;
     transition: all 0.3s;
+    box-sizing: border-box;
 }
 
 .input:focus,
 .textarea:focus {
     outline: none;
-    border-color: rgba(255, 255, 255, 0.4);
-    background: rgba(255, 255, 255, 0.2);
+    border-color: #42b883;
+    background: rgba(0, 0, 0, 0.4);
+    box-shadow: 0 0 0 3px rgba(66, 184, 131, 0.1);
 }
 
 .input:disabled {
-    opacity: 0.5;
+    opacity: 0.6;
     cursor: not-allowed;
+    background: rgba(255, 255, 255, 0.05);
 }
 
 .textarea {
     resize: vertical;
-    min-height: 100px;
+    min-height: 120px;
 }
 
-/* 头像上传 */
+/* ==================== 5. 头像上传 ==================== */
 .avatar-upload {
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 24px;
 }
 
 .avatar-preview,
 .avatar-placeholder {
-    width: 100px;
-    height: 100px;
+    width: 80px;
+    height: 80px;
     border-radius: 50%;
     object-fit: cover;
-    border: 3px solid rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .avatar-placeholder {
@@ -849,37 +803,149 @@ onUnmounted(() => clearInterval(timer))
     align-items: center;
     justify-content: center;
     background: rgba(255, 255, 255, 0.1);
-    color: rgba(255, 255, 255, 0.5);
+    color: rgba(255, 255, 255, 0.6);
 }
 
 .upload-btn {
     padding: 10px 20px;
-    background: rgba(255, 255, 255, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 8px;
     color: white;
     cursor: pointer;
+    font-size: 14px;
     transition: all 0.3s;
 }
 
 .upload-btn:hover {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.2);
 }
 
-/* 日期选择器包装 */
-.date-picker-wrapper {
-    max-width: 500px;
-    /* 限制最大宽度 */
+/* ==================== 6. 下拉框与特殊输入框 (性别/电话) ==================== */
+.dropdown-wrapper,
+.phone-wrapper {
+    position: relative;
+    width: 100%;
+    display: flex;
+    gap: 12px;
 }
 
-.date-picker-wrapper .input {
-    max-width: 100%;
-    /* 继承父容器宽度 */
+/* 统一输入框外观：整合了 dropdown-input, phone-code, phone-input */
+.dropdown-input,
+.phone-code,
+.phone-input {
+    padding: 14px 18px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    color: white;
+    font-size: 15px;
+    transition: all 0.3s;
+    box-sizing: border-box;
 }
 
+/* 交互状态 */
+.dropdown-input:hover,
+.phone-code:hover {
+    background: rgba(0, 0, 0, 0.3);
+    border-color: rgba(255, 255, 255, 0.2);
+    cursor: pointer;
+}
+
+/* 聚焦状态 */
+.phone-input:focus {
+    outline: none;
+    border-color: #42b883;
+    background: rgba(0, 0, 0, 0.4);
+    box-shadow: 0 0 0 3px rgba(66, 184, 131, 0.1);
+}
+
+.dropdown-input {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+
+.phone-code {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 110px;
+}
+
+.phone-input {
+    flex: 1;
+}
+
+.phone-input.error {
+    border-color: #ff6b6b;
+    background: rgba(255, 107, 107, 0.1);
+}
+
+/* 下拉菜单面板 */
+.dropdown-menu,
+.phone-dropdown {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    width: 100%;
+    max-height: 240px;
+    overflow-y: auto;
+    background: #2c2c2c;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    z-index: 100;
+}
+
+.dropdown-item,
+.phone-dropdown-item {
+    padding: 12px 18px;
+    color: rgba(255, 255, 255, 0.8);
+    cursor: pointer;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    transition: background 0.2s;
+}
+
+.dropdown-item:hover,
+.phone-dropdown-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+}
+
+.country-name {
+    flex: 1;
+}
+
+.country-code {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 13px;
+}
+
+.error-text {
+    color: #ff6b6b;
+    font-size: 13px;
+    margin-top: 8px;
+    padding-left: 4px;
+}
+
+.placeholder {
+    color: rgba(255, 255, 255, 0.3);
+}
+
+.dropdown-icon {
+    opacity: 0.7;
+}
+
+/* ==================== 7. 弹窗样式 (日历/地区) ==================== */
 .date-picker-modal,
 .region-modal {
     position: fixed;
+    z-index: 9999;
     top: 0;
     left: 0;
     right: 0;
@@ -887,90 +953,84 @@ onUnmounted(() => clearInterval(timer))
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(5px);
     display: flex;
-    align-items: center;
     justify-content: center;
-    z-index: 1000;
+    align-items: center;
 }
 
 .date-picker-content,
 .region-content {
-    background: rgba(30, 30, 30, 0.95);
-    backdrop-filter: blur(20px);
-    border-radius: 16px;
+    background: #2c2c2c;
     padding: 30px;
-    min-width: 400px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    border-radius: 16px;
+    min-width: 420px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .date-picker-content h3,
 .region-content h3 {
     color: white;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-align: center;
     margin-bottom: 24px;
-    font-size: 20px;
 }
 
 .date-selectors,
 .region-selectors {
     display: flex;
-    gap: 16px;
-    margin-bottom: 24px;
+    gap: 12px;
+    margin-bottom: 30px;
 }
 
 .date-column,
 .region-column {
     flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .date-column label,
 .region-column label {
-    display: block;
-    color: rgba(255, 255, 255, 0.7);
-    font-size: 13px;
-    margin-bottom: 8px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.6);
+    padding-left: 4px;
 }
 
 .date-select,
 .region-select {
     width: 100%;
     padding: 10px;
-    background: rgba(50, 50, 50, 0.95);
-    /* 深色背景，确保可读 */
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: #444;
+    color: white;
+    border: 1px solid transparent;
     border-radius: 8px;
-    color: white;
-    /* 白色文字 */
-    font-size: 14px;
+    outline: none;
     cursor: pointer;
+    transition: all 0.2s;
 }
 
-/* 🔥 修复 select 下拉选项的显示问题 */
-.date-select option,
-.region-select option {
-    background: rgba(30, 30, 30, 0.98);
-    /* 深色背景 */
-    color: white;
-    /* 白色文字 */
-    padding: 10px;
-}
-
-/* hover 效果 */
-.date-select option:hover,
-.region-select option:hover {
-    background: rgba(100, 100, 100, 0.9);
+.date-select:hover,
+.region-select:hover {
+    background: #505050;
 }
 
 .date-select:disabled,
 .region-select:disabled {
-    opacity: 0.4;
+    opacity: 0.5;
     cursor: not-allowed;
 }
 
-/* 无数据提示 */
-.no-data-hint {
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.5);
-    margin-top: 6px;
-    font-style: italic;
+/* ==================== 8. 按钮样式 (主界面 & 弹窗通用) ==================== */
+.actions {
+    display: flex;
+    gap: 20px;
+    justify-content: flex-end;
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .date-picker-actions,
@@ -980,255 +1040,116 @@ onUnmounted(() => clearInterval(timer))
     justify-content: flex-end;
 }
 
-.btn-cancel,
-.btn-confirm {
-    padding: 10px 24px;
-    border-radius: 8px;
-    border: none;
+/* 🔥 通用按钮基础：统一高度、圆角和字体，确保视觉重量一致 */
+.btn-primary,
+.btn-secondary,
+.btn-confirm,
+.btn-cancel {
+    height: 42px;
+    /* 固定高度，不再靠 padding 撑开，更整齐 */
+    padding: 0 24px;
+    border-radius: 12px;
+    /* 和输入框保持一致的圆角 */
+    border: 1px solid transparent;
+    /* 预留边框位，防止抖动 */
     cursor: pointer;
     font-size: 14px;
-    font-weight: 500;
-    transition: all 0.3s;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 100px;
+    /* 保证按钮有最小宽度，显得大气 */
 }
 
-.btn-cancel {
-    background: rgba(255, 255, 255, 0.1);
-    color: white;
-}
-
-.btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.15);
-}
-
+/* ✅ 主操作按钮 (保存/确定) - 保持醒目的渐变 */
+.btn-primary,
 .btn-confirm {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #42b883 0%, #33a06f 100%);
     color: white;
+    box-shadow: 0 4px 15px rgba(66, 184, 131, 0.3);
 }
 
+.btn-primary:hover,
 .btn-confirm:hover {
     transform: translateY(-2px);
-    box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 8px 20px rgba(66, 184, 131, 0.4);
+    filter: brightness(1.1);
 }
 
-.btn-confirm:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-/* 下拉选择器 */
-.dropdown-wrapper {
-    position: relative;
-    width: 100%;
-    /* 占满父容器 */
-}
-
-.dropdown-input {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px;
-    cursor: pointer;
-    color: white;
-    transition: all 0.3s;
-}
-
-.dropdown-input:hover {
-    background: rgba(255, 255, 255, 0.2);
-}
-
-.placeholder {
-    color: rgba(255, 255, 255, 0.5);
-}
-
-.dropdown-icon {
-    transition: transform 0.3s;
-}
-
-.dropdown-menu {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    right: 0;
-    background: rgba(30, 30, 30, 0.95);
-    backdrop-filter: blur(20px);
-    border-radius: 8px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-    z-index: 100;
-    overflow: hidden;
-}
-
-.dropdown-item {
-    padding: 12px 16px;
-    color: white;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-
-.dropdown-item:hover {
+/* ⚪️ 次要操作按钮 (放弃/取消) - 升级为实体毛玻璃风格 */
+.btn-secondary,
+.btn-cancel {
+    /* 之前的透明背景太弱了，现在加深背景色，让它看起来也是个“实体按钮” */
     background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.9);
+    border-color: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
 }
 
-/* 电话输入 */
-.phone-wrapper {
-    display: flex;
-    gap: 8px;
-    position: relative;
-    width: 100%;
-    /* 占满父容器 */
-}
-
-.phone-code {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 16px;
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px;
-    cursor: pointer;
-    color: white;
-    white-space: nowrap;
-    transition: all 0.3s;
-}
-
-.phone-code:hover {
+.btn-secondary:hover,
+.btn-cancel:hover {
     background: rgba(255, 255, 255, 0.2);
-}
-
-.flag {
-    font-size: 20px;
-}
-
-.phone-input {
-    flex: 1;
-    padding: 12px 16px;
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 8px;
     color: white;
-    font-size: 15px;
-    transition: all 0.3s;
-}
-
-.phone-input:focus {
-    outline: none;
-    border-color: rgba(255, 255, 255, 0.4);
-    background: rgba(255, 255, 255, 0.2);
-}
-
-.phone-input.error {
-    border-color: #ff6b6b;
-    background: rgba(255, 107, 107, 0.1);
-}
-
-.error-text {
-    color: #ff6b6b;
-    font-size: 13px;
-    margin-top: 6px;
-}
-
-.phone-dropdown {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    width: 300px;
-    max-height: 300px;
-    overflow-y: auto;
-    background: rgba(30, 30, 30, 0.95);
-    backdrop-filter: blur(20px);
-    border-radius: 8px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-    z-index: 100;
-}
-
-.phone-dropdown-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    color: white;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-
-.phone-dropdown-item:hover {
-    background: rgba(255, 255, 255, 0.1);
-}
-
-.country-name {
-    flex: 1;
-}
-
-.country-code {
-    color: rgba(255, 255, 255, 0.6);
-    font-size: 13px;
-}
-
-/* 底部按钮 */
-.actions {
-    display: flex;
-    gap: 16px;
-    justify-content: flex-end;
-    margin-top: 32px;
-    padding-top: 24px;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
-    width: 100%;
-    /* 确保按钮区域占满宽度 */
-}
-
-.btn-primary,
-.btn-secondary {
-    padding: 12px 32px;
-    border-radius: 8px;
-    border: none;
-    cursor: pointer;
-    font-size: 15px;
-    font-weight: 500;
-    transition: all 0.3s;
-}
-
-.btn-secondary {
-    background: rgba(255, 255, 255, 0.1);
-    color: white;
-}
-
-.btn-secondary:hover {
-    background: rgba(255, 255, 255, 0.15);
-}
-
-.btn-primary {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-}
-
-.btn-primary:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.3);
     transform: translateY(-2px);
-    box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
 }
 
-.btn-primary:disabled {
+/* 🚫 禁用状态 (Disabled) - 两个按钮在不可用时样式统一 */
+.btn-primary:disabled,
+.btn-confirm:disabled,
+.btn-secondary:disabled,
+.btn-cancel:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    background: rgba(128, 128, 128, 0.2);
+    /* 统一变成灰色背景 */
+    color: rgba(255, 255, 255, 0.3);
+    box-shadow: none;
+    transform: none;
+    border-color: transparent;
+    filter: none;
 }
 
-/* 响应式 */
+/* ==================== 9. 移动端适配 (合并优化版) ==================== */
 @media (max-width: 768px) {
     .account-container {
-        padding: 20px 10px;
-        margin-top: 70px;
+        padding-top: 60px;
     }
 
     .unified-card {
+        width: 100%;
+        height: 100%;
+        max-height: none;
+        border-radius: 0;
         flex-direction: column;
+        background: transparent;
     }
 
     .sidebar {
         width: 100%;
-        border-right: none;
+        padding: 10px;
+        display: flex;
+        overflow-x: auto;
         border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        border-right: none;
+        background: rgba(0, 0, 0, 0.3);
+    }
+
+    .menu {
+        display: flex;
+        gap: 10px;
+        width: 100%;
+    }
+
+    .menu-item {
+        white-space: nowrap;
+        margin-bottom: 0;
+        padding: 8px 12px;
+        font-size: 14px;
     }
 
     .content {
@@ -1237,23 +1158,23 @@ onUnmounted(() => clearInterval(timer))
 
     .date-picker-content,
     .region-content {
-        min-width: auto;
-        width: 90%;
+        min-width: 90%;
         padding: 20px;
     }
 
-    .date-selectors,
-    .region-selectors {
-        flex-direction: column;
+    /* 顶部导航移动端调整 */
+    .panel-header {
+        margin-bottom: 20px;
     }
 
-    .phone-wrapper {
-        flex-direction: column;
+    .panel-title {
+        font-size: 24px;
     }
 
-    .phone-code {
-        width: 100%;
-        justify-content: center;
+    .back-btn {
+        width: 36px;
+        height: 36px;
+        margin-right: 15px;
     }
 }
 </style>

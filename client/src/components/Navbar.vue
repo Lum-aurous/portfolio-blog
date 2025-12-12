@@ -1,36 +1,27 @@
 <script setup>
-import { ref, onMounted, watch, computed, onUnmounted } from 'vue'
+import { ref, onMounted, watch, computed, onUnmounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-// ⚡️ 关键修复：导入 Pinia Store
 import { useUserStore } from '@/stores/user.js'
-
-
-// 切换主题并关闭菜单
-const toggleThemeAndCloseMenu = () => {
-  toggleTheme(); // 调用原来的toggleTheme函数
-  showUserMenu.value = false; // 关闭下拉菜单
-}
 
 const router = useRouter()
 const route = useRoute()
-const userStore = useUserStore() // ⚡️ 获取 Store 实例
+const userStore = useUserStore()
 
 const isDark = ref(false)
+// 定义一个关闭菜单的函数
+const closeUserMenu = () => {
+  showUserMenu.value = false
+}
 
-// ⚡️ 删除所有 localStorage 读取，改用 Pinia 的计算属性
-// 注意：因为 user.js 用的是 ref()，所以这里要加 .value
+// ==================== 用户数据计算属性 ====================
 const isLoggedIn = computed(() => userStore.isLoggedIn)
 const isAdmin = computed(() => userStore.user?.role === 'admin')
-const username = computed(() => {
-  return userStore.user?.username || ''
-})
-// 🔥 优化计算属性：确保能正确响应 Pinia 变化
+const username = computed(() => userStore.user?.username || '')
+
 const userAvatar = computed(() => {
-  // 优先使用 Pinia Store 中的 avatar
   const piniaAvatar = userStore.user?.avatar
   if (piniaAvatar) return piniaAvatar
 
-  // 备用方案：检查 localStorage 中的旧数据
   const storedUser = localStorage.getItem('user')
   if (storedUser) {
     try {
@@ -44,14 +35,13 @@ const userAvatar = computed(() => {
 })
 
 const email = computed(() => userStore.user?.email || '')
+
 const nickname = computed(() => {
-  // 优先使用 Pinia Store 中的 nickname
   const piniaNickname = userStore.user?.nickname
   if (piniaNickname && piniaNickname.trim()) {
     return piniaNickname
   }
 
-  // 备用方案
   const storedUser = localStorage.getItem('user')
   if (storedUser) {
     try {
@@ -64,115 +54,6 @@ const nickname = computed(() => {
   return username.value
 })
 
-
-// 切换账号（跳转到登录页面，不立即退出当前账号）
-const switchAccount = () => {
-  console.log('切换账号按钮被点击') // 添加调试日志
-
-  // 不退出当前账号，只是跳转到登录页面
-  showUserMenu.value = false
-
-  // 设置一个标志，告诉登录页面这是"切换账号"操作
-  sessionStorage.setItem('isSwitchingAccount', 'true')
-  sessionStorage.setItem('previousUsername', username.value) // 可选：保存原用户名
-
-  console.log('设置 sessionStorage 完成:', {
-    isSwitchingAccount: sessionStorage.getItem('isSwitchingAccount'),
-    previousUsername: sessionStorage.getItem('previousUsername')
-  })
-
-  // 跳转到登录页面
-  console.log('开始路由跳转到 /login')
-  router.push('/login')
-    .then(() => {
-      console.log('路由跳转成功')
-    })
-    .catch(err => {
-      console.error('路由跳转失败:', err)
-      console.log('尝试备用方案: window.location.href')
-      // 备用方案
-      window.location.href = '/login'
-    })
-}
-
-// 位置点击处理
-const handleLocationClick = () => {
-  if (!isLoggedIn.value) {
-    alert('请先登录以获取位置信息');
-    return;
-  }
-
-  if (userStore.isLoadingLocation) {
-    return; // 正在加载中，不响应点击
-  }
-
-  if (!userStore.location) {
-    // 如果还没有位置信息，则获取
-    userStore.getLocation();
-  } else {
-    // 如果有位置信息，则刷新
-    userStore.refreshLocation();
-  }
-
-  // 点击后不关闭菜单，让用户看到更新过程
-  // showUserMenu.value = false;
-};
-
-// 监听登录状态，自动获取位置
-watch(
-  () => isLoggedIn.value,
-  (loggedIn) => {
-    if (loggedIn && !userStore.location) {
-      // 登录后自动获取位置（延迟1秒，避免影响登录体验）
-      setTimeout(() => {
-        userStore.getLocation();
-      }, 1000);
-    }
-  },
-  { immediate: true }
-);
-
-// 监听登录状态变化，自动获取位置
-watch(
-  () => isLoggedIn.value,
-  (loggedIn) => {
-    if (loggedIn && !userStore.location) {
-      // 登录后自动获取位置
-      userStore.getLocation()
-    }
-  },
-  { immediate: true }
-)
-
-
-const showUserMenu = ref(false)
-const activeDropdown = ref(null)
-const showBackground = ref(false)
-
-// 监听 Pinia store 中的 user 变化
-watch(
-  () => userStore.user,
-  (newUser) => {
-    if (newUser) {
-      console.log('Navbar: 用户数据已更新', newUser.username)
-    }
-  },
-  { deep: true } // 深度监听，确保嵌套属性变化也能触发
-)
-
-
-// 退出登录
-const handleLogout = () => {
-  if (confirm('确定要退出登录吗？')) {
-    userStore.logout() // ⚡️ 使用 Pinia 的 logout 方法
-    showUserMenu.value = false
-    router.push('/login').then(() => {
-      window.location.reload()
-    })
-  }
-}
-
-// 计算属性：用户名首字母
 const avatarText = computed(() => {
   if (username.value && username.value.length > 0) {
     return username.value.charAt(0).toUpperCase()
@@ -180,26 +61,10 @@ const avatarText = computed(() => {
   return '?'
 })
 
-// ⚡️ 删除 checkLoginStatus 函数，因为 Pinia 自动处理了
-
-// 切换深色模式
-const toggleTheme = () => {
-  isDark.value = !isDark.value
-  if (isDark.value) {
-    document.documentElement.classList.add('dark')
-    localStorage.setItem('theme', 'dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-    localStorage.setItem('theme', 'light')
-  }
-}
-
-// 用户 handle
 const handle = computed(() => {
   if (!username.value) return ''
   return '@' + username.value.toLowerCase().replace(/\s+/g, '')
 })
-
 
 // ==================== 1. 导航数据（完整无省略）===================
 const navItems = [
@@ -437,6 +302,7 @@ const navItems = [
   },
 ]
 
+// 登陆图标
 const loginIcon = {
   viewBox: '0 0 800 800',
   gTransform: 'translate(145.809836,664.279006) scale(0.063357,-0.063357)',
@@ -445,69 +311,245 @@ const loginIcon = {
     { d: 'M4376 5691 c-16 -11 -35 -30 -42 -43 -30 -53 -6 -135 48 -164 18 -11 252 -13 1148 -14 872 0 1130 -3 1149 -13 53 -27 60 -51 62 -202 l2 -140 -1117 -5 -1118 -5 -29 -33 c-33 -37 -39 -94 -14 -142 33 -63 -34 -60 1175 -60 l1100 0 0 -155 0 -155 -1232 -1 c-928 0 -1242 -3 -1268 -12 -67 -23 -99 -111 -65 -177 32 -62 12 -60 710 -60 l635 0 0 -728 c0 -642 -2 -730 -16 -750 -14 -21 -22 -22 -156 -22 l-140 0 -39 -39 c-32 -32 -39 -46 -39 -77 0 -51 18 -83 60 -112 35 -23 37 -23 280 -20 l245 3 57 28 c68 33 117 87 141 154 16 44 17 112 17 806 l0 757 659 0 659 0 30 25 c43 36 58 77 43 125 -15 50 -60 87 -116 95 l-44 7 -3 462 c-3 444 -4 463 -24 507 -31 66 -78 114 -142 146 l-57 28 -1265 3 c-1238 2 -1266 2 -1294 -17z', fill: 'currentColor' },
     { d: 'M4512 4150 c-47 -11 -98 -49 -121 -90 -42 -74 -39 -94 49 -365 77 -238 81 -252 70 -295 -14 -56 -54 -190 -132 -434 -79 -251 -79 -299 6 -374 93 -82 248 -56 310 51 25 43 168 486 212 656 39 151 36 176 -57 459 -45 136 -88 261 -96 277 -27 53 -75 95 -127 110 -54 16 -65 17 -114 5z', fill: 'currentColor' },
     { d: 'M6745 4146 c-57 -21 -116 -90 -142 -167 -171 -502 -174 -514 -149 -639 20 -96 199 -650 224 -695 45 -76 147 -118 232 -95 76 20 149 110 150 184 0 16 -33 133 -74 260 -116 361 -127 399 -128 436 0 33 25 116 121 392 23 64 41 129 41 145 0 15 -11 51 -24 80 -18 38 -35 58 -69 77 -56 33 -128 41 -182 22z', fill: 'currentColor' },
-    { d: 'M1135 4131 c-46 -12 -87 -36 -122 -73 -59 -62 -63 -82 -63 -350 0 -275 5 -295 75 -357 81 -71 -8 -66 1205 -69 602 -2 1118 0 1146 3 73 9 151 58 189 119 l30 49 3 236 c2 157 -1 250 -8 277 -15 54 -60 107 -118 142 l-47 27 -1130 2 c-621 0 -1143 -2 -1160 -6z m2055 -421 l0 -180 -915 0 -915 0 0 180 0 180 915 0 915 0 0 -180z', fill: 'currentColor' },
-    { d: 'M1321 3179 c-72 -29 -121 -97 -121 -168 0 -22 11 -71 25 -109 14 -38 25 -72 25 -76 0 -3 -99 -6 -219 -6 l-219 0 -31 -25 c-60 -51 -62 -132 -5 -186 l26 -24 1467 -3 1468 -2 34 23 c21 14 39 38 48 63 13 37 12 44 -5 79 -37 76 -46 78 -288 80 -119 1 -218 4 -222 7 -3 4 6 37 21 74 34 85 31 145 -10 203 -71 104 -252 109 -328 10 -14 -19 -43 -84 -65 -145 -22 -61 -45 -121 -51 -133 l-12 -21 -587 2 -586 3 -51 131 c-60 150 -83 186 -140 214 -44 21 -132 26 -174 9z', fill: 'currentColor' }
+    { d: 'M1135 4131 c-46 -12 -87 -36 -122 -73 -59 -62 -63 -82 -63 -350 0 -275 5 -295 75 -357 81 -71 -8 -66 1205 -69 602 -2 1118 0 1146 3 73 9 151 58 189 119 l30 49 3 236 c2 157 -1 250 -8 277 -15 54 -60 107 -118 142 l-47 27 -1130 2 c-621 0 -1143 -2 -1160 -6z m2055 -421 l0 -180 -915 0 -915 0 0 180 0 180 915 0 915 0 0 -180z', fill: '#6A3906' },
+    { d: 'M1321 3179 c-72 -29 -121 -97 -121 -168 0 -22 11 -71 25 -109 14 -38 25 -72 25 -76 0 -3 -99 -6 -219 -6 l-219 0 -31 -25 c-60 -51 -62 -132 -5 -186 l26 -24 1467 -3 1468 -2 34 23 c21 14 39 38 48 63 13 37 12 44 -5 79 -37 76 -46 78 -288 80 -119 1 -218 4 -222 7 -3 4 6 37 21 74 34 85 31 145 -10 203 -71 104 -252 109 -328 10 -14 -19 -43 -84 -65 -145 -22 -61 -45 -121 -51 -133 l-12 -21 -587 2 -586 3 -51 131 c-60 150 -83 186 -140 214 -44 21 -132 26 -174 9z', fill: '#6A3906' }
   ]
 }
 
+// ==================== 导航栏控制状态 ====================
+const navbarHeight = ref(80)
+const prevScrollY = ref(0)
+const isNavbarVisible = ref(true)
+const isMouseOnNavbar = ref(false)
+const showBackground = ref(false)
+const showUserMenu = ref(false)
+const activeDropdown = ref(null)
+
+// ==================== 导航栏显示控制 ====================
 const handleMouseEnter = () => {
   showBackground.value = true
+  isMouseOnNavbar.value = true
+  isNavbarVisible.value = true
 }
 
 const handleMouseLeave = () => {
   showBackground.value = false
+  isMouseOnNavbar.value = false
   activeDropdown.value = null
 }
 
-const handleAvatarError = (e) => {
-  console.warn('头像加载失败')
-  // 不需要手动清空，因为 computed 会自动处理
+const shouldShowBackground = computed(() => {
+  return showBackground.value || activeDropdown.value || showUserMenu.value
+})
+
+const shouldShowNavbar = computed(() => {
+  return isNavbarVisible.value || isMouseOnNavbar.value
+})
+
+// ==================== 滚动逻辑（核心优化）====================
+let ticking = false
+const scrollThreshold = 10 // 最小滚动距离阈值（避免微小抖动）
+
+const onScroll = () => {
+  if (!ticking) {
+    requestAnimationFrame(() => {
+      const currentScrollY = window.scrollY
+      const scrollDelta = currentScrollY - prevScrollY.value
+
+      // 动态获取导航栏高度
+      const navbar = document.querySelector('.navbar')
+      if (navbar && navbarHeight.value !== navbar.offsetHeight) {
+        navbarHeight.value = navbar.offsetHeight
+      }
+
+      // 忽略小幅度滚动（防抖）
+      if (Math.abs(scrollDelta) < scrollThreshold) {
+        ticking = false
+        return
+      }
+
+      const isScrollingDown = scrollDelta > 0
+      const isScrollingUp = scrollDelta < 0
+
+      // 核心逻辑：
+      // 1. 在导航栏高度范围内：始终显示
+      // 2. 向下滚动超过导航栏高度+50px：隐藏（内容真正触碰到导航栏）
+      // 3. 向上滚动：显示
+      // 4. 鼠标在导航栏上：强制显示（通过 computed 实现）
+
+      if (currentScrollY <= navbarHeight.value) {
+        // 在顶部区域，始终显示
+        isNavbarVisible.value = true
+      } else if (isScrollingDown && currentScrollY > navbarHeight.value + 50) {
+        // 向下滚动且超过阈值，隐藏（除非鼠标悬停）
+        if (!isMouseOnNavbar.value) {
+          isNavbarVisible.value = false
+        }
+      } else if (isScrollingUp) {
+        // 向上滚动，显示
+        isNavbarVisible.value = true
+      }
+
+      prevScrollY.value = currentScrollY
+      ticking = false
+    })
+    ticking = true
+  }
 }
 
-const isScrolled = ref(false)
-
-const handleScroll = () => {
-  isScrolled.value = window.scrollY > 10
+// ==================== 主题切换 ====================
+const toggleTheme = () => {
+  isDark.value = !isDark.value
+  if (isDark.value) {
+    document.documentElement.classList.add('dark')
+    localStorage.setItem('theme', 'dark')
+  } else {
+    document.documentElement.classList.remove('dark')
+    localStorage.setItem('theme', 'light')
+  }
 }
 
-let closeUserMenuHandler
+const toggleThemeAndCloseMenu = () => {
+  toggleTheme()
+  showUserMenu.value = false
+}
 
+// ==================== 用户操作 ====================
+const switchAccount = () => {
+  showUserMenu.value = false
+  sessionStorage.setItem('isSwitchingAccount', 'true')
+  sessionStorage.setItem('previousUsername', username.value)
+  router.push('/login')
+}
+
+const handleLogout = () => {
+  if (confirm('确定要退出登录吗？')) {
+    userStore.logout()
+    showUserMenu.value = false
+    router.push('/login').then(() => {
+      window.location.reload()
+    })
+  }
+}
+
+const handleLocationClick = () => {
+  if (!isLoggedIn.value) {
+    alert('请先登录以获取位置信息')
+    return
+  }
+
+  if (userStore.isLoadingLocation) {
+    return
+  }
+
+  if (!userStore.location) {
+    userStore.getLocation()
+  } else {
+    userStore.refreshLocation()
+  }
+}
+
+// ==================== 下拉菜单优化 (大师级修复) ====================
+let closeTimer = null // 用于存储定时器ID
+
+// 鼠标移入导航项
+const handleNavEnter = (itemName) => {
+  // 1. 既然回来了，立刻清除准备关闭的定时器！这步是“丝滑”的关键
+  if (closeTimer) {
+    clearTimeout(closeTimer)
+    closeTimer = null
+  }
+  // 2. 立刻显示，没有任何延迟
+  activeDropdown.value = itemName
+}
+
+// 鼠标移出（导航项 或 下拉菜单）
+const handleNavLeave = () => {
+  // 1. 不要立刻关闭，给用户 150ms 的“容错时间”
+  // 这样用户鼠标斜着划向下拉菜单时，菜单不会消失
+  closeTimer = setTimeout(() => {
+    activeDropdown.value = null
+  }, 150)
+}
+
+// 鼠标移入下拉菜单本身
+const handleDropdownEnter = () => {
+  // 1. 如果用户鼠标进入了下拉菜单，说明他想操作，立刻清除关闭定时器
+  if (closeTimer) {
+    clearTimeout(closeTimer)
+    closeTimer = null
+  }
+  // 保持当前状态不变，菜单继续显示
+}
+
+// ==================== 监听器 ====================
+watch(() => route.path, () => {
+  activeDropdown.value = null
+  showUserMenu.value = false
+})
+
+watch(() => isLoggedIn.value, (loggedIn) => {
+  if (loggedIn && !userStore.location) {
+    setTimeout(() => {
+      userStore.getLocation()
+    }, 1000)
+  }
+}, { immediate: true })
+
+watch(() => userStore.user, (newUser) => {
+  if (newUser) {
+    console.log('Navbar: 用户数据已更新', newUser.username)
+  }
+}, { deep: true })
+
+// ==================== 生命周期 ====================
 onMounted(() => {
+  // 恢复主题
   const savedTheme = localStorage.getItem('theme')
   if (savedTheme === 'dark') {
     isDark.value = true
     document.documentElement.classList.add('dark')
   }
 
-  window.addEventListener('scroll', handleScroll)
-  handleScroll()
+  // 获取导航栏实际高度
+  nextTick(() => {
+    const navbar = document.querySelector('.navbar')
+    if (navbar) {
+      navbarHeight.value = navbar.offsetHeight
+    }
+  })
 
-  closeUserMenuHandler = () => {
-    showUserMenu.value = false
-  }
-  document.addEventListener('click', closeUserMenuHandler)
+  // 🔥 新增：注册全局点击事件监听器
+  // 只要点击了页面的任何地方（除了被 @click.stop 拦截的地方），都会触发这个关闭函数
+  window.addEventListener('click', closeUserMenu)
+
+  // 注册滚动监听
+  window.addEventListener('scroll', onScroll, { passive: true })
+  onScroll()
 })
 
 onUnmounted(() => {
-  if (closeUserMenuHandler) {
-    document.removeEventListener('click', closeUserMenuHandler)
-  }
-  window.removeEventListener('scroll', handleScroll)
+  // 🔥 新增：组件卸载时记得移除监听，防止内存泄漏
+  window.removeEventListener('click', closeUserMenu)
+
+  // 移除滚动监听 (你原有的)
+  window.removeEventListener('scroll', onScroll)
 })
 
 </script>
 
 <template>
-  <nav class="navbar" :class="{ 'navbar-active': isScrolled || showBackground || activeDropdown || showUserMenu }"
-    @mouseenter="handleMouseEnter" @mouseleave="handleMouseLeave">
+  <nav class="navbar" :class="{
+    'navbar-active': shouldShowBackground,
+    'navbar-hidden': !shouldShowNavbar
+  }" @mouseenter="handleMouseEnter()" @mouseleave="handleMouseLeave">
     <div class="nav-content">
       <router-link to="/" class="logo">𝓥𝓮𝓻𝓲𝓽𝓪𝓼</router-link>
 
       <div class="menu">
         <!-- 导航项 -->
         <div v-for="item in navItems" :key="item.name" class="nav-item-wrapper"
-          @mouseenter="item.isDropdown ? activeDropdown = item.name : null"
-          @mouseleave="item.isDropdown ? activeDropdown = null : null">
+          @mouseenter="item.isDropdown ? handleNavEnter(item.name) : null" @mouseleave="handleNavLeave">
           <router-link :to="item.path" class="nav-item">
             <svg v-if="item.paths" :viewBox="item.viewBox" class="nav-icon" xmlns="http://www.w3.org/2000/svg">
               <path v-for="(path, idx) in item.paths" :key="idx" :d="path.d" :fill="path.fill" />
@@ -516,7 +558,8 @@ onUnmounted(() => {
           </router-link>
 
           <transition name="fade-slide">
-            <div v-if="item.isDropdown && item.children && activeDropdown === item.name" class="dropdown-menu">
+            <div v-if="item.isDropdown && item.children && activeDropdown === item.name" class="dropdown-menu"
+              @mouseenter="handleDropdownEnter" @mouseleave="handleNavLeave">
               <router-link v-for="child in item.children" :key="child.name" :to="child.path" class="dropdown-item">
                 <svg v-if="child.paths" :viewBox="child.viewBox" class="dropdown-icon"
                   xmlns="http://www.w3.org/2000/svg">
@@ -549,7 +592,6 @@ onUnmounted(() => {
 
           <!-- 用户下拉菜单 -->
           <transition name="fade-slide">
-            <!-- 确保用户下拉菜单容器没有阻止点击事件 -->
             <div v-if="showUserMenu" class="user-dropdown-horizontal" @click.stop>
               <div class="user-header-horizontal">
                 <div class="user-avatar-big rainbow-ring">
@@ -665,11 +707,6 @@ onUnmounted(() => {
             </div>
           </transition>
         </div>
-
-        <!-- 主题切换按钮 -->
-        <!-- <button @click="toggleTheme" class="theme-btn">
-          {{ isDark ? '🌞' : '🌙' }}
-        </button> -->
       </div>
     </div>
   </nav>
@@ -678,15 +715,22 @@ onUnmounted(() => {
 <style scoped>
 /* ==================== 1. 导航栏主体 ==================== */
 .navbar {
-  background: transparent;
-  box-shadow: none;
   position: fixed;
   top: 0;
   left: 0;
   width: 100%;
   z-index: 100;
-  transition: background 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    backdrop-filter 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+    border-bottom 0.35s;
+  transform: translateY(0);
+  background: transparent;
+  backdrop-filter: none;
+  box-shadow: none;
+  border-bottom: 1px solid transparent;
 }
 
 .navbar-active {
@@ -697,8 +741,18 @@ onUnmounted(() => {
 }
 
 :global(html.dark) .navbar-active {
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.25);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 关键：隐藏导航栏（向上滑出） */
+.navbar-hidden {
+  transform: translateY(-100%);
+}
+
+/* 可选：添加一点缓入效果 */
+.navbar-hidden.navbar-active {
+  transform: translateY(-100%);
 }
 
 .nav-content {
@@ -817,10 +871,12 @@ onUnmounted(() => {
   /* 宽度加大，彻底杜绝文字换行 */
   padding: 12px 0;
   /* 上下间距更呼吸感 */
-  margin-top: 4px;
+  margin-top: 0px;
   border-radius: 16px;
   /* 大圆角，和用户菜单统一 */
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  /* 🔥 新增：启用硬件加速，防止动画期间的微小卡顿 */
+  will-change: opacity, transform;
   display: flex;
   flex-direction: column;
   z-index: 999;
@@ -912,13 +968,15 @@ onUnmounted(() => {
 
 .fade-slide-enter-active,
 .fade-slide-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  /* 🔥 优化：进入要快(0.2s)，离开稍微慢一点点(0.25s)显得优雅 */
+  transition: opacity 0.2s ease-out, transform 0.2s cubic-bezier(0.165, 0.84, 0.44, 1);
 }
 
 .fade-slide-enter-from,
 .fade-slide-leave-to {
   opacity: 0;
-  transform: translate(-50%, 10px);
+  /* 🔥 优化：位移距离改小一点，越小越感觉响应快 */
+  transform: translate(-50%, 8px);
 }
 
 /* ==================== 6. 头像框 & 用户下拉菜单（YouTube风格） ==================== */
@@ -1179,7 +1237,7 @@ onUnmounted(() => {
   font-size: 0.94rem;
 }
 
-/* 专为“切换账号”图标优化大小和位置（完美居中） */
+/* 专为"切换账号"图标优化大小和位置（完美居中） */
 .switch-account-icon {
   width: 22px !important;
   height: 22px !important;
