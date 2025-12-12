@@ -15,14 +15,6 @@ pinia.use(piniaPluginPersistedstate);
 app.use(pinia);
 app.use(router);
 
-// 初始化用户状态
-import { useUserStore } from "@/stores/user.js";
-const userStore = useUserStore();
-userStore.checkLoginStatus();
-
-// 🔥 移除壁纸预初始化，让 App.vue 统一处理
-// wallpaperStore.initialize() ❌
-
 // 初始化滚动管理器
 scrollManager.init(router);
 

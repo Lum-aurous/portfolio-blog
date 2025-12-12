@@ -3,6 +3,9 @@ import { onMounted, ref, computed, watch } from 'vue'
 import { useWallpaperStore } from '@/stores/wallpaper'
 import Navbar from '@/components/Navbar.vue'
 import ToastManager from '@/components/ToastManager.vue'
+import { useUserStore } from '@/stores/user.js'
+
+const userStore = useUserStore()
 
 const wallpaperStore = useWallpaperStore()
 const isAppReady = ref(false)
@@ -86,6 +89,8 @@ watch(() => wallpaperStore.currentWallpaper, (newUrl) => {
 // ==================== 3. 生命周期初始化 ====================
 onMounted(async () => {
   console.log('🚀 App.vue 全局挂载')
+  // 🔥 在这里检查登录状态，最安全
+  userStore.checkLoginStatus()  
 
   try {
     // 尝试初始化壁纸

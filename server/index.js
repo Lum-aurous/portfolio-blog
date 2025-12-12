@@ -564,17 +564,25 @@ app.get("/api/wallpaper/global", async (req, res) => {
       }
 
       const data = results[0];
+
+      // 🔥 修复：兼容 JSON 数组和逗号分隔字符串
+      let parsedRandomUrls = [];
+      if (Array.isArray(data.random_urls)) {
+        // 如果数据库是 JSON 类型，直接就是数组
+        parsedRandomUrls = data.random_urls;
+      } else if (typeof data.random_urls === "string") {
+        // 如果是字符串，才进行 split
+        parsedRandomUrls = data.random_urls
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+
       const config = {
         mode: data.mode || "website",
         dailyUrl: data.daily_url || "",
         websiteUrl: data.website_url || "",
-        randomUrls:
-          data.random_urls && typeof data.random_urls === "string"
-            ? data.random_urls
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean)
-            : [],
+        randomUrls: parsedRandomUrls, // 👈 使用处理好的数组
       };
 
       globalWallpaperCache = config;
