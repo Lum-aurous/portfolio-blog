@@ -26,7 +26,7 @@ const profile = computed(() => {
             avatar: getFullAvatarUrl(userStore.user.avatar),
             articlesCount: 108,
             categoryCount: 6,
-            visits: '23w+',
+            visits: '239890', // 模拟图片数据
             github: userStore.user.social_link || 'https://github.com'
         }
     } else {
@@ -132,7 +132,7 @@ const tags = ref([])
 let animationFrameId = null
 
 // 3D 配置
-const RADIUS = 140
+const RADIUS = 120 // 稍微调小一点适应侧边栏
 const BASE_SPEED = 0.005
 const ACCELERATION = 0.0001
 let currentSpeed = 0
@@ -182,7 +182,7 @@ const rotateTag = (tag, speedX, speedY) => {
     const alpha = (tag.z + RADIUS) / (2 * RADIUS)
 
     tag.style = {
-        transform: `translate3d(${tag.x + 130}px, ${tag.y + 180}px, 0) scale(${scale})`,
+        transform: `translate3d(${tag.x + 110}px, ${tag.y + 160}px, 0) scale(${scale})`, // 调整中心点
         opacity: 0.5 + 0.5 * alpha,
         zIndex: Math.floor(scale * 100),
         '--tag-color': tag.color
@@ -193,6 +193,21 @@ const handleTagClick = (tag) => {
     selectedTagId.value = tag.id === selectedTagId.value ? null : tag.id
     scrollToContent()
 }
+
+// ==================== 6. 🔥 弹幕数据 (新增) ====================
+const barrageList = ref([
+    { id: 1, avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100&auto=format&fit=crop', content: '究极好看' },
+    { id: 2, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100&auto=format&fit=crop', content: '好好好' },
+    { id: 3, avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=100&auto=format&fit=crop', content: '哈哈' },
+    { id: 4, avatar: 'https://images.unsplash.com/photo-1552374196-c4e7ffc6e126?q=80&w=100&auto=format&fit=crop', content: '厉害厉害' },
+    { id: 5, avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?q=80&w=100&auto=format&fit=crop', content: '666' },
+    { id: 6, avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=100&auto=format&fit=crop', content: '我也实现这种效果的' },
+    { id: 7, avatar: 'https://images.unsplash.com/photo-1520813792240-56fc4a3765a7?q=80&w=100&auto=format&fit=crop', content: '你好' },
+    // 为了循环无缝，可以复制一份数据
+    { id: 11, avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100&auto=format&fit=crop', content: '究极好看' },
+    { id: 12, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100&auto=format&fit=crop', content: '好好好' },
+    { id: 13, avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=100&auto=format&fit=crop', content: '哈哈' },
+])
 
 // ==================== 4. 文章与分类逻辑 ====================
 const categories = [
@@ -346,30 +361,49 @@ onUnmounted(() => {
 
         <main class="main-container">
             <aside class="sidebar-wrapper animate__animated animate__fadeInLeft">
-                <div class="sidebar-card profile-card">
-                    <div class="profile-header"></div>
-                    <div class="avatar-box" @click="handleAvatarClick">
-                        <img :src="profile.avatar" alt="Avatar" class="avatar">
+
+                <div class="sidebar-card profile-card-crystal">
+                    <div class="profile-bg-illustration">
+                        <img src="https://w.wallhaven.cc/full/5g/wallhaven-5gjgj8.jpg" class="illus-img" alt="bg">
                     </div>
-                    <div class="profile-meta">
-                        <h2 class="author-name">{{ profile.name }}</h2>
+
+                    <div class="profile-avatar-wrapper" @click="handleAvatarClick">
+                        <img :src="profile.avatar" alt="Avatar" class="avatar-img">
                     </div>
-                    <div class="stats-box">
-                        <div class="stat-item"><span class="stat-icon">📖</span><span class="label">文章</span><span
-                                class="num">{{ profile.articlesCount }}</span></div>
-                        <div class="stat-item"><span class="stat-icon">🗂️</span><span class="label">分类</span><span
-                                class="num">{{ profile.categoryCount }}</span></div>
-                        <div class="stat-item"><span class="stat-icon">🔥</span><span class="label">访问</span><span
-                                class="num">{{ profile.visits }}</span></div>
+
+                    <div class="profile-info-text">
+                        <h2 class="profile-name">{{ profile.name }}</h2>
                     </div>
-                    <div class="btn-container">
-                        <div v-if="profile.isLogin" class="poetize-btn" @click="handleFriendClick"><span>☆ 友站</span>
+
+                    <div class="profile-stats-grid">
+                        <div class="stat-col">
+                            <div class="stat-label-row">
+                                <span class="stat-icon">📖</span> <span class="stat-label">文章</span>
+                            </div>
+                            <div class="stat-num">{{ profile.articlesCount }}</div>
                         </div>
-                        <router-link v-else to="/login" class="poetize-btn login-style"><span>🚀 登录</span></router-link>
+                        <div class="stat-col">
+                            <div class="stat-label-row">
+                                <span class="stat-icon">🗂️</span> <span class="stat-label">分类</span>
+                            </div>
+                            <div class="stat-num">{{ profile.categoryCount }}</div>
+                        </div>
+                        <div class="stat-col">
+                            <div class="stat-label-row">
+                                <span class="stat-icon">🔥</span> <span class="stat-label">访问量</span>
+                            </div>
+                            <div class="stat-num">{{ profile.visits }}</div>
+                        </div>
+                    </div>
+
+                    <div class="profile-action-btn">
+                        <button class="friend-btn-crystal" @click="handleFriendClick">
+                            <span class="icon-star">☆</span> 友站
+                        </button>
                     </div>
                 </div>
 
-                <div class="sidebar-card search-card">
+                <div class="sidebar-card search-card-crystal">
                     <div class="card-header-row">
                         <div class="header-title"><span class="icon-search">🔍</span><span>搜索</span></div>
                         <div class="mac-dots"><span class="dot red"></span><span class="dot yellow"></span><span
@@ -379,7 +413,7 @@ onUnmounted(() => {
                         <input type="text" v-model="searchQuery" placeholder="搜索文章..." @keyup.enter="handleSearch">
                         <div class="search-icon-btn" @click="handleSearch">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
-                                <path fill="none" stroke="#dcb76b" stroke-width="3"
+                                <path fill="none" stroke="#48cbb6" stroke-width="3"
                                     d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round"
                                     stroke-linejoin="round" />
                             </svg>
@@ -387,7 +421,7 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <div class="sidebar-card recommend-card">
+                <div class="sidebar-card recommend-card-crystal">
                     <div class="card-header-row">
                         <div class="header-title"><span class="icon-thumb">👍</span><span>推荐文章</span></div>
                         <div class="mac-dots"><span class="dot red"></span><span class="dot yellow"></span><span
@@ -407,7 +441,7 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <div class="sidebar-card tag-card">
+                <div class="sidebar-card tag-card-crystal">
                     <div class="card-header-row">
                         <div class="header-title"><span class="icon-tag">🏷️</span><span>标签</span></div>
                         <div class="mac-dots"><span class="dot red"></span><span class="dot yellow"></span><span
@@ -422,25 +456,53 @@ onUnmounted(() => {
                         </div>
                     </div>
                 </div>
+
+                <div class="sidebar-card barrage-card-crystal">
+                    <div class="barrage-header">
+                        <div class="header-title-white">
+                            <span class="icon-barrage">✾</span>
+                            <span>最新弹幕</span>
+                        </div>
+                        <div class="mac-dots">
+                            <span class="dot red"></span>
+                            <span class="dot yellow"></span>
+                            <span class="dot green"></span>
+                        </div>
+                    </div>
+
+                    <div class="barrage-container">
+                        <div class="barrage-list-wrapper">
+                            <div class="barrage-item" v-for="item in barrageList" :key="item.id">
+                                <div class="barrage-avatar">
+                                    <img :src="item.avatar" alt="user">
+                                </div>
+                                <div class="barrage-content-box">
+                                    <div class="barrage-text">{{ item.content }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </aside>
 
             <section class="content-wrapper animate__animated animate__fadeInUp">
                 <div class="notice-bar">
                     <div class="notice-icon-box">
-                        <svg class="notice-svg" viewBox="0 0 1024 1024" width="20" height="20">
+                        <svg class="notice-svg" viewBox="0 0 1194 1024" width="25" height="25">
                             <path
-                                d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"
-                                fill="#f6a028" />
+                                d="M445.894796 182.257258a1.50895 1.50895 0 0 0 0-3.0179 1.50895 1.50895 0 1 0 0 3.0179z m0 0"
+                                fill="#FFFFFF"></path>
                             <path
-                                d="M686.7 638.6L544.1 535.5V288c0-4.4-3.6-8-8-8H488c-4.4 0-8 3.6-8 8v275.4c0 2.1.8 4.2 2.3 5.7l171.4 128.3c3.5 2.6 8.4 1.9 11-1.6l25.9-34.6c2.7-3.5 1.9-8.4-1.6-11z"
-                                fill="#f6a028" />
+                                d="M455.23868 119.287604L257.237325 332.397807H73.145396v262.982943h184.091929l195.176909 213.226276s2.824445-674.017119 2.824446-689.319422z m0 0"
+                                fill="#F5D04C"></path>
+                            <path
+                                d="M451.408268 0.080535L230.443785 221.161091h-156.698678A73.783798 73.783798 0 0 0 0 294.906197v294.845008a73.803143 73.803143 0 0 0 73.745107 73.764452h156.698678l220.964483 221.06121a73.706416 73.706416 0 0 0 73.667724-73.745107v-737.064155A73.609688 73.609688 0 0 0 451.408268 0.119226m0 808.236308l-193.455159-213.419731H73.745107V300.052105h184.208002l193.455159-213.419732v721.68447m436.821748-333.74884c7.254568 0 13.193642-14.509137 13.193642-32.345702s-5.803655-32.326357-13.193642-32.326357h-92.181383c-7.254568 0-13.193642 14.509137-13.193642 32.326357s5.803655 32.345703 13.193642 32.345702h92.200729m9.982286-417.766415c6.345329-3.617611 4.120595-19.132715-4.739651-34.551091s-21.280067-25.149171-27.606052-21.473523L786.047001 46.838647c-6.345329 3.617611-4.120595 19.132715 4.739652 34.551092s21.280067 25.149171 27.606051 21.473522l79.819598-46.061673m0 770.957499c6.345329 3.617611 4.120595 19.132715-4.739651 34.551091s-21.280067 25.149171-27.606051 21.473523l-79.819599-46.061673c-6.345329-3.617611-4.120595-19.132715 4.739652-34.551092s21.280067-25.149171 27.606051-21.473522l79.819598 46.061673M576.960666 607.877953c-6.538784-17.720493-4.720306-34.454364 12.903459-40.993148 44.649451-20.661011 66.0069-60.764265 71.44299-111.159334 6.345329-58.732986-21.763705-112.648939-70.224223-134.915628-15.92136-10.175741-22.479489-27.915579-12.20701-43.740211s27.915579-22.460144 43.740211-12.187675c71.849246 41.728278 114.970401 114.273962 105.897354 198.098082-7.254568 67.109595-48.073607 130.601578-110.44355 157.801373-14.605864 8.260535-34.144836 2.921173-41.109221-12.903459"
+                                fill="#ED752A"></path>
                         </svg>
                         <span class="notice-label" style="margin-left:5px">公告</span>
                     </div>
                     <div class="notice-content-wrapper">
-                        <div class="scroll-text">
-                            {{ notices[0].content }}
-                        </div>
+                        <div class="scroll-text">{{ notices[0].content }}</div>
                     </div>
                 </div>
 
@@ -493,10 +555,176 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* ==================== 1. 全局与 Hero 区域 ==================== */
+/* ==================== 0. 核心：晶体/玻璃质感混合 ==================== */
+/* 所有侧边栏卡片的通用玻璃晶体基底 */
+.sidebar-card,
+.profile-card-crystal,
+.search-card-crystal,
+.recommend-card-crystal,
+.tag-card-crystal {
+    /* 大师要求：底部向上 浅绿色到更浅的渐变 */
+    background: linear-gradient(0deg, #d9f4f0 0%, #f6fcfb 100%);
+
+    /* 晶体质感：半透明 + 模糊 + 边框高光 */
+    border-radius: 16px;
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.05);
+    /* 柔和投影 */
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.8);
+    /* 晶体白边 */
+    margin-bottom: 25px;
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.sidebar-card:hover,
+.profile-card-crystal:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 15px 40px rgba(72, 203, 182, 0.15);
+    /* 悬浮时带一点点绿色光晕 */
+    border-color: #fff;
+}
+
+/* ==================== 1. 个人资料卡片 (重构为图片样式) ==================== */
+.profile-card-crystal {
+    position: relative;
+    padding-bottom: 25px;
+    text-align: center;
+}
+
+/* 顶部背景图部分 */
+.profile-bg-illustration {
+    width: 100%;
+    height: 140px;
+    overflow: hidden;
+    position: relative;
+    clip-path: ellipse(130% 100% at 50% 0%);
+    /* 底部微弧 */
+}
+
+.illus-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.9;
+}
+
+/* 头像悬浮部分 */
+.profile-avatar-wrapper {
+    width: 85px;
+    height: 85px;
+    margin: -45px auto 10px;
+    /* 向上偏移，压住背景图 */
+    border-radius: 50%;
+    border: 2px rgba(145, 145, 145, 0.9);
+    padding: 2px;
+    background: #fff;
+    cursor: pointer;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    position: relative;
+    z-index: 2;
+    transition: transform 0.5s ease;
+}
+
+.profile-avatar-wrapper:hover {
+    transform: rotate(360deg);
+}
+
+.avatar-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+/* 名字文本 */
+.profile-info-text {
+    margin-bottom: 20px;
+}
+
+.profile-name {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #2c3e50;
+    letter-spacing: 1px;
+    margin: 0;
+    font-family: 'PingFang SC', sans-serif;
+    /* 简洁字体 */
+}
+
+/* 统计数据网格 - 图标文字在上，数字在下 */
+.profile-stats-grid {
+    display: flex;
+    justify-content: space-around;
+    padding: 0 20px;
+    margin-bottom: 25px;
+}
+
+.stat-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.stat-col:hover {
+    transform: translateY(-3px);
+}
+
+.stat-label-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.9rem;
+    color: #666;
+    font-weight: 500;
+}
+
+.stat-num {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #333;
+    font-family: 'Helvetica Neue', sans-serif;
+}
+
+/* 友站按钮 - 图片同款 */
+.profile-action-btn {
+    padding: 0 30px;
+}
+
+.friend-btn-crystal {
+    width: 100%;
+    height: 45px;
+    /* 图片上的按钮颜色接近 teal/ocean green */
+    background: #48cbb6;
+    border: none;
+    border-radius: 50px;
+    color: white;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    box-shadow: 0 5px 15px rgba(72, 203, 182, 0.3);
+    transition: all 0.3s;
+}
+
+.friend-btn-crystal:hover {
+    background: #3bb39e;
+    transform: scale(1.02);
+    box-shadow: 0 8px 20px rgba(72, 203, 182, 0.4);
+}
+
+/* ==================== 2. 全局与 Hero 区域 (保持) ==================== */
 .blog-page {
     font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', sans-serif;
-    background-color: #ffffff;
+    background-color: #f6f8fa;
+    /* 整体背景稍微改灰白一点，突出卡片 */
     min-height: 100vh;
 }
 
@@ -616,7 +844,6 @@ onUnmounted(() => {
     }
 }
 
-/* 波浪动画 */
 .hero-waves {
     position: absolute;
     bottom: 0;
@@ -668,22 +895,23 @@ onUnmounted(() => {
     }
 }
 
-/* ==================== 2. 主体布局容器 ==================== */
+/* ==================== 3. 主体布局容器 ==================== */
 .main-container {
     max-width: 1300px;
     margin: 0 auto;
     padding: 40px 20px;
     display: flex;
     gap: 30px;
-    background-color: #ffffff;
-    min-height: 800px;
+    position: relative;
+    z-index: 10;
+    /* 确保在 wave 上方 */
 }
 
 .sidebar-wrapper {
     width: 300px;
     flex-shrink: 0;
     position: sticky;
-    top: 80px;
+    top: 20px;
     height: fit-content;
     z-index: 10;
 }
@@ -693,155 +921,10 @@ onUnmounted(() => {
     min-width: 0;
 }
 
-/* ==================== 3. 侧边栏通用卡片样式 ==================== */
-.sidebar-card {
-    background: #fff;
-    border-radius: 12px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
-    margin-bottom: 20px;
-    overflow: hidden;
-    transition: all 0.3s ease;
-    border: 1px solid #f0f0f0;
-}
-
-.sidebar-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
-}
-
-/* ==================== 4. 个人资料卡片 ==================== */
-.profile-card {
-    background: linear-gradient(to bottom, #eef9fe 0%, #fff 100%);
-    text-align: center;
-    padding-bottom: 30px;
-    border: none;
-}
-
-.profile-header {
-    height: 120px;
-    background-image: url('https://images.unsplash.com/photo-1543857770-7245f1c63ddf?auto=format&fit=crop&q=80&w=1000');
-    background-size: cover;
-    background-position: center;
-    mask-image: linear-gradient(to bottom, black 20%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, black 20%, transparent 100%);
-    opacity: 0.7;
-}
-
-.avatar-box {
-    width: 80px;
-    height: 80px;
-    margin: -40px auto 10px;
-    border-radius: 50%;
-    border: 4px solid rgba(255, 255, 255, 0.8);
-    overflow: hidden;
-    transition: transform 0.6s ease;
-    cursor: pointer;
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-    position: relative;
-    z-index: 2;
-}
-
-.profile-card:hover .avatar-box {
-    transform: rotate(360deg);
-}
-
-.avatar {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-
-.profile-meta {
-    margin-bottom: 25px;
-}
-
-.author-name {
-    font-size: 1.8rem;
-    font-weight: 800;
-    color: #000;
-    letter-spacing: 1px;
-    font-family: 'Comic Sans MS', 'Chalkboard SE', sans-serif;
-}
-
-.stats-box {
-    display: flex;
-    justify-content: space-around;
-    padding: 0 20px;
-    margin-bottom: 30px;
-}
-
-.stat-item {
-    color: #000;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    cursor: pointer;
-    transition: transform 0.2s;
-    gap: 5px;
-}
-
-.stat-item:hover {
-    transform: translateY(-2px);
-}
-
-.stat-top {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 0.9rem;
-    color: #555;
-    font-weight: 500;
-}
-
-.stat-icon {
-    font-size: 1rem;
-}
-
-.num {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #000;
-}
-
-.btn-container {
-    padding: 0 25px;
-}
-
-.poetize-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 42px;
-    background: #42cba5;
-    border-radius: 50px;
-    color: white;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 4px 10px rgba(66, 203, 165, 0.3);
-}
-
-.poetize-btn:hover {
-    background: #3bb391;
-    transform: translateY(-2px);
-    box-shadow: 0 6px 15px rgba(66, 203, 165, 0.4);
-}
-
-.login-style {
-    background: #4e8cff;
-    box-shadow: 0 4px 10px rgba(78, 140, 255, 0.3);
-}
-
-.login-style:hover {
-    background: #3a75e6;
-}
-
-/* ==================== 5. 搜索 & 推荐卡片 ==================== */
-.search-card,
-.recommend-card,
-.tag-card {
+/* ==================== 4. 侧边栏通用头部 (搜索/推荐/标签) ==================== */
+.search-card-crystal,
+.recommend-card-crystal,
+.tag-card-crystal {
     padding: 15px 20px;
 }
 
@@ -850,6 +933,9 @@ onUnmounted(() => {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 15px;
+    border-bottom: 1px dashed rgba(0, 0, 0, 0.05);
+    /* 淡淡的分割线 */
+    padding-bottom: 10px;
 }
 
 .header-title {
@@ -859,12 +945,6 @@ onUnmounted(() => {
     display: flex;
     align-items: center;
     gap: 6px;
-}
-
-.icon-search,
-.icon-thumb,
-.icon-tag {
-    font-size: 1.2rem;
 }
 
 .mac-dots {
@@ -893,13 +973,19 @@ onUnmounted(() => {
 .search-input-wrapper {
     position: relative;
     width: 100%;
-    border: 1px solid #e0cda5;
-    border-radius: 20px;
-    padding: 2px;
-    background: white;
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+    border: 2px solid #e0f2f1;
+    /* 浅青色边框 */
+    border-radius: 50px;
+    /* 更圆润 */
+    padding: 4px;
+    background: rgba(255, 255, 255, 0.8);
     display: flex;
     align-items: center;
+    transition: border-color 0.3s;
+}
+
+.search-input-wrapper:focus-within {
+    border-color: #48cbb6;
 }
 
 .search-input-wrapper input {
@@ -912,17 +998,13 @@ onUnmounted(() => {
     color: #555;
 }
 
-.search-input-wrapper input::placeholder {
-    color: #aaa;
-}
-
 .search-icon-btn {
     position: absolute;
-    right: 10px;
+    right: 12px;
     top: 50%;
     transform: translateY(-50%);
     cursor: pointer;
-    opacity: 0.6;
+    opacity: 0.7;
     transition: all 0.2s;
     display: flex;
 }
@@ -932,11 +1014,11 @@ onUnmounted(() => {
     transform: translateY(-50%) scale(1.1);
 }
 
-/* ==================== 6. 推荐文章列表 ==================== */
+/* ==================== 5. 推荐文章列表 ==================== */
 .recommend-list {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 15px;
 }
 
 .recommend-item {
@@ -944,22 +1026,13 @@ onUnmounted(() => {
     flex-direction: column;
     gap: 8px;
     cursor: pointer;
-    border-bottom: 1px dashed #f0f0f0;
-    padding-bottom: 15px;
-    transition: transform 0.2s;
-}
-
-.recommend-item:last-child {
-    border-bottom: none;
-    padding-bottom: 0;
+    padding: 10px;
+    border-radius: 8px;
+    transition: background 0.2s;
 }
 
 .recommend-item:hover {
-    transform: translateX(5px);
-}
-
-.recommend-item:hover .rec-title {
-    color: #42b883;
+    background: rgba(255, 255, 255, 0.5);
 }
 
 .rec-top-section {
@@ -969,8 +1042,8 @@ onUnmounted(() => {
 }
 
 .rec-thumb {
-    width: 100px;
-    height: 65px;
+    width: 90px;
+    height: 60px;
     border-radius: 6px;
     overflow: hidden;
     flex-shrink: 0;
@@ -993,7 +1066,7 @@ onUnmounted(() => {
 
 .rec-title {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     font-weight: 500;
     color: #333;
     line-height: 1.4;
@@ -1002,6 +1075,10 @@ onUnmounted(() => {
     -webkit-box-orient: vertical;
     overflow: hidden;
     transition: color 0.2s;
+}
+
+.recommend-item:hover .rec-title {
+    color: #48cbb6;
 }
 
 .rec-bottom-section {
@@ -1014,33 +1091,14 @@ onUnmounted(() => {
     color: #999;
 }
 
-/* ==================== 🔥 3D 标签云 (球体旋转版) ==================== */
-.tag-card {
-    background: transparent !important;
-    box-shadow: none !important;
-    border: none !important;
-    padding: 0 !important;
-    margin-bottom: 25px;
-}
-
-.tag-card .card-header-row {
-    background: #fff;
-    padding: 12px 20px;
-    border-radius: 12px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-    margin-bottom: 15px;
-    border: 1px solid #f5f5f5;
-}
-
+/* ==================== 6. 3D 标签云 (透明背景) ==================== */
 .tag-cloud-3d-box {
     position: relative;
     width: 100%;
-    height: 400px;
-    background: linear-gradient(0deg, #d4fc79 0%, #e8f5e9 100%);
-    border-radius: 16px;
+    height: 320px;
+    /* 去掉原有深色背景，保持通透 */
+    border-radius: 12px;
     overflow: hidden;
-    box-shadow: inset 0 0 40px rgba(255, 255, 255, 0.5);
-    border: 1px solid rgba(255, 255, 255, 0.6);
 }
 
 .tag-pill-3d {
@@ -1049,73 +1107,81 @@ onUnmounted(() => {
     left: 0;
     display: flex;
     align-items: stretch;
-    height: 32px;
+    height: 30px;
+    /* 稍微小一点 */
     border-radius: 50px;
     cursor: pointer;
     user-select: none;
-    border: 1px solid color-mix(in srgb, var(--tag-color), transparent 40%);
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    /* 胶囊晶体感 */
+    background: rgba(255, 255, 255, 0.25);
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
     will-change: transform, opacity, z-index;
     transition: box-shadow 0.3s;
 }
 
 .tag-icon-part {
-    width: 32px;
+    width: 28px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.45);
-    backdrop-filter: blur(4px);
-    border-right: 1px solid rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.5);
+    border-right: 1px solid rgba(255, 255, 255, 0.3);
     border-top-left-radius: 50px;
     border-bottom-left-radius: 50px;
 }
 
 .tag-text-part {
     flex-grow: 1;
-    padding: 0 12px;
+    padding: 0 10px;
     display: flex;
     align-items: center;
     justify-content: center;
     white-space: nowrap;
-    background: linear-gradient(135deg, color-mix(in srgb, var(--tag-color), white 10%) 0%, var(--tag-color) 100%);
-    color: white;
-    font-size: 0.85rem;
-    font-weight: 600;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+    /* 使用 tag-color 做文字颜色，背景保持玻璃白，更清爽 */
+    color: var(--tag-color);
+    font-size: 0.8rem;
+    font-weight: 700;
+    background: rgba(255, 255, 255, 0.8);
     border-top-right-radius: 50px;
     border-bottom-right-radius: 50px;
 }
 
-.emoji-folder {
-    font-size: 1rem;
-    filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.1));
-}
-
 .tag-pill-3d:hover {
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
-    border-color: white;
+    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.1);
+    background: #fff;
+    z-index: 1000 !important;
 }
 
-/* ==================== 9. 顶部横幅公告栏 ==================== */
-.notice-bar {
+/* ==================== 7. 主体内容区 (卡片化) ==================== */
+.notice-bar,
+.category-bar,
+.article-card,
+.friend-card {
     background: #fff;
     border-radius: 12px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.03);
+    border: 1px solid #f0f0f0;
     margin-bottom: 25px;
+    transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.notice-bar {
     padding: 12px 20px;
     display: flex;
     align-items: center;
     gap: 15px;
-    border: 1px solid #f0f0f0;
-    transition: transform 0.3s;
     overflow: hidden;
 }
 
-.notice-bar:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+.notice-bar:hover,
+.category-bar:hover,
+.article-card:hover,
+.friend-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
 }
 
 .notice-icon-box {
@@ -1171,18 +1237,12 @@ onUnmounted(() => {
     }
 }
 
-/* ==================== 10. 分类导航栏 ==================== */
 .category-bar {
     display: flex;
     align-items: center;
     gap: 20px;
     padding: 15px 25px;
-    margin-bottom: 25px;
     flex-wrap: wrap;
-    background: #fff;
-    border-radius: 12px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
-    border: 1px solid #f0f0f0;
 }
 
 .bar-title {
@@ -1215,17 +1275,16 @@ onUnmounted(() => {
 }
 
 .cat-item:hover {
-    color: #42b883;
-    background: rgba(66, 184, 131, 0.1);
+    color: #48cbb6;
+    background: rgba(72, 203, 182, 0.1);
 }
 
 .cat-item.active {
     color: white;
-    background: linear-gradient(90deg, #42b883, #35495e);
-    box-shadow: 0 4px 10px rgba(66, 184, 131, 0.3);
+    background: linear-gradient(90deg, #48cbb6, #2c3e50);
+    box-shadow: 0 4px 10px rgba(72, 203, 182, 0.3);
 }
 
-/* ==================== 11. 友链区域 ==================== */
 .friend-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -1233,21 +1292,11 @@ onUnmounted(() => {
 }
 
 .friend-card {
-    background: #fff;
-    border-radius: 12px;
     padding: 20px;
     display: flex;
     align-items: center;
     gap: 15px;
-    border: 1px solid #f0f0f0;
-    transition: all 0.3s ease;
     cursor: pointer;
-}
-
-.friend-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-    border-color: #42b883;
 }
 
 .friend-avatar {
@@ -1269,7 +1318,6 @@ onUnmounted(() => {
     color: #888;
 }
 
-/* ==================== 12. 文章列表 ==================== */
 .article-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -1281,17 +1329,7 @@ onUnmounted(() => {
     flex-direction: column;
     height: 100%;
     position: relative;
-    background: #fff;
-    border-radius: 12px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
-    transition: all 0.3s ease;
-    border: 1px solid #f0f0f0;
     overflow: hidden;
-}
-
-.article-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
 }
 
 .card-cover {
@@ -1315,7 +1353,7 @@ onUnmounted(() => {
     position: absolute;
     top: 10px;
     left: 10px;
-    background: linear-gradient(90deg, #42b883, #2c3e50);
+    background: linear-gradient(90deg, #48cbb6, #2c3e50);
     color: white;
     padding: 4px 10px;
     border-radius: 4px;
@@ -1355,7 +1393,7 @@ onUnmounted(() => {
 }
 
 .title a:hover {
-    color: #42b883;
+    color: #48cbb6;
 }
 
 .summary {
@@ -1392,7 +1430,7 @@ onUnmounted(() => {
 }
 
 .read-btn {
-    color: #42b883;
+    color: #48cbb6;
     font-size: 0.9rem;
     font-weight: 600;
     text-decoration: none;
@@ -1411,7 +1449,6 @@ onUnmounted(() => {
     grid-column: 1 / -1;
 }
 
-/* ==================== 13. 页脚与响应式 ==================== */
 .page-footer {
     text-align: center;
     padding: 40px;
@@ -1441,5 +1478,123 @@ onUnmounted(() => {
     .article-grid {
         grid-template-columns: 1fr;
     }
+}
+
+/* ==================== 🔥 8. 新增：弹幕侧边栏样式 (核心实现) ==================== */
+.barrage-card-crystal {
+    background-image: url('https://w.wallhaven.cc/full/g7/wallhaven-g7x767.jpg');
+    background-size: cover;
+    background-position: center bottom;
+    /* 确保山峰在底部 */
+    position: relative;
+    height: 400px;
+    /* 固定高度 */
+    display: flex;
+    flex-direction: column;
+    padding: 0 !important;
+    /* 覆盖默认padding */
+    border: none;
+}
+
+/* 顶部标题区 */
+.barrage-header {
+    background: rgba(255, 255, 255, 0.3);
+    padding: 15px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgb(216, 254, 250);
+    z-index: 2;
+}
+
+.header-title-white {
+    font-size: 1.1rem;
+    font-weight: 400;
+    color: rgb(0, 0, 0);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.icon-barrage {
+    font-size: 1.3rem;
+    color: rgb(81, 213, 154);
+    animation: spin 4s linear infinite;
+    display: inline-block;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+/* 弹幕内容容器 */
+.barrage-container {
+    flex: 1;
+    overflow: hidden;
+    /* 隐藏溢出内容 */
+    position: relative;
+    /* 加上一层淡白色遮罩，让文字更清晰，同时保留背景图 */
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.barrage-list-wrapper {
+    /* 核心动画：无限向上滚动 */
+    animation: scroll-up 3s linear infinite;
+    padding: 10px;
+}
+
+/* 鼠标悬停时暂停滚动 */
+.barrage-container:hover .barrage-list-wrapper {
+    animation-play-state: paused;
+}
+
+@keyframes scroll-up {
+    0% {
+        transform: translateY(0);
+    }
+
+    100% {
+        transform: translateY(-50%);
+    }
+
+    /* 向上移动一半高度（配合双份数据） */
+}
+
+/* 单条弹幕 */
+.barrage-item {
+    color: #000;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 1px;
+    padding: 5px 12px;
+    border-radius: 50px;
+    transition: transform 0.2s;
+    width: fit-content;
+    /* 宽度自适应内容 */
+}
+
+.barrage-item:hover {
+    transform: scale(1.05);
+}
+
+.barrage-avatar img {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 2px;
+    object-fit: cover;
+}
+
+.barrage-content-box {
+    font-size: 0.9rem;
+    color: #000;
+    font-weight: 400;
 }
 </style>
