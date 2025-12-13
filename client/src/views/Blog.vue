@@ -8,7 +8,7 @@ const userStore = useUserStore()
 const router = useRouter()
 
 // ==================== 1. 用户信息逻辑 ====================
-const defaultAvatar = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?q=80&w=200&auto=format&fit=crop'
+const defaultAvatar = 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'
 
 const getFullAvatarUrl = (path) => {
     if (!path) return defaultAvatar
@@ -56,9 +56,9 @@ const heroBgUrl = ref('')
 const bgIndex = ref(0)
 const wallpaperList = ref([])
 const fallbackList = [
-    'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=2000&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1511300636408-a63a6ad120de?q=80&w=2000&auto=format&fit=crop',
-    'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?q=80&w=2000&auto=format&fit=crop'
+    'https://w.wallhaven.cc/full/og/wallhaven-ogd6j9.png',
+    'https://w.wallhaven.cc/full/9o/wallhaven-9ooe6d.jpg',
+    'https://w.wallhaven.cc/full/yx/wallhaven-yxd2vk.png'
 ]
 let carouselTimer = null
 
@@ -132,7 +132,7 @@ const tags = ref([])
 let animationFrameId = null
 
 // 3D 配置
-const RADIUS = 120 // 稍微调小一点适应侧边栏
+const RADIUS = 125 // 稍微调小一点适应侧边栏
 const BASE_SPEED = 0.005
 const ACCELERATION = 0.0001
 let currentSpeed = 0
@@ -194,7 +194,7 @@ const handleTagClick = (tag) => {
     scrollToContent()
 }
 
-// ==================== 6. 🔥 弹幕数据 (新增) ====================
+// ==================== 6. 🔥 弹幕数据 ====================
 const barrageList = ref([
     { id: 1, avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100&auto=format&fit=crop', content: '究极好看' },
     { id: 2, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100&auto=format&fit=crop', content: '好好好' },
@@ -203,7 +203,6 @@ const barrageList = ref([
     { id: 5, avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?q=80&w=100&auto=format&fit=crop', content: '666' },
     { id: 6, avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=100&auto=format&fit=crop', content: '我也实现这种效果的' },
     { id: 7, avatar: 'https://images.unsplash.com/photo-1520813792240-56fc4a3765a7?q=80&w=100&auto=format&fit=crop', content: '你好' },
-    // 为了循环无缝，可以复制一份数据
     { id: 11, avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100&auto=format&fit=crop', content: '究极好看' },
     { id: 12, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100&auto=format&fit=crop', content: '好好好' },
     { id: 13, avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=100&auto=format&fit=crop', content: '哈哈' },
@@ -533,11 +532,11 @@ onUnmounted(() => {
                         <div class="card-info">
                             <div class="publish-time">📅 {{ article.created_at }}</div>
                             <h3 class="title"><router-link :to="'/article/' + article.id">{{ article.title
-                            }}</router-link></h3>
+                                    }}</router-link></h3>
                             <p class="summary">{{ article.summary }}</p>
                             <div class="card-footer">
                                 <div class="meta"><span>🔥 {{ article.views }}</span><span>💬 {{ article.comments
-                                }}</span></div><router-link :to="'/article/' + article.id"
+                                        }}</span></div><router-link :to="'/article/' + article.id"
                                     class="read-btn">阅读全文</router-link>
                             </div>
                         </div>
