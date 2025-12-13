@@ -240,23 +240,59 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   };
 
   // ==================== 公共方法 ====================
+  // 🔥 新增：强制刷新全局配置（跳过缓存）
+  const forceRefreshGlobalConfig = async () => {
+    try {
+      // 清除全局配置缓存
+      sessionStorage.removeItem("global_wallpaper_config");
 
-  // 🔥 优化：防止重复初始化
-  const initialize = async () => {
-    if (isInitialized.value || isLoading.value) {
+      logger.debug("强制刷新全局配置...");
+      const res = await fetch("/api/wallpaper/global?t=" + Date.now()); // 加时间戳防止缓存
+      if (!res.ok) throw new Error("Network response was not ok");
+
+      const data = await res.json();
+
+      // 更新缓存
+      sessionStorage.setItem(
+        "global_wallpaper_config",
+        JSON.stringify({
+          data,
+          timestamp: Date.now(),
+        })
+      );
+
+      // 更新本地缓存配置
+      wallpaperCache.value.website = data.websiteUrl || "";
+      wallpaperCache.value.daily = data.dailyUrl || "";
+      wallpaperCache.value.random = data.randomUrls || [];
+
+      return data;
+    } catch (err) {
+      logger.error("强制刷新全局配置失败:", err);
+      return null;
+    }
+  };
+
+  // 🔥 修改 initialize 函数，添加强制刷新选项
+  const initialize = async (forceRefresh = false) => {
+    if (isInitialized.value && !forceRefresh) {
       logger.info("壁纸已初始化，跳过重复请求");
       return;
     }
 
     isLoading.value = true;
-    logger.info("🎨 初始化壁纸系统");
+    logger.info("🎨 初始化壁纸系统" + (forceRefresh ? "（强制刷新）" : ""));
 
     try {
-      // 1. 并行获取配置
-      const [config, userCustomUrl] = await Promise.all([
-        fetchGlobalConfig(),
-        fetchUserWallpaper(),
-      ]);
+      // 1. 并行获取配置（如果强制刷新，则不使用缓存）
+      let config;
+      if (forceRefresh) {
+        config = await forceRefreshGlobalConfig();
+      } else {
+        config = await fetchGlobalConfig();
+      }
+
+      const userCustomUrl = await fetchUserWallpaper();
 
       logger.debug("全局配置:", config);
       logger.debug("用户壁纸:", userCustomUrl);
@@ -276,11 +312,11 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
 
       logger.debug("壁纸模式:", effectiveMode);
 
-      // 4. 🔥 立即切换壁纸
+      // 4. 立即切换壁纸
       await switchWallpaperImmediately(effectiveMode, config);
       wallpaperMode.value = effectiveMode;
 
-      // 5. 🔥 确保壁纸已设置
+      // 5. 确保壁纸已设置
       if (!currentWallpaper.value) {
         logger.warn("壁纸未设置，使用默认");
         currentWallpaper.value =
@@ -303,8 +339,8 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   };
 
   // 切换壁纸
-  const changeWallpaper = async (mode) => {
-    if (mode === wallpaperMode.value && mode !== "random") {
+  const changeWallpaper = async (mode, forceRefresh = false) => {
+    if (mode === wallpaperMode.value && mode !== "random" && !forceRefresh) {
       return;
     }
 
@@ -312,12 +348,30 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     localStorage.setItem("preferredWallpaperMode", mode);
 
     try {
-      const config = await fetchGlobalConfig();
+      let config;
+      if (forceRefresh) {
+        config = await forceRefreshGlobalConfig();
+      } else {
+        config = await fetchGlobalConfig();
+      }
       await switchWallpaperImmediately(mode, config);
       logger.debug("壁纸切换完成:", mode);
     } catch (error) {
       logger.error("壁纸切换失败:", error);
     }
+  };
+
+  // 🔥 新增：手动刷新壁纸函数
+  const refreshWallpaper = async () => {
+    logger.info("🔄 手动刷新壁纸");
+
+    // 清除所有缓存
+    clearCache();
+
+    // 重新初始化
+    await initialize(true);
+
+    return currentWallpaper.value;
   };
 
   // 上传用户壁纸
@@ -439,6 +493,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
     isInitialized, // 🔥 暴露初始化状态
 
     wallpaperStyle,
+
+    forceRefreshGlobalConfig, // 🔥 新增
+    refreshWallpaper, // 🔥 新增
 
     initialize,
     changeWallpaper,
