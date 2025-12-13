@@ -43,6 +43,11 @@ if (process.env.NODE_ENV !== "production") {
   );
 }
 
+
+// 放在 CORS 之前，这样加载网页/图片永远不会报跨域错误
+app.use("/uploads", express.static("uploads", { maxAge: "1d" }));
+app.use(express.static(path.join(__dirname, "../client/dist")));
+
 // 确保 logs 目录存在
 if (!fs.existsSync("logs")) {
   fs.mkdirSync("logs", { recursive: true });
@@ -57,9 +62,19 @@ const corsOptions = {
       ? process.env.ALLOWED_ORIGINS.split(",")
       : ["http://localhost:5173", "http://localhost:3000"];
 
-    if (!origin || allowedOrigins.includes(origin)) {
+    // 🔍 逻辑修改：
+    // 1. !origin: 允许同源请求（比如后端直接渲染页面）
+    // 2. includes: 在白名单里
+    // 3. 包含 'cpolar': 允许内网穿透的域名
+    if (
+      !origin ||
+      allowedOrigins.includes(origin) ||
+      origin.includes("cpolar") || // 🔥 新增：允许 cpolar
+      origin.includes("ngrok") // 🔥 备用：允许 ngrok (如果以后用的话)
+    ) {
       callback(null, true);
     } else {
+      console.log("❌ CORS 拦截了请求，来源:", origin); // 方便调试看日志
       callback(new Error("Not allowed by CORS"));
     }
   },
