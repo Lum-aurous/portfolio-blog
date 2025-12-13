@@ -1,37 +1,182 @@
+require("dotenv").config(); // 🔥 1. 加载环境变量
 const express = require("express");
 const cors = require("cors");
-const mysql = require("mysql2");
+const mysql = require("mysql2/promise"); // 🔥 7. 使用连接池版本
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken"); // 🔥 1. JWT认证
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
+const rateLimit = require("express-rate-limit"); // 🔥 9. 限流
+const { body, validationResult } = require("express-validator"); // 🔥 8. 输入验证
+const winston = require("winston"); // 🔥 4. 日志系统
+
 const app = express();
 
-app.use(cors());
+// ==========================================
+// 🔥 4. Winston 日志系统配置
+// ==========================================
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || "info",
+  format: winston.format.combine(
+    winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
+    winston.format.errors({ stack: true }),
+    winston.format.splat(),
+    winston.format.json()
+  ),
+  defaultMeta: { service: "portfolio-backend" },
+  transports: [
+    new winston.transports.File({ filename: "logs/error.log", level: "error" }),
+    new winston.transports.File({ filename: "logs/combined.log" }),
+  ],
+});
+
+// 开发环境下同时输出到控制台
+if (process.env.NODE_ENV !== "production") {
+  logger.add(
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.simple()
+      ),
+    })
+  );
+}
+
+// 确保 logs 目录存在
+if (!fs.existsSync("logs")) {
+  fs.mkdirSync("logs", { recursive: true });
+}
+
+// ==========================================
+// 🔥 10. CORS 配置（安全加固）
+// ==========================================
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(",")
+      : ["http://localhost:5173", "http://localhost:3000"];
+
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true,
+  optionsSuccessStatus: 200,
+};
+
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // ==========================================
-// 数据库连接配置
+// 🔥 9. 限流配置
 // ==========================================
-const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "123456",
-  database: "my_portfolio",
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15分钟
+  max: 100, // 最多100次请求
+  message: { success: false, message: "请求过于频繁，请稍后再试" },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
-// 连接数据库
-db.connect((err) => {
-  if (err) {
-    console.error("❌ 数据库连接失败: " + err.message);
-    process.exit(1); // 数据库连接失败则退出程序
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15分钟
+  max: 5, // 登录/注册最多5次
+  message: { success: false, message: "尝试次数过多，请15分钟后再试" },
+  skipSuccessfulRequests: true, // 成功的请求不计数
+});
+
+app.use("/api/", generalLimiter);
+
+// ==========================================
+// 🔥 2 & 7. 数据库连接池配置（使用环境变量）
+// ==========================================
+const dbPool = mysql.createPool({
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER || "root",
+  password: process.env.DB_PASSWORD || "123456",
+  database: process.env.DB_NAME || "my_portfolio",
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10,
+  waitForConnections: true,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+});
+
+// 测试数据库连接
+(async () => {
+  try {
+    const connection = await dbPool.getConnection();
+    logger.info("✅ 数据库连接池创建成功！");
+    connection.release();
+    // 数据库连接成功后初始化壁纸系统
+    initializeWallpaperSystem();
+  } catch (err) {
+    logger.error("❌ 数据库连接失败:", err);
+    process.exit(1);
   }
-  console.log("✅ 数据库连接成功！(MySQL)");
+})();
 
-  // 🔥 数据库连接成功后再执行初始化操作
-  initializeWallpaperSystem();
-});
+// ==========================================
+// 🔥 1. JWT 认证中间件
+// ==========================================
+const JWT_SECRET =
+  process.env.JWT_SECRET ||
+  "your-super-secret-jwt-key-change-this-in-production";
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+
+// 生成 JWT Token
+function generateToken(user) {
+  return jwt.sign(
+    {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+}
+
+// 验证 Token 中间件
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: "未提供认证令牌，请先登录",
+    });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      logger.warn("JWT验证失败:", err.message);
+      return res.status(403).json({
+        success: false,
+        message: "令牌无效或已过期，请重新登录",
+      });
+    }
+
+    req.user = user; // 将用户信息附加到请求对象
+    next();
+  });
+}
+
+// 🔥 5. 权限检查中间件（管理员）
+function requireAdmin(req, res, next) {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      message: "需要管理员权限",
+    });
+  }
+  next();
+}
 
 // ==========================================
 // Multer 图片上传存储配置
@@ -48,7 +193,7 @@ const storage = multer.diskStorage({
     const timestamp = Date.now();
     const random = Math.round(Math.random() * 1e9);
     const safeName = `${timestamp}-${random}${ext}`;
-    console.log("📝 文件重命名:", file.originalname, "->", safeName);
+    logger.info(`📝 文件重命名: ${file.originalname} -> ${safeName}`);
     cb(null, safeName);
   },
 });
@@ -59,7 +204,6 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB限制
   },
   fileFilter: (req, file, cb) => {
-    // 只允许图片格式
     const allowedTypes = /jpeg|jpg|png|gif|webp/;
     const extname = allowedTypes.test(
       path.extname(file.originalname).toLowerCase()
@@ -77,13 +221,10 @@ const upload = multer({
 // ==========================================
 // 🔥 壁纸洗牌系统（优化版）
 // ==========================================
-
-// 全局壁纸配置缓存
 let globalWallpaperCache = null;
 let cacheTime = 0;
-const CACHE_DURATION = 5 * 60 * 1000; // 5分钟缓存
+const CACHE_DURATION = 5 * 60 * 1000;
 
-// Fisher-Yates 洗牌算法
 function shuffleArray(arr) {
   const result = [...arr];
   for (let i = result.length - 1; i > 0; i--) {
@@ -93,47 +234,30 @@ function shuffleArray(arr) {
   return result;
 }
 
-// 清空壁纸缓存
 function clearWallpaperCache() {
   globalWallpaperCache = null;
   cacheTime = 0;
-  console.log("🧹 壁纸缓存已清空");
+  logger.info("🧹 壁纸缓存已清空");
 }
 
-// 洗牌全局壁纸顺序
-function shuffleGlobalWallpapers(callback) {
-  console.log("🔄 开始洗牌全局壁纸顺序…");
+async function shuffleGlobalWallpapers() {
+  logger.info("🔄 开始洗牌全局壁纸顺序…");
 
-  const sql = "SELECT id, random_urls FROM global_wallpapers";
-
-  db.query(sql, (err, results) => {
-    if (err) {
-      console.error("❌ 读取 global_wallpapers 失败:", err);
-      if (callback) callback(err);
-      return;
-    }
+  try {
+    const [results] = await dbPool.query(
+      "SELECT id, random_urls FROM global_wallpapers"
+    );
 
     if (results.length === 0) {
-      console.log("ℹ️ 没有找到全局壁纸配置");
-      if (callback) callback(null);
+      logger.info("ℹ️ 没有找到全局壁纸配置");
       return;
     }
 
-    let processedCount = 0;
-    let hasError = false;
-
-    results.forEach((row) => {
-      if (!row.random_urls) {
-        processedCount++;
-        if (processedCount === results.length && callback) {
-          callback(hasError ? new Error("部分洗牌失败") : null);
-        }
-        return;
-      }
+    for (const row of results) {
+      if (!row.random_urls) continue;
 
       let urls = [];
 
-      // 兼容 JSON 数组和字符串格式
       if (Array.isArray(row.random_urls)) {
         urls = row.random_urls;
       } else if (typeof row.random_urls === "string") {
@@ -148,303 +272,332 @@ function shuffleGlobalWallpapers(callback) {
       }
 
       if (urls.length === 0) {
-        console.log(`⚠️ 壁纸 ID=${row.id} 没有可洗牌的URL`);
-        processedCount++;
-        if (processedCount === results.length && callback) {
-          callback(hasError ? new Error("部分洗牌失败") : null);
-        }
-        return;
+        logger.warn(`⚠️ 壁纸 ID=${row.id} 没有可洗牌的URL`);
+        continue;
       }
 
       const shuffled = shuffleArray(urls);
-      const updateSql =
-        "UPDATE global_wallpapers SET random_urls = ? WHERE id = ?";
+      await dbPool.query(
+        "UPDATE global_wallpapers SET random_urls = ? WHERE id = ?",
+        [JSON.stringify(shuffled), row.id]
+      );
 
-      db.query(updateSql, [JSON.stringify(shuffled), row.id], (updateErr) => {
-        processedCount++;
+      logger.info(`✅ 壁纸 ID=${row.id} 洗牌完成 (${urls.length} 张)`);
+    }
 
-        if (updateErr) {
-          console.error(`❌ 壁纸 ID=${row.id} 洗牌失败:`, updateErr);
-          hasError = true;
-        } else {
-          console.log(`✅ 壁纸 ID=${row.id} 洗牌完成 (${urls.length} 张)`);
-        }
-
-        // 所有记录处理完毕
-        if (processedCount === results.length) {
-          // 清空缓存
-          clearWallpaperCache();
-
-          if (callback) {
-            callback(hasError ? new Error("部分洗牌失败") : null);
-          }
-        }
-      });
-    });
-  });
+    clearWallpaperCache();
+    logger.info("✅ 所有壁纸洗牌完成");
+  } catch (err) {
+    logger.error("❌ 壁纸洗牌失败:", err);
+    throw err;
+  }
 }
 
-// 初始化壁纸系统
 function initializeWallpaperSystem() {
-  console.log("🚀 初始化壁纸系统...");
+  logger.info("🚀 初始化壁纸系统...");
 
-  // 启动时洗牌一次
-  shuffleGlobalWallpapers((err) => {
-    if (err) {
-      console.error("❌ 启动洗牌失败:", err);
-    } else {
-      console.log("✅ 启动洗牌完成");
-    }
+  shuffleGlobalWallpapers().catch((err) => {
+    logger.error("❌ 启动洗牌失败:", err);
   });
 
-  // 🔥 每天凌晨3点自动洗牌
   scheduleDaily3AMShuffle();
 }
 
-// 定时任务：每天凌晨3点洗牌
 function scheduleDaily3AMShuffle() {
   const now = new Date();
   const target = new Date();
-
-  // 设置为今天凌晨3点
   target.setHours(3, 0, 0, 0);
 
-  // 如果已经过了今天的3点，设置为明天3点
   if (now > target) {
     target.setDate(target.getDate() + 1);
   }
 
   const msUntil3AM = target.getTime() - now.getTime();
-
-  console.log(`⏰ 下次自动洗牌时间: ${target.toLocaleString("zh-CN")}`);
+  logger.info(`⏰ 下次自动洗牌时间: ${target.toLocaleString("zh-CN")}`);
 
   setTimeout(() => {
-    shuffleGlobalWallpapers((err) => {
-      if (err) {
-        console.error("❌ 定时洗牌失败:", err);
-      } else {
-        console.log("✅ 定时洗牌完成");
-      }
+    shuffleGlobalWallpapers().catch((err) => {
+      logger.error("❌ 定时洗牌失败:", err);
     });
 
-    // 洗牌后，设置下一次（24小时后）
     setInterval(() => {
-      shuffleGlobalWallpapers((err) => {
-        if (err) {
-          console.error("❌ 定时洗牌失败:", err);
-        } else {
-          console.log("✅ 定时洗牌完成");
-        }
+      shuffleGlobalWallpapers().catch((err) => {
+        logger.error("❌ 定时洗牌失败:", err);
       });
-    }, 24 * 60 * 60 * 1000); // 每24小时
+    }, 24 * 60 * 60 * 1000);
   }, msUntil3AM);
 }
+
+// ==========================================
+// 🔥 6. 统一响应格式
+// ==========================================
+const apiResponse = {
+  success: (res, message, data = null, statusCode = 200) => {
+    res.status(statusCode).json({
+      success: true,
+      message,
+      data,
+      timestamp: new Date().toISOString(),
+    });
+  },
+  error: (res, message, statusCode = 500, errors = null) => {
+    res.status(statusCode).json({
+      success: false,
+      message,
+      errors,
+      timestamp: new Date().toISOString(),
+    });
+  },
+};
 
 // ==========================================
 // 基础接口
 // ==========================================
 
-// 上传接口
-app.post("/api/upload", upload.single("image"), (req, res) => {
-  const file = req.file;
-  if (!file) {
-    return res.status(400).json({ error: "请选择图片" });
+// 上传接口（需要认证）
+app.post(
+  "/api/upload",
+  authenticateToken,
+  upload.single("image"),
+  (req, res) => {
+    const file = req.file;
+    if (!file) {
+      return apiResponse.error(res, "请选择图片", 400);
+    }
+    apiResponse.success(res, "上传成功", { filePath: file.path });
   }
-  res.json({ filePath: file.path });
-});
+);
 
 // 获取个人简介接口
-app.get("/api/profile", (req, res) => {
-  const sql = "SELECT * FROM profile LIMIT 1";
-  db.query(sql, (err, results) => {
-    if (err) {
-      console.error("查询出错: ", err);
-      return res.status(500).send("服务器内部错误");
-    }
-    res.json(results.length > 0 ? results[0] : {});
-  });
+app.get("/api/profile", async (req, res) => {
+  try {
+    const [results] = await dbPool.query("SELECT * FROM profile LIMIT 1");
+    apiResponse.success(res, "获取成功", results.length > 0 ? results[0] : {});
+  } catch (err) {
+    logger.error("查询个人简介出错:", err);
+    apiResponse.error(res, "服务器内部错误");
+  }
 });
 
 // 获取文章列表接口
-app.get("/api/articles", (req, res) => {
-  const sql = "SELECT * FROM articles ORDER BY created_at DESC";
-  db.query(sql, (err, results) => {
-    if (err) {
-      console.error("查询文章出错: ", err);
-      return res.status(500).send("服务器错误");
-    }
-    res.json(results);
-  });
+app.get("/api/articles", async (req, res) => {
+  try {
+    const [results] = await dbPool.query(
+      "SELECT * FROM articles ORDER BY created_at DESC"
+    );
+    apiResponse.success(res, "获取成功", results);
+  } catch (err) {
+    logger.error("查询文章出错:", err);
+    apiResponse.error(res, "服务器错误");
+  }
 });
 
 // 获取单篇文章详情接口
-app.get("/api/articles/:id", (req, res) => {
-  const id = req.params.id;
-  const sql = "SELECT * FROM articles WHERE id = ?";
-  db.query(sql, [id], (err, results) => {
-    if (err) {
-      return res.status(500).send("服务器错误");
-    }
+app.get("/api/articles/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const [results] = await dbPool.query(
+      "SELECT * FROM articles WHERE id = ?",
+      [id]
+    );
+
     if (results.length > 0) {
-      res.json(results[0]);
+      apiResponse.success(res, "获取成功", results[0]);
     } else {
-      res.status(404).send("文章不存在");
+      apiResponse.error(res, "文章不存在", 404);
     }
-  });
+  } catch (err) {
+    logger.error("查询文章详情出错:", err);
+    apiResponse.error(res, "服务器错误");
+  }
 });
 
-// 发布文章接口
-app.post("/api/articles", (req, res) => {
-  const { title, summary, content, cover_image } = req.body;
-  const sql =
-    "INSERT INTO articles (title, summary, content, cover_image) VALUES (?, ?, ?, ?)";
-  db.query(sql, [title, summary, content, cover_image], (err, result) => {
-    if (err) {
-      console.error("发布失败:", err);
-      return res.status(500).send("发布失败");
+// 🔥 发布文章接口（需要认证和管理员权限）
+app.post(
+  "/api/articles",
+  authenticateToken,
+  requireAdmin,
+  [
+    body("title").trim().notEmpty().withMessage("标题不能为空"),
+    body("summary").trim().notEmpty().withMessage("摘要不能为空"),
+    body("content").trim().notEmpty().withMessage("内容不能为空"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, "输入验证失败", 400, errors.array());
     }
-    res.json({ id: result.insertId, message: "发布成功" });
-  });
-});
+
+    try {
+      const { title, summary, content, cover_image } = req.body;
+      const [result] = await dbPool.query(
+        "INSERT INTO articles (title, summary, content, cover_image) VALUES (?, ?, ?, ?)",
+        [title, summary, content, cover_image]
+      );
+
+      logger.info(`文章发布成功: ID=${result.insertId}, 标题=${title}`);
+      apiResponse.success(res, "发布成功", { id: result.insertId }, 201);
+    } catch (err) {
+      logger.error("发布文章失败:", err);
+      apiResponse.error(res, "发布失败");
+    }
+  }
+);
 
 // ==========================================
-// 用户注册接口
+// 🔥 8. 用户注册接口（加强验证）
 // ==========================================
-app.post("/api/register", (req, res) => {
-  const { username, password, email, phone } = req.body;
-
-  if (!username && !email && !phone) {
-    return res
-      .status(400)
-      .json({ message: "至少提供用户名、邮箱或手机号中的一种" });
-  }
-
-  if (!password) {
-    return res.status(400).json({ message: "密码不能为空" });
-  }
-
-  if (email && !isValidEmail(email)) {
-    return res.status(400).json({ message: "邮箱格式不正确" });
-  }
-
-  function isValidEmail(email) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email);
-  }
-
-  function formatPhoneNumber(phone) {
-    if (!phone) return null;
-    if (phone.startsWith("+86")) return phone;
-    const cleanPhone = phone.replace(/\D/g, "");
-    if (/^1[3-9]\d{9}$/.test(cleanPhone)) {
-      return `+86 ${cleanPhone}`;
+app.post(
+  "/api/register",
+  authLimiter,
+  [
+    body("username")
+      .optional()
+      .trim()
+      .isLength({ min: 3, max: 20 })
+      .withMessage("用户名长度应为3-20个字符")
+      .matches(/^[a-zA-Z0-9_]+$/)
+      .withMessage("用户名只能包含字母、数字和下划线"),
+    body("password")
+      .isLength({ min: 6, max: 50 })
+      .withMessage("密码长度应为6-50个字符"),
+    body("email").optional().isEmail().withMessage("邮箱格式不正确"),
+    body("phone")
+      .optional()
+      .matches(/^(\+86\s)?1[3-9]\d{9}$/)
+      .withMessage("手机号格式不正确"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, "输入验证失败", 400, errors.array());
     }
-    return phone;
-  }
 
-  let formattedPhone = phone ? formatPhoneNumber(phone) : null;
+    try {
+      const { username, password, email, phone } = req.body;
 
-  if (
-    formattedPhone &&
-    formattedPhone.startsWith("+86") &&
-    !/^\+86\s1[3-9]\d{9}$/.test(formattedPhone)
-  ) {
-    return res.status(400).json({ message: "请输入有效的中国手机号" });
-  }
-
-  const loginIdentifier = username || email || formattedPhone || phone;
-  const checkSql =
-    "SELECT * FROM users WHERE username = ? OR email = ? OR phone = ?";
-
-  db.query(
-    checkSql,
-    [loginIdentifier, email, formattedPhone],
-    (err, results) => {
-      if (err) {
-        console.error("数据库查询错误:", err);
-        return res.status(500).json({ message: "服务器错误" });
+      if (!username && !email && !phone) {
+        return apiResponse.error(
+          res,
+          "至少提供用户名、邮箱或手机号中的一种",
+          400
+        );
       }
 
-      if (results.length > 0) {
-        const existingUser = results[0];
+      // 格式化手机号
+      let formattedPhone = null;
+      if (phone) {
+        const cleanPhone = phone.replace(/\D/g, "");
+        if (/^1[3-9]\d{9}$/.test(cleanPhone)) {
+          formattedPhone = `+86 ${cleanPhone}`;
+        } else if (phone.startsWith("+86")) {
+          formattedPhone = phone;
+        }
+      }
+
+      const loginIdentifier = username || email || formattedPhone || phone;
+
+      // 检查是否已存在
+      const [existing] = await dbPool.query(
+        "SELECT * FROM users WHERE username = ? OR email = ? OR phone = ?",
+        [loginIdentifier, email, formattedPhone]
+      );
+
+      if (existing.length > 0) {
+        const existingUser = existing[0];
         if (existingUser.username === loginIdentifier) {
-          return res.status(409).json({ message: "用户名已被占用" });
+          return apiResponse.error(res, "用户名已被占用", 409);
         }
         if (email && existingUser.email === email) {
-          return res.status(409).json({ message: "邮箱已被注册" });
+          return apiResponse.error(res, "邮箱已被注册", 409);
         }
         if (formattedPhone && existingUser.phone === formattedPhone) {
-          return res.status(409).json({ message: "手机号已被注册" });
+          return apiResponse.error(res, "手机号已被注册", 409);
         }
       }
 
-      const hash = bcrypt.hashSync(password, 10);
-      const insertSql =
-        "INSERT INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)";
+      // 加密密码
+      const hash = await bcrypt.hash(password, 10);
 
-      db.query(
-        insertSql,
-        [loginIdentifier, hash, email, formattedPhone],
-        (err, result) => {
-          if (err) {
-            console.error("注册失败:", err);
-            return res.status(500).json({ message: "注册失败" });
-          }
-          res.json({
-            success: true,
-            message: "注册成功",
-            loginIdentifier: loginIdentifier,
-            phone: formattedPhone,
-          });
-        }
+      // 插入新用户
+      const [result] = await dbPool.query(
+        "INSERT INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)",
+        [loginIdentifier, hash, email, formattedPhone]
       );
+
+      logger.info(
+        `新用户注册成功: ID=${result.insertId}, 用户名=${loginIdentifier}`
+      );
+
+      apiResponse.success(
+        res,
+        "注册成功",
+        {
+          loginIdentifier,
+          phone: formattedPhone,
+        },
+        201
+      );
+    } catch (err) {
+      logger.error("注册失败:", err);
+      apiResponse.error(res, "注册失败");
     }
-  );
-});
+  }
+);
 
 // ==========================================
-// 用户登录接口
+// 🔥 1 & 8. 用户登录接口（JWT + 验证）
 // ==========================================
-app.post("/api/login", (req, res) => {
-  const { account, password } = req.body;
-
-  if (!account || !password) {
-    return res
-      .status(400)
-      .json({ success: false, message: "请输入账号和密码" });
-  }
-
-  let formattedAccount = account;
-
-  if (/^1[3-9]\d{9}$/.test(account)) {
-    formattedAccount = `+86 ${account}`;
-  } else if (/^\+86\s?1[3-9]\d{9}$/.test(account)) {
-    formattedAccount = account.replace(/\+86\s?/, "+86 ");
-  }
-
-  const sql = `
-    SELECT id, username, password, role, avatar, nickname, email, phone 
-    FROM users 
-    WHERE username = ? OR email = ? OR phone = ?
-  `;
-
-  db.query(sql, [account, account, formattedAccount], (err, results) => {
-    if (err) {
-      console.error("登录查询错误:", err);
-      return res.status(500).json({ success: false, message: "服务器错误" });
+app.post(
+  "/api/login",
+  authLimiter,
+  [
+    body("account").trim().notEmpty().withMessage("账号不能为空"),
+    body("password").notEmpty().withMessage("密码不能为空"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, "输入验证失败", 400, errors.array());
     }
 
-    if (results.length === 0) {
-      return res.status(401).json({ success: false, message: "账号不存在" });
-    }
+    try {
+      const { account, password } = req.body;
 
-    const user = results[0];
-    const isMatch = bcrypt.compareSync(password, user.password);
+      // 处理手机号格式
+      let formattedAccount = account;
+      if (/^1[3-9]\d{9}$/.test(account)) {
+        formattedAccount = `+86 ${account}`;
+      } else if (/^\+86\s?1[3-9]\d{9}$/.test(account)) {
+        formattedAccount = account.replace(/\+86\s?/, "+86 ");
+      }
 
-    if (isMatch) {
-      res.json({
-        success: true,
-        message: "登录成功",
+      // 查询用户
+      const [results] = await dbPool.query(
+        `SELECT id, username, password, role, avatar, nickname, email, phone 
+         FROM users 
+         WHERE username = ? OR email = ? OR phone = ?`,
+        [account, account, formattedAccount]
+      );
+
+      if (results.length === 0) {
+        return apiResponse.error(res, "账号不存在", 401);
+      }
+
+      const user = results[0];
+      const isMatch = await bcrypt.compare(password, user.password);
+
+      if (!isMatch) {
+        return apiResponse.error(res, "密码错误", 401);
+      }
+
+      // 🔥 生成 JWT Token
+      const token = generateToken(user);
+
+      logger.info(`用户登录成功: ID=${user.id}, 用户名=${user.username}`);
+
+      apiResponse.success(res, "登录成功", {
+        token, // 返回 JWT Token
         user: {
           id: user.id,
           username: user.username,
@@ -455,57 +608,101 @@ app.post("/api/login", (req, res) => {
           phone: user.phone || null,
         },
       });
-    } else {
-      res.status(401).json({ success: false, message: "密码错误" });
+    } catch (err) {
+      logger.error("登录失败:", err);
+      apiResponse.error(res, "服务器错误");
     }
-  });
-});
+  }
+);
 
 // ==========================================
 // 评论相关接口
 // ==========================================
 
-// 发表评论
-app.post("/api/comments", (req, res) => {
-  const { article_id, nickname, content } = req.body;
-  console.log("正在尝试写入评论:", { article_id, nickname, content });
-  const sql =
-    "INSERT INTO comments (article_id, nickname, content) VALUES (?, ?, ?)";
-  db.query(sql, [article_id, nickname, content], (err, result) => {
-    if (err) {
-      console.error("数据库报错详情:", err.message);
-      return res.status(500).send("评论失败");
+// 🔥 发表评论（需要认证）
+app.post(
+  "/api/comments",
+  authenticateToken,
+  [
+    body("article_id").isInt().withMessage("文章ID无效"),
+    body("content").trim().notEmpty().withMessage("评论内容不能为空"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, "输入验证失败", 400, errors.array());
     }
-    res.json({ success: true, message: "评论成功" });
-  });
-});
 
-// 删除评论
-app.delete("/api/comments/:id", (req, res) => {
-  const id = req.params.id;
-  console.log("正在删除评论 ID:", id);
-  const sql = "DELETE FROM comments WHERE id = ?";
-  db.query(sql, [id], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).send("删除失败");
+    try {
+      const { article_id, content } = req.body;
+      const nickname = req.user.username; // 从 JWT 获取用户名
+
+      logger.info(`正在尝试写入评论: 文章ID=${article_id}, 用户=${nickname}`);
+
+      const [result] = await dbPool.query(
+        "INSERT INTO comments (article_id, nickname, content) VALUES (?, ?, ?)",
+        [article_id, nickname, content]
+      );
+
+      apiResponse.success(res, "评论成功", { id: result.insertId }, 201);
+    } catch (err) {
+      logger.error("评论失败:", err);
+      apiResponse.error(res, "评论失败");
     }
-    res.json({ success: true, message: "已删除" });
-  });
+  }
+);
+
+// 🔥 5. 删除评论（需要认证 + 权限检查）
+app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    // 查询评论
+    const [comments] = await dbPool.query(
+      "SELECT nickname FROM comments WHERE id = ?",
+      [id]
+    );
+
+    if (comments.length === 0) {
+      return apiResponse.error(res, "评论不存在", 404);
+    }
+
+    const comment = comments[0];
+
+    // 检查权限：只有评论作者或管理员可以删除
+    if (comment.nickname !== req.user.username && req.user.role !== "admin") {
+      return apiResponse.error(res, "无权删除此评论", 403);
+    }
+
+    await dbPool.query("DELETE FROM comments WHERE id = ?", [id]);
+
+    logger.info(`评论删除成功: ID=${id}, 操作者=${req.user.username}`);
+    apiResponse.success(res, "评论已删除");
+  } catch (err) {
+    logger.error("删除评论失败:", err);
+    apiResponse.error(res, "删除失败");
+  }
 });
 
 // 获取评论列表
-app.get("/api/comments", (req, res) => {
-  const article_id = req.query.article_id;
-  const sql =
-    "SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC";
-  db.query(sql, [article_id], (err, results) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).send("获取评论失败");
+app.get("/api/comments", async (req, res) => {
+  try {
+    const article_id = req.query.article_id;
+
+    if (!article_id) {
+      return apiResponse.error(res, "缺少文章ID", 400);
     }
-    res.json(results);
-  });
+
+    const [results] = await dbPool.query(
+      "SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC",
+      [article_id]
+    );
+
+    apiResponse.success(res, "获取成功", results);
+  } catch (err) {
+    logger.error("获取评论失败:", err);
+    apiResponse.error(res, "获取评论失败");
+  }
 });
 
 // ==========================================
@@ -513,113 +710,124 @@ app.get("/api/comments", (req, res) => {
 // ==========================================
 
 // 获取用户详细信息
-app.get("/api/user/profile", (req, res) => {
-  const { username } = req.query;
-  const sql =
-    "SELECT id, username, nickname, email, avatar, phone, gender, birthday, region, bio, social_link, role FROM users WHERE username = ?";
-  db.query(sql, [username], (err, results) => {
-    if (err) {
-      console.error(err);
-      return res.send({ success: false, message: "数据库错误" });
+app.get("/api/user/profile", async (req, res) => {
+  try {
+    const { username } = req.query;
+
+    if (!username) {
+      return apiResponse.error(res, "缺少用户名参数", 400);
     }
+
+    const [results] = await dbPool.query(
+      "SELECT id, username, nickname, email, avatar, phone, gender, birthday, region, bio, social_link, role FROM users WHERE username = ?",
+      [username]
+    );
+
     if (results.length === 0) {
-      return res.send({ success: false, message: "用户不存在" });
+      return apiResponse.error(res, "用户不存在", 404);
     }
-    res.send({ success: true, user: results[0] });
-  });
+
+    apiResponse.success(res, "获取成功", results[0]);
+  } catch (err) {
+    logger.error("获取用户信息失败:", err);
+    apiResponse.error(res, "数据库错误");
+  }
 });
 
-// 更新用户个人信息
-app.post("/api/user/update", (req, res) => {
-  const {
-    username,
-    nickname,
-    email,
-    avatar,
-    phone,
-    gender,
-    birthday,
-    region,
-    bio,
-    social_link,
-  } = req.body;
-
-  if (!username) {
-    return res.status(400).json({ success: false, message: "用户名不能为空" });
-  }
-
-  const sql = `
-    UPDATE users
-    SET nickname = ?, email = ?, avatar = ?, phone = ?, gender = ?, 
-        birthday = ?, region = ?, bio = ?, social_link = ?
-    WHERE username = ?
-  `;
-
-  const values = [
-    nickname,
-    email,
-    avatar,
-    phone,
-    gender,
-    birthday,
-    region,
-    bio,
-    social_link,
-    username,
-  ];
-
-  db.query(sql, values, (err, result) => {
-    if (err) {
-      console.error("更新失败:", err);
-      return res
-        .status(500)
-        .json({ success: false, message: "数据库更新失败" });
+// 🔥 更新用户个人信息（需要认证 + 权限检查）
+app.post(
+  "/api/user/update",
+  authenticateToken,
+  [
+    body("nickname").optional().trim().isLength({ max: 50 }),
+    body("email").optional().isEmail().withMessage("邮箱格式不正确"),
+    body("bio").optional().trim().isLength({ max: 500 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, "输入验证失败", 400, errors.array());
     }
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: "用户不存在" });
-    }
+    try {
+      const {
+        username,
+        nickname,
+        email,
+        avatar,
+        phone,
+        gender,
+        birthday,
+        region,
+        bio,
+        social_link,
+      } = req.body;
 
-    const selectSql = `
-      SELECT id, username, nickname, email, avatar, phone, gender, 
-             birthday, region, bio, social_link, role 
-      FROM users 
-      WHERE username = ?
-    `;
-
-    db.query(selectSql, [username], (selectErr, selectResults) => {
-      if (selectErr || selectResults.length === 0) {
-        return res.json({
-          success: true,
-          message: "更新成功，但获取更新后数据失败",
-        });
+      // 权限检查：只能修改自己的信息
+      if (username !== req.user.username && req.user.role !== "admin") {
+        return apiResponse.error(res, "无权修改其他用户信息", 403);
       }
 
-      res.json({
-        success: true,
-        message: "个人信息已保存到数据库",
-        user: selectResults[0],
-      });
-    });
-  });
-});
+      const [result] = await dbPool.query(
+        `UPDATE users
+         SET nickname = ?, email = ?, avatar = ?, phone = ?, gender = ?, 
+             birthday = ?, region = ?, bio = ?, social_link = ?
+         WHERE username = ?`,
+        [
+          nickname,
+          email,
+          avatar,
+          phone,
+          gender,
+          birthday,
+          region,
+          bio,
+          social_link,
+          username,
+        ]
+      );
+
+      if (result.affectedRows === 0) {
+        return apiResponse.error(res, "用户不存在", 404);
+      }
+
+      // 获取更新后的用户信息
+      const [updatedUser] = await dbPool.query(
+        `SELECT id, username, nickname, email, avatar, phone, gender, 
+                birthday, region, bio, social_link, role 
+         FROM users 
+         WHERE username = ?`,
+        [username]
+      );
+
+      logger.info(`用户信息更新成功: 用户名=${username}`);
+      apiResponse.success(res, "个人信息已更新", updatedUser[0]);
+    } catch (err) {
+      logger.error("更新用户信息失败:", err);
+      apiResponse.error(res, "数据库更新失败");
+    }
+  }
+);
 
 // ==========================================
-// 🔥 壁纸相关接口（优化版）
+// 壁纸相关接口
 // ==========================================
 
 // 获取全局壁纸配置（带缓存）
-app.get("/api/wallpaper/global", (req, res) => {
-  const now = Date.now();
+app.get("/api/wallpaper/global", async (req, res) => {
+  try {
+    const now = Date.now();
 
-  if (globalWallpaperCache && now - cacheTime < CACHE_DURATION) {
-    console.log("📦 使用缓存的全局壁纸配置");
-    return res.json(globalWallpaperCache);
-  }
+    if (globalWallpaperCache && now - cacheTime < CACHE_DURATION) {
+      logger.info("📦 使用缓存的全局壁纸配置");
+      return apiResponse.success(res, "获取成功", globalWallpaperCache);
+    }
 
-  const sql = "SELECT * FROM global_wallpapers LIMIT 1";
-  db.query(sql, (err, results) => {
-    if (err || results.length === 0) {
+    const [results] = await dbPool.query(
+      "SELECT * FROM global_wallpapers LIMIT 1"
+    );
+
+    if (results.length === 0) {
       const defaultConfig = {
         mode: "website",
         dailyUrl:
@@ -630,7 +838,7 @@ app.get("/api/wallpaper/global", (req, res) => {
       };
       globalWallpaperCache = defaultConfig;
       cacheTime = now;
-      return res.json(defaultConfig);
+      return apiResponse.success(res, "使用默认配置", defaultConfig);
     }
 
     const data = results[0];
@@ -658,158 +866,140 @@ app.get("/api/wallpaper/global", (req, res) => {
 
     globalWallpaperCache = config;
     cacheTime = now;
-    res.json(config);
-  });
-});
-
-// 🔥 新增：手动触发洗牌接口（管理员专用）
-app.post("/api/wallpaper/shuffle", (req, res) => {
-  const { adminKey } = req.body;
-
-  // 简单的管理员验证（建议使用更安全的方式）
-  if (adminKey !== "your-secret-admin-key") {
-    return res.status(403).json({ success: false, message: "无权限" });
+    apiResponse.success(res, "获取成功", config);
+  } catch (err) {
+    logger.error("获取全局壁纸失败:", err);
+    apiResponse.error(res, "获取全局壁纸失败");
   }
-
-  shuffleGlobalWallpapers((err) => {
-    if (err) {
-      return res
-        .status(500)
-        .json({ success: false, message: "洗牌失败", error: err.message });
-    }
-    res.json({ success: true, message: "洗牌成功" });
-  });
 });
+
+// 🔥 手动触发洗牌接口（需要管理员权限）
+app.post(
+  "/api/wallpaper/shuffle",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      await shuffleGlobalWallpapers();
+      logger.info(`手动洗牌成功，操作者: ${req.user.username}`);
+      apiResponse.success(res, "洗牌成功");
+    } catch (err) {
+      logger.error("洗牌失败:", err);
+      apiResponse.error(res, "洗牌失败");
+    }
+  }
+);
 
 // 获取用户壁纸
-app.get("/api/wallpaper/user", (req, res) => {
-  const userId = req.query.userId;
-  const username = req.query.username;
+app.get("/api/wallpaper/user", async (req, res) => {
+  try {
+    const userId = req.query.userId;
+    const username = req.query.username;
 
-  if (!userId && !username) {
-    console.warn("⚠️ 未提供用户ID或用户名");
-    return res.status(401).json({ error: "未登录" });
-  }
-
-  let sql, params;
-
-  if (userId) {
-    sql = "SELECT wallpaper_url FROM user_wallpapers WHERE user_id = ?";
-    params = [userId];
-  } else {
-    sql = `
-      SELECT uw.wallpaper_url 
-      FROM user_wallpapers uw
-      JOIN users u ON uw.user_id = u.id
-      WHERE u.username = ?
-    `;
-    params = [username];
-  }
-
-  db.query(sql, params, (err, results) => {
-    if (err) {
-      console.error("❌ 查询壁纸失败:", err);
-      return res.status(500).json({ error: "查询失败" });
+    if (!userId && !username) {
+      return apiResponse.error(res, "未提供用户ID或用户名", 400);
     }
+
+    let sql, params;
+
+    if (userId) {
+      sql = "SELECT wallpaper_url FROM user_wallpapers WHERE user_id = ?";
+      params = [userId];
+    } else {
+      sql = `
+        SELECT uw.wallpaper_url 
+        FROM user_wallpapers uw
+        JOIN users u ON uw.user_id = u.id
+        WHERE u.username = ?
+      `;
+      params = [username];
+    }
+
+    const [results] = await dbPool.query(sql, params);
 
     if (results.length > 0) {
       const url = results[0].wallpaper_url;
-      console.log("✅ 找到用户壁纸:", { userId, username, url });
-      res.json({ hasCustom: true, url });
+      logger.info(`✅ 找到用户壁纸: userId=${userId}, username=${username}`);
+      apiResponse.success(res, "获取成功", { hasCustom: true, url });
     } else {
-      console.log("ℹ️ 用户无自定义壁纸");
-      res.json({ hasCustom: false });
+      logger.info("ℹ️ 用户无自定义壁纸");
+      apiResponse.success(res, "用户无自定义壁纸", { hasCustom: false });
     }
-  });
+  } catch (err) {
+    logger.error("查询壁纸失败:", err);
+    apiResponse.error(res, "查询失败");
+  }
 });
 
 // 批量获取用户壁纸
-app.post("/api/wallpaper/batch", (req, res) => {
-  const { userIds } = req.body;
+app.post("/api/wallpaper/batch", async (req, res) => {
+  try {
+    const { userIds } = req.body;
 
-  if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-    return res.json({});
-  }
-
-  const placeholders = userIds.map(() => "?").join(",");
-  const sql = `SELECT user_id, wallpaper_url FROM user_wallpapers WHERE user_id IN (${placeholders})`;
-
-  db.query(sql, userIds, (err, results) => {
-    if (err) {
-      console.error("批量查询壁纸失败:", err);
-      return res.status(500).json({ error: "批量查询失败" });
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+      return apiResponse.success(res, "无数据", {});
     }
+
+    const placeholders = userIds.map(() => "?").join(",");
+    const [results] = await dbPool.query(
+      `SELECT user_id, wallpaper_url FROM user_wallpapers WHERE user_id IN (${placeholders})`,
+      userIds
+    );
 
     const wallpapers = {};
     results.forEach((row) => {
       wallpapers[row.user_id] = row.wallpaper_url;
     });
 
-    res.json({ wallpapers });
-  });
+    apiResponse.success(res, "获取成功", { wallpapers });
+  } catch (err) {
+    logger.error("批量查询壁纸失败:", err);
+    apiResponse.error(res, "批量查询失败");
+  }
 });
 
-// 用户壁纸上传
-app.post("/api/wallpaper/user", upload.single("image"), async (req, res) => {
-  console.log("🔍 收到上传请求", req.body);
+// 🔥 用户壁纸上传（需要认证）
+app.post(
+  "/api/wallpaper/user",
+  authenticateToken,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      logger.info(`🔍 收到上传请求: 用户=${req.user.username}`);
 
-  const userId = req.body.userId;
-  const username = req.body.username;
-
-  if ((!userId && !username) || !req.file) {
-    console.error("❌ 参数错误");
-    return res.status(400).json({ success: false, error: "参数错误" });
-  }
-
-  try {
-    let actualUserId = userId;
-
-    if (!userId && username) {
-      const userResult = await new Promise((resolve, reject) => {
-        const sql = "SELECT id FROM users WHERE username = ?";
-        db.query(sql, [username], (err, results) => {
-          if (err) reject(err);
-          else resolve(results);
-        });
-      });
-
-      if (userResult.length === 0) {
-        return res.status(404).json({ success: false, error: "用户不存在" });
-      }
-      actualUserId = userResult[0].id;
-    }
-
-    const filePath = req.file.path.replace(/\\/g, "/");
-    const dbPath = "/" + filePath;
-
-    console.log("📁 文件路径:", dbPath);
-
-    clearWallpaperCache();
-
-    const sql = `REPLACE INTO user_wallpapers (user_id, wallpaper_url, updated_at) VALUES (?, ?, NOW())`;
-
-    db.query(sql, [actualUserId, dbPath], (err, result) => {
-      if (err) {
-        console.error("❌ 数据库操作失败:", err);
-        return res
-          .status(500)
-          .json({ success: false, error: "保存到数据库失败" });
+      if (!req.file) {
+        return apiResponse.error(res, "请选择图片文件", 400);
       }
 
-      console.log("✅ 壁纸保存成功，影响行数:", result.affectedRows);
+      // 使用 JWT 中的用户 ID
+      const actualUserId = req.user.id;
 
-      res.json({
-        success: true,
+      const filePath = req.file.path.replace(/\\/g, "/");
+      const dbPath = "/" + filePath;
+
+      logger.info(`📁 文件路径: ${dbPath}`);
+
+      clearWallpaperCache();
+
+      const [result] = await dbPool.query(
+        `REPLACE INTO user_wallpapers (user_id, wallpaper_url, updated_at) VALUES (?, ?, NOW())`,
+        [actualUserId, dbPath]
+      );
+
+      logger.info(
+        `✅ 壁纸保存成功: 用户ID=${actualUserId}, 影响行数=${result.affectedRows}`
+      );
+
+      apiResponse.success(res, "壁纸上传成功", {
         url: `/${filePath}`,
         userId: actualUserId,
-        message: "壁纸上传成功",
       });
-    });
-  } catch (error) {
-    console.error("处理上传时出错:", error);
-    res.status(500).json({ success: false, error: "服务器错误" });
+    } catch (err) {
+      logger.error("处理上传时出错:", err);
+      apiResponse.error(res, "服务器错误");
+    }
   }
-});
+);
 
 // ==========================================
 // 静态文件服务
@@ -825,9 +1015,48 @@ app.use(
 
 app.use(express.static(path.join(__dirname, "../client/dist")));
 
-// SPA 页面刷新处理
-app.get(/(.*)/, (req, res) => {
-  res.sendFile(path.join(__dirname, "../client/dist/index.html"));
+// ==========================================
+// 🔥 3. 全局错误处理中间件
+// ==========================================
+app.use((err, req, res, next) => {
+  logger.error("全局错误:", {
+    message: err.message,
+    stack: err.stack,
+    url: req.url,
+    method: req.method,
+  });
+
+  // Multer 错误处理
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return apiResponse.error(res, "文件大小超过限制（最大10MB）", 400);
+    }
+    return apiResponse.error(res, `文件上传错误: ${err.message}`, 400);
+  }
+
+  // 其他错误
+  apiResponse.error(
+    res,
+    process.env.NODE_ENV === "development" ? err.message : "服务器错误",
+    500
+  );
+});
+
+// SPA 页面刷新处理（必须放在最后）
+// 将 "*" 替换为 /.*/ (正则表达式对象)
+app.get(/.*/, (req, res, next) => {
+  // 如果是 API 请求，跳过（双重保险）
+  if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) {
+    return next();
+  }
+
+  // 返回前端页面
+  res.sendFile(path.join(__dirname, "../client/dist/index.html"), (err) => {
+    if (err) {
+      logger.error("发送 index.html 失败:", err);
+      res.status(500).send("页面加载失败");
+    }
+  });
 });
 
 // ==========================================
@@ -836,35 +1065,37 @@ app.get(/(.*)/, (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 后端服务已启动！`);
-  console.log(`📍 访问地址: http://localhost:${PORT}`);
-  console.log(`📂 静态文件: ${path.join(__dirname, "../client/dist")}`);
-  console.log(`📁 上传目录: ${path.join(__dirname, "uploads")}`);
+  logger.info(`🚀 后端服务已启动！`);
+  logger.info(`📍 访问地址: http://localhost:${PORT}`);
+  logger.info(`📂 静态文件: ${path.join(__dirname, "../client/dist")}`);
+  logger.info(`📁 上传目录: ${path.join(__dirname, "uploads")}`);
+  logger.info(`🔒 JWT Secret: ${JWT_SECRET.substring(0, 10)}...`);
+  logger.info(`🌍 环境: ${process.env.NODE_ENV || "development"}`);
 });
 
 // ==========================================
 // 优雅关闭处理
 // ==========================================
-process.on("SIGINT", () => {
-  console.log("\n🛑 正在关闭服务器...");
-  db.end((err) => {
-    if (err) {
-      console.error("❌ 数据库关闭失败:", err);
-    } else {
-      console.log("✅ 数据库连接已关闭");
-    }
+process.on("SIGINT", async () => {
+  logger.info("\n🛑 正在关闭服务器...");
+  try {
+    await dbPool.end();
+    logger.info("✅ 数据库连接池已关闭");
     process.exit(0);
-  });
+  } catch (err) {
+    logger.error("❌ 数据库关闭失败:", err);
+    process.exit(1);
+  }
 });
 
-process.on("SIGTERM", () => {
-  console.log("\n🛑 收到终止信号，正在关闭服务器...");
-  db.end((err) => {
-    if (err) {
-      console.error("❌ 数据库关闭失败:", err);
-    } else {
-      console.log("✅ 数据库连接已关闭");
-    }
+process.on("SIGTERM", async () => {
+  logger.info("\n🛑 收到终止信号，正在关闭服务器...");
+  try {
+    await dbPool.end();
+    logger.info("✅ 数据库连接池已关闭");
     process.exit(0);
-  });
+  } catch (err) {
+    logger.error("❌ 数据库关闭失败:", err);
+    process.exit(1);
+  }
 });

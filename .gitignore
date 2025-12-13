@@ -7,6 +7,16 @@ server/node_modules/
 dist/
 client/dist/
 
+# 🆕 忽略环境变量文件 (包含敏感信息，绝对不能提交！)
+.env
+server/.env
+client/.env.local
+
+# 🆕 忽略日志文件
+logs/
+server/logs/
+*.log
+
 # 忽略系统文件
 .DS_Store
 Thumbs.db

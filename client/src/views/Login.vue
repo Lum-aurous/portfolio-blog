@@ -122,58 +122,92 @@ const handleSubmit = async () => {
 
     try {
         if (isLoginMode.value) {
+            // ============== 登录逻辑 (已适配新后端) ==============
             const loginData = {
                 account: form.account || form.phone,
                 password: form.password,
-                captcha: captchaCode.value
+                // captcha: captchaCode.value // 后端暂未校验验证码，前端校验即可
             }
+
             const res = await axios.post('/api/login', loginData)
 
-            if (res.data.success) {
+            // 🔥 修复点：剥离数据层级
+            const responseData = res.data;
+
+            if (responseData.success) {
+                // 🔥 修复点：从 responseData.data 里解构 token 和 user
+                // 后端返回结构: { success: true, data: { token: '...', user: {...} } }
+                const { token, user } = responseData.data;
+
+                // 存储 Token (重要！)
+                localStorage.setItem('token', token);
+
+                // 处理切换账号逻辑
                 const isSwitching = sessionStorage.getItem('isSwitchingAccount')
                 if (isSwitching) {
-                    message.success(`切换成功！欢迎 ${res.data.user.username}`)
+                    message.success(`切换成功！欢迎 ${user.username}`)
                     sessionStorage.removeItem('isSwitchingAccount')
                     sessionStorage.removeItem('previousUsername')
                 } else {
-                    const name = res.data.user.nickname || res.data.user.username
+                    const name = user.nickname || user.username
                     message.success(`欢迎回来, ${name} 👋`)
                 }
-                userStore.login(res.data.user)
+
+                // 更新 Store
+                userStore.login(user)
+
                 router.push('/')
             } else {
-                message.error(res.data.message || '登录失败')
+                message.error(responseData.message || '登录失败')
                 generateCaptcha()
             }
         } else {
+            // ============== 注册逻辑 ==============
             let phoneToSend = null
             if (form.phone) {
                 phoneToSend = `${selectedPhoneCountry.value.code} ${form.phone}`
             }
+
             const registerData = {
                 username: form.account,
                 password: form.password,
                 phone: phoneToSend
             }
+
+            // 如果账号本身就是手机号
             if (phoneToSend && form.account === form.phone) {
                 registerData.username = phoneToSend
             }
-            const res = await axios.post('/api/register', registerData)
 
-            if (res.data.success) {
+            const res = await axios.post('/api/register', registerData)
+            const responseData = res.data; // 🔥 剥离层级
+
+            if (responseData.success) {
                 message.success('🎉 注册成功！请登录')
                 toggleMode()
             } else {
-                message.error(res.data.message || '注册失败')
+                message.error(responseData.message || '注册失败')
             }
         }
     } catch (error) {
-        console.error(error)
-        if (error.response?.status === 409) {
-            message.warning('该账号已被注册，请直接登录')
+        console.error('认证失败:', error)
+        // 🔥 优化错误处理：处理 axios 抛出的错误对象
+        if (error.response) {
+            // 后端返回了具体的错误状态码
+            const status = error.response.status;
+            const msg = error.response.data?.message || '请求失败';
+
+            if (status === 409) {
+                message.warning('该账号已被注册，请直接登录');
+            } else if (status === 401) {
+                message.error('账号或密码错误');
+            } else {
+                message.error(`操作失败: ${msg}`);
+            }
         } else {
-            message.error('网络请求失败，请稍后重试')
+            message.error('网络连接失败，请检查服务器');
         }
+
         if (isLoginMode.value) generateCaptcha()
     }
 }

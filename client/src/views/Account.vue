@@ -192,14 +192,31 @@ const handlePhoneInput = () => validatePhone()
 
 // ========== API 交互 ==========
 const fetchUserInfo = async () => {
+    // 优先从 store 获取，如果没有则尝试从本地存储获取
     const currentUsername = userStore.user?.username || localStorage.getItem('username')
+
     if (!currentUsername) return
+
     try {
         const res = await axios.get('/api/user/profile', { params: { username: currentUsername } })
-        if (res.data.success) {
-            const dbUser = res.data.user
+
+        // 🔥 修复点：先解构出真正的后端数据体
+        // res.data 是 axios 的响应体
+        // res.data.data 才是后端返回的用户对象
+        const responseData = res.data;
+
+        if (responseData.success) {
+            // ✅ 这里要改：从 .data 里拿数据，而不是 .user
+            const dbUser = responseData.data;
+
+            // 再次确认一下拿到了数据
+            if (!dbUser) {
+                console.warn('未获取到用户数据详情');
+                return;
+            }
+
             Object.assign(user.value, {
-                id: dbUser.id, // 🔥 确保这里拿到了 ID
+                id: dbUser.id,
                 username: dbUser.username,
                 nickname: dbUser.nickname || dbUser.username,
                 email: dbUser.email || '',
@@ -211,6 +228,8 @@ const fetchUserInfo = async () => {
                 bio: dbUser.bio || '',
                 social_link: dbUser.social_link || ''
             })
+
+            // 处理电话号码回显逻辑
             if (user.value.phone) {
                 const phoneMatch = user.value.phone.match(/^(\+\d+)\s(.+)$/)
                 if (phoneMatch) {
@@ -220,15 +239,32 @@ const fetchUserInfo = async () => {
                     if (country) selectedPhoneCountry.value = country
                 }
             }
+
             originalUser.value = JSON.parse(JSON.stringify(user.value))
+
+            // 同步更新 Store，防止刷新后数据丢失
             userStore.updateUser(user.value)
         }
-    } catch (error) { console.error(error) }
+    } catch (error) {
+        console.error('获取用户信息失败:', error)
+        if (error.response && error.response.status === 401) {
+            // Token 过期处理
+            message.warning('登录已过期，请重新登录');
+            router.push('/login');
+        }
+    }
 }
 
 const handleCancel = () => {
-    if (confirm('确定要放弃所有未保存的修改并返回吗?')) {
-        user.value = { ...originalUser.value }
+    // 只有当数据真的有变动时，才弹窗询问（优化体验）
+    if (hasUnsavedChanges.value) {
+        if (confirm('确定要放弃所有未保存的修改并返回吗?')) {
+            // 使用深拷贝恢复数据，更稳健
+            user.value = JSON.parse(JSON.stringify(originalUser.value))
+            router.back()
+        }
+    } else {
+        // 如果没改动，直接返回，不用弹窗烦用户
         router.back()
     }
 }
@@ -236,6 +272,7 @@ const handleCancel = () => {
 
 // 提交
 // 🔥 核心修复：清理空字符串，防止触发数据库唯一键冲突
+// 提交保存逻辑
 const handlePublish = async () => {
     // 1. 基础校验
     if (!user.value.nickname) {
@@ -249,18 +286,14 @@ const handlePublish = async () => {
 
     isSaving.value = true
 
-    // 2. 构建提交数据 (Payload)
-    // 关键点：对于 email, phone 这种可能有唯一索引的字段，
-    // 如果是空字符串，必须转为 null，否则数据库会报 Duplicate entry 错误！
+    // 2. 构建提交数据
     const payload = {
         id: user.value.id,
         username: user.value.username,
         nickname: user.value.nickname,
-
-        // 🔥 核心修改：如果是空串，转为 null
+        // 空串转 null，防止数据库唯一性冲突
         email: user.value.email ? user.value.email : null,
         phone: user.value.phone ? user.value.phone : null,
-
         gender: user.value.gender,
         birthday: user.value.birthday,
         bio: user.value.bio,
@@ -268,44 +301,61 @@ const handlePublish = async () => {
         region: user.value.region,
     }
 
-    // 3. 特殊处理头像
+    // 头像处理：如果是 base64 才传，否则不传（避免覆盖）
     if (user.value.avatar && user.value.avatar.startsWith('data:image')) {
         payload.avatar = user.value.avatar
-    } else {
-        // 如果没改图，通常不传或者传 null，视后端逻辑而定
-        // 这里为了安全，如果不是 base64，我们就不传 avatar 字段，避免覆盖
-        // payload.avatar = user.value.avatar (这一行先注释掉，只传修改过的)
     }
 
-    console.log('正在提交清洗后的数据:', payload)
+    // 🔥 关键修复 1：获取 Token
+    const token = userStore.token || localStorage.getItem('token');
 
     try {
-        const res = await axios.post('/api/user/update', payload)
+        // 🔥 关键修复 2：在 headers 中带上 Authorization
+        const res = await axios.post('/api/user/update', payload, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        })
 
-        if (res.data.success) {
+        // res.data 是后端返回的完整 JSON { success, message, data }
+        const responseData = res.data;
+
+        if (responseData.success) {
             message.success('🎉 保存成功! 数据已同步')
 
-            // 更新 Store 和 备份
-            userStore.updateUser(user.value) // 注意：这里 userStore 可能需要完整的 user 对象
+            // 🔥 关键修复 3：使用后端返回的最新数据更新前端
+            // 这样能确保前端显示的和数据库里绝对一致
+            const updatedUserFromBackend = responseData.data;
+
+            // 更新当前页面数据
+            Object.assign(user.value, updatedUserFromBackend);
+
+            // 更新 Store
+            userStore.updateUser(user.value)
+
+            // 更新备份，让"放弃修改"按钮变回灰色
             originalUser.value = JSON.parse(JSON.stringify(user.value))
 
-            // 刷新页面数据
-            await fetchUserInfo()
         } else {
-            message.error('保存失败: ' + (res.data.message || '未知错误'))
+            message.error('保存失败: ' + (responseData.message || '未知错误'))
         }
     } catch (error) {
         console.error('提交失败详情:', error)
 
-        // 针对性错误提示
         if (error.response) {
+            // Token 过期处理
+            if (error.response.status === 401) {
+                message.error('登录已过期，请重新登录');
+                router.push('/login');
+                return;
+            }
+
             if (error.response.status === 413) {
                 message.error('❌ 保存失败：头像文件太大了')
             } else if (error.response.data && error.response.data.message && error.response.data.message.includes('Duplicate entry')) {
-                // 如果后端返回了具体的 duplicate 信息
                 message.error('❌ 保存失败：邮箱或手机号已被其他账号占用')
             } else {
-                message.error('❌ 保存失败，请稍后重试')
+                message.error('❌ 保存失败：' + (error.response.data.message || '服务器错误'))
             }
         } else {
             message.error('❌ 网络连接失败')
@@ -314,6 +364,8 @@ const handlePublish = async () => {
         isSaving.value = false
     }
 }
+
+
 const fileInput = ref(null)
 const triggerUpload = () => fileInput.value.click()
 const handleFileChange = (event) => {

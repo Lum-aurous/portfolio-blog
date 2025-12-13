@@ -95,26 +95,25 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   const fetchGlobalConfig = async () => {
     try {
       const cacheKey = "global_wallpaper_config";
-      const cached = sessionStorage.getItem(cacheKey); // 🔥 改用 sessionStorage
+      const cached = sessionStorage.getItem(cacheKey);
 
       if (cached) {
         try {
           const { data, timestamp } = JSON.parse(cached);
           if (Date.now() - timestamp < 10 * 60 * 1000) {
-            // 🔥 延长缓存时间到10分钟
             logger.debug("使用缓存的全局配置");
             return data;
           }
-        } catch (e) {
-          // 缓存无效
-        }
+        } catch (e) {}
       }
 
       logger.debug("请求全局壁纸配置...");
       const res = await fetch("/api/wallpaper/global");
       if (!res.ok) throw new Error("Network response was not ok");
 
-      const data = await res.json();
+      // 🔥 修复点：剥离外层包装
+      const json = await res.json();
+      const data = json.data; // 获取真正的 data 数据
 
       // 缓存配置
       sessionStorage.setItem(
@@ -140,42 +139,37 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   };
 
   // 获取用户壁纸
+  // 获取用户壁纸
   const fetchUserWallpaper = async () => {
     const userStore = useUserStore();
-
-    if (!userStore.isLoggedIn) {
-      return null;
-    }
+    if (!userStore.isLoggedIn) return null;
 
     try {
       const cacheKey = `user_wallpaper_${userStore.user.id}`;
-      const cached = sessionStorage.getItem(cacheKey); // 🔥 改用 sessionStorage
+      const cached = sessionStorage.getItem(cacheKey);
 
       if (cached) {
         try {
           const { url, timestamp } = JSON.parse(cached);
           if (Date.now() - timestamp < 15 * 60 * 1000) {
-            // 🔥 延长到15分钟
             logger.debug("使用缓存的用户壁纸");
             userHasCustom.value = true;
             wallpaperCache.value.userCustom = url;
             return url;
           }
-        } catch (e) {
-          // 缓存无效
-        }
+        } catch (e) {}
       }
 
       const res = await fetch(
         `/api/wallpaper/user?userId=${userStore.user.id}`
       );
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const data = await res.json();
+      // 🔥 修复点：剥离外层包装
+      const json = await res.json();
+      const data = json.data; // 获取真正的 data
 
-      if (data.hasCustom && data.url) {
+      if (json.success && data && data.hasCustom && data.url) {
         const cleanUrl = data.url.startsWith("/") ? data.url : "/" + data.url;
 
         sessionStorage.setItem(
@@ -241,18 +235,19 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
 
   // ==================== 公共方法 ====================
   // 🔥 新增：强制刷新全局配置（跳过缓存）
+  // 强制刷新全局配置
   const forceRefreshGlobalConfig = async () => {
     try {
-      // 清除全局配置缓存
       sessionStorage.removeItem("global_wallpaper_config");
-
       logger.debug("强制刷新全局配置...");
-      const res = await fetch("/api/wallpaper/global?t=" + Date.now()); // 加时间戳防止缓存
+
+      const res = await fetch("/api/wallpaper/global?t=" + Date.now());
       if (!res.ok) throw new Error("Network response was not ok");
 
-      const data = await res.json();
+      // 🔥 修复点：剥离外层包装
+      const json = await res.json();
+      const data = json.data;
 
-      // 更新缓存
       sessionStorage.setItem(
         "global_wallpaper_config",
         JSON.stringify({
@@ -261,7 +256,6 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
         })
       );
 
-      // 更新本地缓存配置
       wallpaperCache.value.website = data.websiteUrl || "";
       wallpaperCache.value.daily = data.dailyUrl || "";
       wallpaperCache.value.random = data.randomUrls || [];
@@ -388,19 +382,32 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
 
     const formData = new FormData();
     formData.append("image", file);
+    // 后端其实可以从 Token 解析 id，但传了也没事
     formData.append("userId", userStore.user.id);
     formData.append("username", userStore.user.username);
+
+    // 🔥 获取 Token (假设存在 userStore.token 中)
+    const token = userStore.token || localStorage.getItem("token");
 
     try {
       const res = await fetch("/api/wallpaper/user", {
         method: "POST",
+        headers: {
+          // ⚠️ 注意：上传文件(FormData)时，千万不要手动设置 'Content-Type'
+          // 浏览器会自动设置 multipart/form-data 并加上 boundary
+
+          // 🔥 必须带上 Token
+          Authorization: `Bearer ${token}`,
+        },
         body: formData,
       });
 
-      const data = await res.json();
+      // 🔥 修复点：剥离外层包装 (你的写法是对的)
+      const json = await res.json();
 
-      if (data.success) {
-        const newUrl = data.url;
+      if (json.success) {
+        // 注意这里取 json.data.url
+        const newUrl = json.data.url;
 
         const cacheKey = `user_wallpaper_${userStore.user.id}`;
         sessionStorage.setItem(
@@ -419,9 +426,9 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
         localStorage.setItem("preferredWallpaperMode", "userCustom");
 
         logger.success("壁纸上传成功");
-        return data;
+        return json;
       } else {
-        throw new Error(data.error || "上传失败");
+        throw new Error(json.message || "上传失败");
       }
     } catch (err) {
       logger.error("上传壁纸失败:", err);
