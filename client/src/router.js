@@ -1,5 +1,6 @@
+// src/router.js
 import { createRouter, createWebHistory } from "vue-router";
-import { useUserStore } from "@/stores/user.js"; // ⚡️ 导入 Store
+import config from "@/config/index.js";
 import Home from "./views/Home.vue";
 import Blog from "./views/Blog.vue";
 import ArticleDetail from "./views/ArticleDetail.vue";
@@ -17,7 +18,7 @@ const router = createRouter({
       component: Home,
       meta: {
         title: "Veritas - 首页",
-        guestAccess: true, // 明确标记允许游客访问
+        guestAccess: true,
       },
     },
     {
@@ -44,7 +45,8 @@ const router = createRouter({
       meta: {
         title: "Veritas - 登录",
         guestAccess: true,
-        preventIfLoggedIn: true, // 这可能会导致问题，需要特殊处理
+        preventIfLoggedIn: true,
+        noAuthRequired: true,
       },
     },
     {
@@ -54,6 +56,7 @@ const router = createRouter({
         title: "Veritas - 注册",
         guestAccess: true,
         preventIfLoggedIn: true,
+        noAuthRequired: true,
       },
     },
     {
@@ -62,7 +65,7 @@ const router = createRouter({
       meta: {
         title: "Veritas - 后台管理",
         requiresAuth: true,
-        requiresRole: "admin", // 明确指定需要管理员角色
+        requiresRole: "admin",
       },
     },
     {
@@ -70,91 +73,7 @@ const router = createRouter({
       component: Account,
       meta: {
         title: "Veritas - 个人账号中心",
-        requiresAuth: true, // 只需登录，不需要特定角色
-      },
-    },
-
-    // ==================== 功能页面（暂时用 Home 占位）====================
-    {
-      path: "/travel",
-      component: Home,
-      meta: {
-        title: "Veritas - 游记",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/toolkit",
-      component: Home,
-      meta: {
-        title: "Veritas - 百宝箱",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/comments",
-      component: Home,
-      meta: {
-        title: "Veritas - 留言",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/contact",
-      component: Home,
-      meta: {
-        title: "Veritas - 联系我",
-        guestAccess: true,
-      },
-    },
-
-    // ==================== 记录子菜单 ====================
-    {
-      path: "/records",
-      component: Home,
-      meta: {
-        title: "Veritas - 记录",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/records/life",
-      component: Home,
-      meta: {
-        title: "Veritas - 生活倒影",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/records/media",
-      component: Home,
-      meta: {
-        title: "Veritas - 视听盛宴",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/records/study",
-      component: Home,
-      meta: {
-        title: "Veritas - 学习人生",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/records/travel",
-      component: Home,
-      meta: {
-        title: "Veritas - 海外趣事",
-        guestAccess: true,
-      },
-    },
-    {
-      path: "/records/resources",
-      component: Home,
-      meta: {
-        title: "Veritas - 爱心资源",
-        guestAccess: true,
+        requiresAuth: true,
       },
     },
 
@@ -174,54 +93,95 @@ const router = createRouter({
   },
 });
 
-// ==================== 全局前置守卫 ====================
-router.beforeEach((to, from, next) => {
-  const userStore = useUserStore();
-  const isLoggedIn = userStore.isLoggedIn;
-  const userRole = userStore.user?.role;
+// ==================== 全局前置守卫（JWT版） ====================
+router.beforeEach(async (to, from, next) => {
+  console.log(`🔄 路由跳转: ${from.path} -> ${to.path}`);
 
   // 1. 设置页面标题
   if (to.meta.title) {
     document.title = to.meta.title;
   }
 
-  // 2. 防止已登录用户访问登录/注册页
-  if (to.meta.preventIfLoggedIn && isLoggedIn) {
-    // 如果是切换账号操作，允许访问登录页面
-    if (
-      to.path === "/login" &&
-      sessionStorage.getItem("isSwitchingAccount") === "true"
-    ) {
-      console.log("检测到切换账号操作，允许访问登录页面");
-      next();
-      return;
-    }
+  // 2. 检查 Token 和登录状态
+  const token = localStorage.getItem("token");
+  const username = localStorage.getItem("username");
+  const isLoggedIn = localStorage.getItem("isLoggedIn") === "true";
+
+  // 简单的token存在性检查，不验证有效性（由API验证）
+  const hasToken = !!token && token.trim().length > 0;
+
+  // 3. 防止已登录用户访问登录/注册页
+  if (to.meta.preventIfLoggedIn && hasToken && username) {
+    console.log("✅ 已登录用户，跳转到首页");
     next("/");
     return;
   }
 
-  // 3. 不需要权限的页面直接放行
-  if (to.meta.guestAccess) {
+  // 4. 不需要权限的页面直接放行
+  if (to.meta.guestAccess || to.meta.noAuthRequired) {
+    console.log("✅ 公开页面，直接放行");
     next();
     return;
   }
 
-  // 4. 检查是否需要登录
-  if (to.meta.requiresAuth && !isLoggedIn) {
-    alert("🚫 请先登录！");
-    next("/login");
-    return;
-  }
+  // 5. 检查是否需要登录
+  if (to.meta.requiresAuth) {
+    if (!hasToken || !username) {
+      console.log("🚫 需要登录才能访问:", to.path);
+      // 保存当前路径，登录后可以跳转回来
+      if (to.path !== "/login") {
+        sessionStorage.setItem("redirectPath", to.fullPath);
+      }
+      next("/login");
+      return;
+    }
 
-  // 5. 检查角色权限
-  if (to.meta.requiresRole && to.meta.requiresRole !== userRole) {
-    alert("🚫 权限不足，无法访问该页面！");
-    next("/");
-    return;
+    // 检查角色权限（如果需要）
+    if (to.meta.requiresRole) {
+      try {
+        // 从token中解码用户信息
+        const userFromToken =
+          config.getUserFromToken && config.getUserFromToken(token);
+        if (!userFromToken || userFromToken.role !== to.meta.requiresRole) {
+          console.log("🚫 权限不足，无法访问该页面！");
+          alert("权限不足，无法访问该页面！");
+          next("/");
+          return;
+        }
+      } catch (error) {
+        console.error("解析token失败:", error);
+        next("/login");
+        return;
+      }
+    }
   }
 
   // 6. 所有检查通过，放行
+  console.log("✅ 路由守卫检查通过");
   next();
+});
+
+// 路由后的钩子
+router.afterEach((to, from) => {
+  console.log(`✅ 路由完成: ${to.path}`);
+
+  // 清除滚动位置缓存
+  if (from.meta.keepScrollPosition) {
+    sessionStorage.removeItem(`scroll_${from.path}`);
+  }
+
+  // 登录成功后跳转回原来的页面
+  if (to.path === "/" && from.path === "/login") {
+    const redirectPath = sessionStorage.getItem("redirectPath");
+    if (redirectPath && redirectPath !== "/login") {
+      console.log(`🔀 登录后重定向到: ${redirectPath}`);
+      sessionStorage.removeItem("redirectPath");
+      // 使用setTimeout避免循环
+      setTimeout(() => {
+        router.push(redirectPath);
+      }, 100);
+    }
+  }
 });
 
 export default router;

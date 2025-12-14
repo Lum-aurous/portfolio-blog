@@ -1,71 +1,67 @@
 <script setup>
-import { ref, onMounted, watch, computed, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted, watch, computed, nextTick, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user.js'
+import { message } from '@/utils/message.js' // 确保引入 message 工具
 
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 
 const isDark = ref(false)
-// 定义一个关闭菜单的函数
+const showUserMenu = ref(false)
+const activeDropdown = ref(null)
+const navbarHeight = ref(80)
+const prevScrollY = ref(0)
+const isNavbarVisible = ref(true)
+const isMouseOnNavbar = ref(false)
+const showBackground = ref(false)
+
 const closeUserMenu = () => {
   showUserMenu.value = false
 }
 
-// ==================== 用户数据计算属性 ====================
-const isLoggedIn = computed(() => userStore.isLoggedIn)
+// ==================== 🔥 核心修复：纯粹的响应式用户数据 ====================
+// 1. 是否登录：直接依赖 store 中的 token 和 user 对象
+const isLoggedIn = computed(() => !!userStore.token && !!userStore.user)
+
+// 2. 是否管理员
 const isAdmin = computed(() => userStore.user?.role === 'admin')
-const username = computed(() => userStore.user?.username || '')
 
+// 3. 用户名
+const username = computed(() => userStore.user?.username || 'Guest')
+
+// 4. 头像：只从 store 获取，它是响应式的，登录后会自动更新
 const userAvatar = computed(() => {
-  const piniaAvatar = userStore.user?.avatar
-  if (piniaAvatar) return piniaAvatar
-
-  const storedUser = localStorage.getItem('user')
-  if (storedUser) {
-    try {
-      const userObj = JSON.parse(storedUser)
-      return userObj.avatar || ''
-    } catch (e) {
-      return ''
-    }
-  }
-  return ''
+  return userStore.user?.avatar || ''
 })
 
+// 5. 邮箱
 const email = computed(() => userStore.user?.email || '')
 
+// 6. 昵称显示逻辑：优先昵称，其次用户名
 const nickname = computed(() => {
-  const piniaNickname = userStore.user?.nickname
-  if (piniaNickname && piniaNickname.trim()) {
-    return piniaNickname
-  }
-
-  const storedUser = localStorage.getItem('user')
-  if (storedUser) {
-    try {
-      const userObj = JSON.parse(storedUser)
-      return userObj.nickname || userObj.username || ''
-    } catch (e) {
-      return username.value
-    }
-  }
-  return username.value
+  return userStore.user?.nickname || userStore.user?.username || '用户'
 })
 
+// 7. 头像占位文字（取首字母）
 const avatarText = computed(() => {
-  if (username.value && username.value.length > 0) {
-    return username.value.charAt(0).toUpperCase()
-  }
-  return '?'
+  const name = nickname.value
+  return name ? name.charAt(0).toUpperCase() : '?'
 })
 
+// 8. 推特风格 Handle (@username)
 const handle = computed(() => {
-  if (!username.value) return ''
-  return '@' + username.value.toLowerCase().replace(/\s+/g, '')
+  const name = userStore.user?.username
+  return name ? '@' + name.toLowerCase().replace(/\s+/g, '') : ''
 })
 
+// 9. 处理头像加载错误
+const handleAvatarError = (e) => {
+  e.target.src = 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'
+}
+
+// ==================== ⬇️ 请保留你原有的数据 (不要删除) ====================
 // ==================== 1. 导航数据（完整无省略）===================
 const navItems = [
   {
@@ -316,16 +312,9 @@ const loginIcon = {
   ]
 }
 
-// ==================== 导航栏控制状态 ====================
-const navbarHeight = ref(80)
-const prevScrollY = ref(0)
-const isNavbarVisible = ref(true)
-const isMouseOnNavbar = ref(false)
-const showBackground = ref(false)
-const showUserMenu = ref(false)
-const activeDropdown = ref(null)
+// ==================== ⬆️ 数据部分结束 ====================
 
-// ==================== 导航栏显示控制 ====================
+// ==================== 导航交互逻辑 ====================
 const handleMouseEnter = () => {
   showBackground.value = true
   isMouseOnNavbar.value = true
@@ -346,9 +335,9 @@ const shouldShowNavbar = computed(() => {
   return isNavbarVisible.value || isMouseOnNavbar.value
 })
 
-// ==================== 滚动逻辑（核心优化）====================
+// ==================== 滚动监听 (防抖优化) ====================
 let ticking = false
-const scrollThreshold = 10 // 最小滚动距离阈值（避免微小抖动）
+const scrollThreshold = 10
 
 const onScroll = () => {
   if (!ticking) {
@@ -356,13 +345,11 @@ const onScroll = () => {
       const currentScrollY = window.scrollY
       const scrollDelta = currentScrollY - prevScrollY.value
 
-      // 动态获取导航栏高度
       const navbar = document.querySelector('.navbar')
       if (navbar && navbarHeight.value !== navbar.offsetHeight) {
         navbarHeight.value = navbar.offsetHeight
       }
 
-      // 忽略小幅度滚动（防抖）
       if (Math.abs(scrollDelta) < scrollThreshold) {
         ticking = false
         return
@@ -371,22 +358,18 @@ const onScroll = () => {
       const isScrollingDown = scrollDelta > 0
       const isScrollingUp = scrollDelta < 0
 
-      // 核心逻辑：
-      // 1. 在导航栏高度范围内：始终显示
-      // 2. 向下滚动超过导航栏高度+50px：隐藏（内容真正触碰到导航栏）
-      // 3. 向上滚动：显示
-      // 4. 鼠标在导航栏上：强制显示（通过 computed 实现）
-
+      // 顶部始终显示
       if (currentScrollY <= navbarHeight.value) {
-        // 在顶部区域，始终显示
         isNavbarVisible.value = true
-      } else if (isScrollingDown && currentScrollY > navbarHeight.value + 50) {
-        // 向下滚动且超过阈值，隐藏（除非鼠标悬停）
+      }
+      // 向下滚动隐藏
+      else if (isScrollingDown && currentScrollY > navbarHeight.value + 50) {
         if (!isMouseOnNavbar.value) {
           isNavbarVisible.value = false
         }
-      } else if (isScrollingUp) {
-        // 向上滚动，显示
+      }
+      // 向上滚动显示
+      else if (isScrollingUp) {
         isNavbarVisible.value = true
       }
 
@@ -427,6 +410,7 @@ const handleLogout = () => {
     userStore.logout()
     showUserMenu.value = false
     router.push('/login').then(() => {
+      // 刷新页面以清除所有残留状态
       window.location.reload()
     })
   }
@@ -434,13 +418,11 @@ const handleLogout = () => {
 
 const handleLocationClick = () => {
   if (!isLoggedIn.value) {
-    alert('请先登录以获取位置信息')
+    message.warning('请先登录以获取位置信息')
     return
   }
 
-  if (userStore.isLoadingLocation) {
-    return
-  }
+  if (userStore.isLoadingLocation) return
 
   if (!userStore.location) {
     userStore.getLocation()
@@ -449,37 +431,28 @@ const handleLocationClick = () => {
   }
 }
 
-// ==================== 下拉菜单优化 (大师级修复) ====================
-let closeTimer = null // 用于存储定时器ID
+// ==================== 下拉菜单交互 (防抖) ====================
+let closeTimer = null
 
-// 鼠标移入导航项
 const handleNavEnter = (itemName) => {
-  // 1. 既然回来了，立刻清除准备关闭的定时器！这步是“丝滑”的关键
   if (closeTimer) {
     clearTimeout(closeTimer)
     closeTimer = null
   }
-  // 2. 立刻显示，没有任何延迟
   activeDropdown.value = itemName
 }
 
-// 鼠标移出（导航项 或 下拉菜单）
 const handleNavLeave = () => {
-  // 1. 不要立刻关闭，给用户 150ms 的“容错时间”
-  // 这样用户鼠标斜着划向下拉菜单时，菜单不会消失
   closeTimer = setTimeout(() => {
     activeDropdown.value = null
   }, 150)
 }
 
-// 鼠标移入下拉菜单本身
 const handleDropdownEnter = () => {
-  // 1. 如果用户鼠标进入了下拉菜单，说明他想操作，立刻清除关闭定时器
   if (closeTimer) {
     clearTimeout(closeTimer)
     closeTimer = null
   }
-  // 保持当前状态不变，菜单继续显示
 }
 
 // ==================== 监听器 ====================
@@ -488,6 +461,7 @@ watch(() => route.path, () => {
   showUserMenu.value = false
 })
 
+// 监听登录状态，自动获取位置信息
 watch(() => isLoggedIn.value, (loggedIn) => {
   if (loggedIn && !userStore.location) {
     setTimeout(() => {
@@ -496,6 +470,7 @@ watch(() => isLoggedIn.value, (loggedIn) => {
   }
 }, { immediate: true })
 
+// 调试用：监听用户数据变化
 watch(() => userStore.user, (newUser) => {
   if (newUser) {
     console.log('Navbar: 用户数据已更新', newUser.username)
@@ -503,15 +478,23 @@ watch(() => userStore.user, (newUser) => {
 }, { deep: true })
 
 // ==================== 生命周期 ====================
-onMounted(() => {
-  // 恢复主题
+onMounted(async () => {
+  // 1. 恢复主题
   const savedTheme = localStorage.getItem('theme')
   if (savedTheme === 'dark') {
     isDark.value = true
     document.documentElement.classList.add('dark')
   }
 
-  // 获取导航栏实际高度
+  // 2. 🔥 关键修复：页面加载时尝试恢复用户信息
+  // 如果本地有 token 但 Store 里没用户，主动拉取一次 profile
+  const token = localStorage.getItem('token')
+  if (token && !userStore.user) {
+    console.log('Navbar: 检测到 Token，正在恢复用户信息...')
+    await userStore.checkLoginStatus()
+  }
+
+  // 3. 获取导航栏高度
   nextTick(() => {
     const navbar = document.querySelector('.navbar')
     if (navbar) {
@@ -519,23 +502,16 @@ onMounted(() => {
     }
   })
 
-  // 🔥 新增：注册全局点击事件监听器
-  // 只要点击了页面的任何地方（除了被 @click.stop 拦截的地方），都会触发这个关闭函数
+  // 4. 注册全局事件
   window.addEventListener('click', closeUserMenu)
-
-  // 注册滚动监听
   window.addEventListener('scroll', onScroll, { passive: true })
   onScroll()
 })
 
 onUnmounted(() => {
-  // 🔥 新增：组件卸载时记得移除监听，防止内存泄漏
   window.removeEventListener('click', closeUserMenu)
-
-  // 移除滚动监听 (你原有的)
   window.removeEventListener('scroll', onScroll)
 })
-
 </script>
 
 <template>

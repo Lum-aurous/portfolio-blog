@@ -17,37 +17,51 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      host: "0.0.0.0", // 允许局域网访问
       proxy: {
         "/api": {
           target: env.VITE_API_TARGET || "http://localhost:3000",
           changeOrigin: true,
           secure: false,
-          rewrite: (path) => path.replace(/^\/api/, "/api"), // 👈 新增：确保路径正确
+          rewrite: (path) => path.replace(/^\/api/, "/api"),
+          // 添加详细的日志
+          configure: (proxy, options) => {
+            proxy.on("error", (err, req, res) => {
+              console.log("❌ 代理错误:", err);
+            });
+            proxy.on("proxyReq", (proxyReq, req, res) => {
+              console.log("📡 代理请求:", req.method, req.url);
+            });
+            proxy.on("proxyRes", (proxyRes, req, res) => {
+              console.log("📦 代理响应:", req.url, proxyRes.statusCode);
+            });
+          },
         },
         "/uploads": {
           target: env.VITE_API_TARGET || "http://localhost:3000",
           changeOrigin: true,
           secure: false,
-          rewrite: (path) => path.replace(/^\/uploads/, "/uploads"), // 👈 新增：同上
+          rewrite: (path) => path.replace(/^\/uploads/, "/uploads"),
         },
       },
-    },
-    // 定义全局常量
-    define: {
-      __APP_VERSION__: JSON.stringify(env.VITE_APP_VERSION || "1.0.0"),
-      __APP_ENV__: JSON.stringify(env.VITE_APP_ENV || "development"),
+      // 添加 HMR 配置
+      hmr: {
+        overlay: true, // 显示错误覆盖层
+      },
     },
     // 构建配置
     build: {
-      // 输出目录
       outDir: "dist",
-      // 是否生成 sourcemap
       sourcemap: mode === "development",
-      // 资源文件输出目录
       assetsDir: "assets",
-      // 资源文件命名
+      // 优化依赖项分割
       rollupOptions: {
         output: {
+          manualChunks: {
+            vue: ["vue", "vue-router", "pinia"],
+            vendor: ["axios", "country-state-city", "lodash-es"],
+            ui: ["element-plus", "vant"],
+          },
           chunkFileNames: "assets/js/[name]-[hash].js",
           entryFileNames: "assets/js/[name]-[hash].js",
           assetFileNames: (assetInfo) => {
@@ -64,6 +78,27 @@ export default defineConfig(({ mode }) => {
           },
         },
       },
+      // 构建优化
+      minify: "terser",
+      terserOptions: {
+        compress: {
+          drop_console: mode !== "development", // 生产环境移除console
+          drop_debugger: true,
+        },
+      },
+      // 分块策略
+      chunkSizeWarningLimit: 1000,
+    },
+    // 预加载和预取
+    optimizeDeps: {
+      include: ["vue", "vue-router", "pinia", "axios"],
+      exclude: [],
+    },
+    // 全局常量定义
+    define: {
+      __APP_VERSION__: JSON.stringify(env.VITE_APP_VERSION || "1.0.0"),
+      __APP_ENV__: JSON.stringify(env.VITE_APP_ENV || "development"),
+      __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     },
   };
 });

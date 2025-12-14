@@ -10,6 +10,7 @@ const path = require("path");
 const rateLimit = require("express-rate-limit"); // 🔥 9. 限流
 const { body, validationResult } = require("express-validator"); // 🔥 8. 输入验证
 const winston = require("winston"); // 🔥 4. 日志系统
+const nodemailer = require("nodemailer");
 
 const app = express();
 
@@ -31,6 +32,16 @@ const logger = winston.createLogger({
   ],
 });
 
+// 配置邮件发送器 (放在接口外面，复用连接)
+const transporter = nodemailer.createTransport({
+  service: "qq", // 使用内置的 QQ 邮箱服务
+  auth: {
+    user: "bojackjck@foxmail.com", // ❌【重要】请替换为你的真实QQ邮箱
+    pass: "nysuimbzmxipdddh", // ❌【重要】请替换为你的16位授权码
+  },
+});
+
+
 // 开发环境下同时输出到控制台
 if (process.env.NODE_ENV !== "production") {
   logger.add(
@@ -42,7 +53,6 @@ if (process.env.NODE_ENV !== "production") {
     })
   );
 }
-
 
 // 放在 CORS 之前，这样加载网页/图片永远不会报跨域错误
 app.use("/uploads", express.static("uploads", { maxAge: "1d" }));
@@ -83,6 +93,8 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+// 🔥 新增：显式处理所有 OPTIONS 请求，直接返回 200，不走后面的中间件
+app.options(/.*/, cors(corsOptions));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
@@ -460,105 +472,282 @@ app.post(
 );
 
 // ==========================================
-// 🔥 8. 用户注册接口（加强验证）
+// 🔥 8. 用户注册接口
 // ==========================================
 app.post(
   "/api/register",
   authLimiter,
   [
-    body("username")
-      .optional()
-      .trim()
-      .isLength({ min: 3, max: 20 })
-      .withMessage("用户名长度应为3-20个字符")
-      .matches(/^[a-zA-Z0-9_]+$/)
-      .withMessage("用户名只能包含字母、数字和下划线"),
+    body("account").trim().notEmpty().withMessage("请输入手机号或邮箱"),
     body("password")
       .isLength({ min: 6, max: 50 })
       .withMessage("密码长度应为6-50个字符"),
-    body("email").optional().isEmail().withMessage("邮箱格式不正确"),
-    body("phone")
-      .optional()
-      .matches(/^(\+86\s)?1[3-9]\d{9}$/)
-      .withMessage("手机号格式不正确"),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return apiResponse.error(res, "输入验证失败", 400, errors.array());
+      return apiResponse.error(res, errors.array()[0].msg, 400);
     }
 
     try {
-      const { username, password, email, phone } = req.body;
+      const { account, password } = req.body;
 
-      if (!username && !email && !phone) {
+      // 1. 识别账号类型（手机号/邮箱）
+      const isPhone = /^1[3-9]\d{9}$/.test(account);
+      const isEmail = /^\S+@\S+\.\S+$/.test(account);
+
+      if (!isPhone && !isEmail) {
         return apiResponse.error(
           res,
-          "至少提供用户名、邮箱或手机号中的一种",
+          "账号格式不正确，请输入有效的手机号或邮箱",
           400
         );
       }
 
-      // 格式化手机号
-      let formattedPhone = null;
-      if (phone) {
-        const cleanPhone = phone.replace(/\D/g, "");
-        if (/^1[3-9]\d{9}$/.test(cleanPhone)) {
-          formattedPhone = `+86 ${cleanPhone}`;
-        } else if (phone.startsWith("+86")) {
-          formattedPhone = phone;
+      // 2. 检查账号是否已存在
+      let existingUser = null;
+
+      if (isPhone) {
+        // 检查手机号
+        const [phoneResults] = await dbPool.query(
+          "SELECT id FROM users WHERE phone = ? OR phone = ?",
+          [`+86 ${account}`, account]
+        );
+        if (phoneResults.length > 0) {
+          return apiResponse.error(res, "该手机号已被注册，请直接登录", 409);
+        }
+      } else {
+        // 检查邮箱
+        const [emailResults] = await dbPool.query(
+          "SELECT id FROM users WHERE email = ?",
+          [account]
+        );
+        if (emailResults.length > 0) {
+          return apiResponse.error(res, "该邮箱已被注册，请直接登录", 409);
         }
       }
 
-      const loginIdentifier = username || email || formattedPhone || phone;
+      // 3. 生成唯一的用户名（门票阶段的临时用户名）
+      let autoUsername = "";
+      let isUnique = false;
+      let attempts = 0;
 
-      // 检查是否已存在
-      const [existing] = await dbPool.query(
-        "SELECT * FROM users WHERE username = ? OR email = ? OR phone = ?",
-        [loginIdentifier, email, formattedPhone]
-      );
+      while (!isUnique && attempts < 10) {
+        const randomSuffix = Math.random().toString(36).substring(2, 8);
+        autoUsername = `user_${randomSuffix}`;
 
-      if (existing.length > 0) {
-        const existingUser = existing[0];
-        if (existingUser.username === loginIdentifier) {
-          return apiResponse.error(res, "用户名已被占用", 409);
+        // 检查用户名是否唯一
+        const [existingUsernames] = await dbPool.query(
+          "SELECT id FROM users WHERE username = ?",
+          [autoUsername]
+        );
+
+        if (existingUsernames.length === 0) {
+          isUnique = true;
         }
-        if (email && existingUser.email === email) {
-          return apiResponse.error(res, "邮箱已被注册", 409);
-        }
-        if (formattedPhone && existingUser.phone === formattedPhone) {
-          return apiResponse.error(res, "手机号已被注册", 409);
-        }
+        attempts++;
       }
 
-      // 加密密码
+      if (!isUnique) {
+        // 如果尝试10次都失败，使用时间戳
+        autoUsername = `user_${Date.now()}`;
+      }
+
+      // 4. 密码加密
       const hash = await bcrypt.hash(password, 10);
 
-      // 插入新用户
+      // 5. 准备存储数据
+      let email = null;
+      let phone = null;
+
+      if (isPhone) {
+        phone = `+86 ${account}`; // 统一格式
+      } else {
+        email = account;
+      }
+
+      // 6. 插入数据库
       const [result] = await dbPool.query(
-        "INSERT INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)",
-        [loginIdentifier, hash, email, formattedPhone]
+        "INSERT INTO users (username, password, email, phone, nickname) VALUES (?, ?, ?, ?, ?)",
+        [autoUsername, hash, email, phone, autoUsername] // 初始昵称和用户名相同
       );
 
       logger.info(
-        `新用户注册成功: ID=${result.insertId}, 用户名=${loginIdentifier}`
+        `新用户注册成功: ID=${result.insertId}, 账号=${account}, 初始用户名=${autoUsername}`
       );
 
       apiResponse.success(
         res,
         "注册成功",
         {
-          loginIdentifier,
-          phone: formattedPhone,
+          id: result.insertId,
+          account: account,
+          autoUsername: autoUsername,
+          message: `注册成功！您的初始用户名为：${autoUsername}，登录后可修改`,
         },
         201
       );
     } catch (err) {
-      logger.error("注册失败:", err);
-      apiResponse.error(res, "注册失败");
+      logger.error("注册系统错误:", err);
+
+      // 处理数据库错误
+      if (err.code === "ER_DUP_ENTRY") {
+        // 根据错误信息判断是哪个字段重复
+        if (err.message.includes("username")) {
+          return apiResponse.error(res, "用户名冲突，请稍后重试", 409);
+        } else if (err.message.includes("email")) {
+          return apiResponse.error(res, "邮箱已被注册", 409);
+        } else if (err.message.includes("phone")) {
+          return apiResponse.error(res, "手机号已被注册", 409);
+        }
+      }
+
+      apiResponse.error(res, "服务器繁忙，请稍后再试");
     }
   }
 );
+
+// ==========================================
+// 🔥 找回密码相关接口 (真实邮件发送版)
+// ==========================================
+
+// 模拟验证码存储 (内存存储)
+const verificationCodes = new Map();
+
+// 3. 发送验证码接口
+app.post("/api/reset-password/send-code", authLimiter, async (req, res) => {
+  try {
+    const { account } = req.body;
+    if (!account) return apiResponse.error(res, "请输入账号", 400);
+
+    // --- 步骤 A: 识别账号类型 ---
+    const isPhone = /^1[3-9]\d{9}$/.test(account);
+    const isEmail = /^\S+@\S+\.\S+$/.test(account);
+
+    if (!isPhone && !isEmail) {
+      return apiResponse.error(res, "账号格式不正确", 400);
+    }
+
+    // --- 步骤 B: 检查账号是否已注册 ---
+    let userQuery;
+    let params;
+    if (isPhone) {
+      userQuery =
+        "SELECT id, phone, email FROM users WHERE phone = ? OR phone = ?";
+      params = [`+86 ${account}`, account];
+    } else {
+      userQuery = "SELECT id, phone, email FROM users WHERE email = ?";
+      params = [account];
+    }
+
+    const [users] = await dbPool.query(userQuery, params);
+    if (users.length === 0) {
+      return apiResponse.error(res, "该账号未注册，无法找回密码", 404);
+    }
+
+    // --- 步骤 C: 生成并存储验证码 ---
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    verificationCodes.set(account, {
+      code,
+      expires: Date.now() + 5 * 60 * 1000,
+    });
+
+    // --- 步骤 D: 发送 (邮件 或 模拟短信) ---
+    if (isEmail) {
+      // 🔥 真实发送邮件逻辑
+      logger.info(`📨 正在尝试向 ${account} 发送邮件...`);
+
+      await transporter.sendMail({
+        from: '"Veritas 博客" <bojackjck@foxmail.com>', // ❌【重要】这里也要改成你的QQ邮箱，必须和上面 auth.user 一致
+        to: account, // 收件人
+        subject: "【Veritas】找回密码验证码", // 标题
+        text: `您的验证码是：${code}，有效期5分钟。`, // 纯文本兜底
+        html: `
+          <div style="padding: 20px; background-color: #f6f8fa;">
+            <div style="background: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+              <h2 style="color: #42b883;">🔐 找回密码</h2>
+              <p>亲爱的用户：</p>
+              <p>您正在申请重置密码，您的验证码是：</p>
+              <h1 style="color: #35495e; font-size: 32px; letter-spacing: 5px; margin: 20px 0;">${code}</h1>
+              <p style="color: #999; font-size: 12px;">有效期 5 分钟，请勿泄露给他人。</p>
+              <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+              <p style="color: #aaa; font-size: 12px;">如果这不是您的操作，请忽略此邮件。</p>
+            </div>
+          </div>
+        `,
+      });
+
+      logger.info(`📨 [真实邮件] 已发送至 ${account}`);
+      apiResponse.success(res, "验证码已发送至邮箱，请查收");
+    } else {
+      // 手机号目前只能模拟
+      logger.info(`📨 [模拟短信] 向 ${account} 发送验证码: ${code}`);
+      apiResponse.success(res, "短信验证码已发送 (请看后端控制台)");
+    }
+  } catch (err) {
+    logger.error("发送验证码失败:", err);
+    // 区分一下是不是邮箱配置错误
+    if (err.responseCode === 535) {
+      return apiResponse.error(res, "邮件服务器认证失败，请联系管理员");
+    }
+    apiResponse.error(res, "发送失败，请稍后重试");
+  }
+});
+
+// 2. 重置密码接口
+app.post("/api/reset-password/verify", authLimiter, async (req, res) => {
+  try {
+    const { account, code, newPassword } = req.body;
+
+    if (!account || !code || !newPassword) {
+      return apiResponse.error(res, "请填写完整信息", 400);
+    }
+
+    if (newPassword.length < 6) {
+      return apiResponse.error(res, "新密码长度至少 6 位", 400);
+    }
+
+    // 验证验证码
+    const record = verificationCodes.get(account);
+    if (!record) {
+      return apiResponse.error(res, "请先获取验证码", 400);
+    }
+    if (Date.now() > record.expires) {
+      verificationCodes.delete(account);
+      return apiResponse.error(res, "验证码已过期，请重新获取", 400);
+    }
+    if (record.code !== code) {
+      return apiResponse.error(res, "验证码错误", 400);
+    }
+
+    // 验证通过，加密新密码
+    const hash = await bcrypt.hash(newPassword, 10);
+
+    // 更新数据库
+    const isPhone = /^1[3-9]\d{9}$/.test(account);
+    let updateSql;
+    let params;
+
+    if (isPhone) {
+      updateSql = "UPDATE users SET password = ? WHERE phone = ? OR phone = ?";
+      params = [hash, `+86 ${account}`, account];
+    } else {
+      updateSql = "UPDATE users SET password = ? WHERE email = ?";
+      params = [hash, account];
+    }
+
+    await dbPool.query(updateSql, params);
+
+    // 清除验证码
+    verificationCodes.delete(account);
+
+    logger.info(`🔓 账号 ${account} 密码重置成功`);
+    apiResponse.success(res, "密码重置成功，请重新登录");
+  } catch (err) {
+    logger.error("重置密码失败:", err);
+    apiResponse.error(res, "重置失败，请稍后重试");
+  }
+});
 
 // ==========================================
 // 🔥 1 & 8. 用户登录接口（JWT + 验证）
@@ -749,14 +938,56 @@ app.get("/api/user/profile", async (req, res) => {
   }
 });
 
+// ==========================================
 // 🔥 更新用户个人信息（需要认证 + 权限检查）
+// 支持修改用户名，但要检查唯一性
+// ==========================================
 app.post(
   "/api/user/update",
   authenticateToken,
   [
-    body("nickname").optional().trim().isLength({ max: 50 }),
-    body("email").optional().isEmail().withMessage("邮箱格式不正确"),
-    body("bio").optional().trim().isLength({ max: 500 }),
+    body("username")
+      .optional()
+      .trim()
+      .isLength({ min: 3, max: 50 })
+      .withMessage("用户名长度应为3-50个字符")
+      .matches(/^[a-zA-Z0-9_]+$/)
+      .withMessage("用户名只能包含字母、数字和下划线"),
+    body("nickname")
+      .optional()
+      .trim()
+      .isLength({ max: 50 })
+      .withMessage("昵称不能超过50个字符"),
+    // 🔥 修改邮箱验证规则：允许为空或null，不为空时才验证格式
+    body("email")
+      .optional({ nullable: true, checkFalsy: true })
+      .if(body("email").notEmpty())
+      .isEmail()
+      .withMessage("邮箱格式不正确"),
+    body("bio")
+      .optional()
+      .trim()
+      .isLength({ max: 500 })
+      .withMessage("个人简介不能超过500个字符"),
+    // 添加其他字段的验证
+    body("phone")
+      .optional({ nullable: true, checkFalsy: true })
+      .custom((value) => {
+        if (!value) return true; // 允许空
+        // 验证手机号格式：+86 1xxxxxxxxxx 或其他国际格式
+        const phoneRegex = /^\+\d{1,3}\s\d{6,15}$/;
+        return phoneRegex.test(value);
+      })
+      .withMessage("手机号格式不正确，格式应为：+国家代码 号码"),
+    body("gender")
+      .optional()
+      .isIn(["男", "女", "不展示", null])
+      .withMessage("性别只能是'男'、'女'、'不展示'或空"),
+    body("social_link")
+      .optional({ nullable: true, checkFalsy: true })
+      .if(body("social_link").notEmpty())
+      .isURL()
+      .withMessage("社交媒体链接格式不正确"),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -766,6 +997,7 @@ app.post(
 
     try {
       const {
+        id,
         username,
         nickname,
         email,
@@ -779,27 +1011,111 @@ app.post(
       } = req.body;
 
       // 权限检查：只能修改自己的信息
-      if (username !== req.user.username && req.user.role !== "admin") {
+      // 注意：这里 req.user.id 是从 JWT token 中获取的当前用户 ID
+      if (id !== req.user.id && req.user.role !== "admin") {
         return apiResponse.error(res, "无权修改其他用户信息", 403);
       }
 
+      // 检查用户名是否被其他用户占用
+      if (username && username !== req.user.username) {
+        const [existingUsername] = await dbPool.query(
+          "SELECT id FROM users WHERE username = ? AND id != ?",
+          [username, id]
+        );
+
+        if (existingUsername.length > 0) {
+          return apiResponse.error(res, "用户名已被其他用户使用", 409);
+        }
+      }
+
+      // 检查邮箱是否被其他用户占用（如果提供了邮箱）
+      if (email) {
+        const [existingEmail] = await dbPool.query(
+          "SELECT id FROM users WHERE email = ? AND id != ? AND email IS NOT NULL",
+          [email, id]
+        );
+
+        if (existingEmail.length > 0) {
+          return apiResponse.error(res, "邮箱已被其他用户使用", 409);
+        }
+      }
+
+      // 检查手机号是否被其他用户占用（如果提供了手机号）
+      if (phone) {
+        const [existingPhone] = await dbPool.query(
+          "SELECT id FROM users WHERE phone = ? AND id != ? AND phone IS NOT NULL",
+          [phone, id]
+        );
+
+        if (existingPhone.length > 0) {
+          return apiResponse.error(res, "手机号已被其他用户使用", 409);
+        }
+      }
+
+      // 构建更新字段
+      const updateFields = [];
+      const updateValues = [];
+
+      if (username !== undefined) {
+        updateFields.push("username = ?");
+        updateValues.push(username);
+      }
+
+      if (nickname !== undefined) {
+        updateFields.push("nickname = ?");
+        updateValues.push(nickname);
+      }
+
+      if (email !== undefined) {
+        updateFields.push("email = ?");
+        updateValues.push(email || null); // 空字符串转为 null
+      }
+
+      if (avatar !== undefined) {
+        updateFields.push("avatar = ?");
+        updateValues.push(avatar);
+      }
+
+      if (phone !== undefined) {
+        updateFields.push("phone = ?");
+        updateValues.push(phone || null); // 空字符串转为 null
+      }
+
+      if (gender !== undefined) {
+        updateFields.push("gender = ?");
+        updateValues.push(gender);
+      }
+
+      if (birthday !== undefined) {
+        updateFields.push("birthday = ?");
+        updateValues.push(birthday);
+      }
+
+      if (region !== undefined) {
+        updateFields.push("region = ?");
+        updateValues.push(region);
+      }
+
+      if (bio !== undefined) {
+        updateFields.push("bio = ?");
+        updateValues.push(bio);
+      }
+
+      if (social_link !== undefined) {
+        updateFields.push("social_link = ?");
+        updateValues.push(social_link);
+      }
+
+      if (updateFields.length === 0) {
+        return apiResponse.error(res, "没有需要更新的字段", 400);
+      }
+
+      // 添加 WHERE 条件
+      updateValues.push(id);
+
       const [result] = await dbPool.query(
-        `UPDATE users
-         SET nickname = ?, email = ?, avatar = ?, phone = ?, gender = ?, 
-             birthday = ?, region = ?, bio = ?, social_link = ?
-         WHERE username = ?`,
-        [
-          nickname,
-          email,
-          avatar,
-          phone,
-          gender,
-          birthday,
-          region,
-          bio,
-          social_link,
-          username,
-        ]
+        `UPDATE users SET ${updateFields.join(", ")} WHERE id = ?`,
+        updateValues
       );
 
       if (result.affectedRows === 0) {
@@ -811,14 +1127,30 @@ app.post(
         `SELECT id, username, nickname, email, avatar, phone, gender, 
                 birthday, region, bio, social_link, role 
          FROM users 
-         WHERE username = ?`,
-        [username]
+         WHERE id = ?`,
+        [id]
       );
 
-      logger.info(`用户信息更新成功: 用户名=${username}`);
+      logger.info(
+        `用户信息更新成功: ID=${id}, 用户名=${
+          updatedUser[0].username || username
+        }`
+      );
       apiResponse.success(res, "个人信息已更新", updatedUser[0]);
     } catch (err) {
       logger.error("更新用户信息失败:", err);
+
+      // 处理唯一性约束错误
+      if (err.code === "ER_DUP_ENTRY") {
+        if (err.message.includes("username")) {
+          return apiResponse.error(res, "用户名已被占用", 409);
+        } else if (err.message.includes("email")) {
+          return apiResponse.error(res, "邮箱已被占用", 409);
+        } else if (err.message.includes("phone")) {
+          return apiResponse.error(res, "手机号已被占用", 409);
+        }
+      }
+
       apiResponse.error(res, "数据库更新失败");
     }
   }

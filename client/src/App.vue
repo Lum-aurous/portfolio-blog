@@ -1,12 +1,11 @@
 <script setup>
-import { onMounted, ref, computed, watch } from 'vue'
+import { onMounted, ref, computed, watch, nextTick } from 'vue'
 import { useWallpaperStore } from '@/stores/wallpaper'
 import Navbar from '@/components/Navbar.vue'
 import ToastManager from '@/components/ToastManager.vue'
 import { useUserStore } from '@/stores/user.js'
 
 const userStore = useUserStore()
-
 const wallpaperStore = useWallpaperStore()
 const isAppReady = ref(false)
 // 🔥 新增：精确控制图片是否已在内存中加载完成
@@ -81,7 +80,7 @@ watch(() => wallpaperStore.currentWallpaper, (newUrl) => {
     // 开始下载
     img.src = formattedUrl
   } else {
-    // 如果 URL 被清空，直接视为“加载完成”（显示纯色背景）
+    // 如果 URL 被清空，直接视为"加载完成"（显示纯色背景）
     imageLoaded.value = true
   }
 }, { immediate: true })
@@ -89,24 +88,41 @@ watch(() => wallpaperStore.currentWallpaper, (newUrl) => {
 // ==================== 3. 生命周期初始化 ====================
 onMounted(async () => {
   console.log('🚀 App.vue 全局挂载')
-  // 🔥 在这里检查登录状态，最安全
-  userStore.checkLoginStatus()  
 
   try {
-    // 尝试初始化壁纸
-    // 注意：initialize 内部已经做了防止重复调用的判断，这里直接调很安全
+    // 1. 先检查登录状态（同步）
+    userStore.checkLoginStatus()
+    console.log('👤 用户状态检查完成:', userStore.user?.username)
+
+    // 等待下一个 tick，确保 DOM 已更新
+    await nextTick()
+
+    // 2. 初始化壁纸系统
     if (!wallpaperStore.isInitialized) {
+      console.log('🎨 开始初始化壁纸系统...')
       await wallpaperStore.initialize()
     }
+
+    console.log('✅ 应用初始化完成')
   } catch (error) {
     console.error('❌ 全局初始化异常:', error)
   } finally {
     // 无论成功失败，都要移除加载遮罩，让用户看到界面
-    // 稍微延迟一点点，给用户一种“稳重”的感觉
+    // 稍微延迟一点点，给用户一种"稳重"的感觉
     setTimeout(() => {
       isAppReady.value = true
+      console.log('✨ 应用准备就绪')
     }, 500)
   }
+})
+
+// ==================== 4. 监听用户状态变化 ====================
+watch(() => userStore.user, (newUser) => {
+  console.log('👤 用户状态变化:', newUser?.username || '未登录')
+}, { deep: true })
+
+watch(() => userStore.isLoggedIn, (loggedIn) => {
+  console.log('🔐 登录状态变化:', loggedIn ? '已登录' : '未登录')
 })
 </script>
 

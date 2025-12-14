@@ -1,10 +1,10 @@
 <script setup>
-import { ref, onMounted, computed, onUnmounted } from 'vue' // 🔥 记得引入 onUnmounted
+import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import axios from 'axios'
 import { useUserStore } from '@/stores/user.js'
 import { Country, State, City } from 'country-state-city'
 import { message } from '@/utils/message.js'
+import { api } from '@/utils/api'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -32,10 +32,26 @@ const originalUser = ref({})
 
 // 侧边栏菜单
 const menuItems = [
-    { id: 'personal', label: '个人信息', iconPath: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z' },
-    { id: 'security', label: '安全与登录', iconPath: 'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-9-2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z' },
-    { id: 'data', label: '数据与隐私', iconPath: 'M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z' },
-    { id: 'people', label: '用户与分享', iconPath: 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z' }
+    {
+        id: 'personal',
+        label: '个人信息',
+        iconPath: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z'
+    },
+    {
+        id: 'security',
+        label: '安全与登录',
+        iconPath: 'M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z'
+    },
+    {
+        id: 'data',
+        label: '数据与隐私',
+        iconPath: 'M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z'
+    },
+    {
+        id: 'people',
+        label: '用户与分享',
+        iconPath: 'M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z'
+    }
 ]
 
 const avatarSrc = computed(() => {
@@ -44,7 +60,6 @@ const avatarSrc = computed(() => {
     if (user.value.avatar.startsWith('http')) return user.value.avatar
     return `${import.meta.env.VITE_API_BASE_URL}${user.value.avatar}`
 })
-
 
 // ========== 🎂 生日日历选择器 ==========
 const showDatePicker = ref(false)
@@ -115,7 +130,7 @@ const handleStateChange = () => { selectedCityName.value = '' }
 
 const confirmRegion = () => {
     if (!selectedCountryCode.value) {
-        message.warning('请先选择一个国家') // ✨ 替换 alert
+        message.warning('请先选择一个国家')
         return
     }
     const country = countries.value.find(c => c.code === selectedCountryCode.value)
@@ -192,33 +207,46 @@ const handlePhoneInput = () => validatePhone()
 
 // ========== API 交互 ==========
 const fetchUserInfo = async () => {
-    // 优先从 store 获取，如果没有则尝试从本地存储获取
-    const currentUsername = userStore.user?.username || localStorage.getItem('username')
+    console.log('🔍 开始获取用户信息...')
 
-    if (!currentUsername) return
+    // 直接从 store 获取当前用户
+    const currentUsername = userStore.user?.username
+
+    if (!currentUsername) {
+        console.warn('❌ 未找到用户名，尝试刷新用户信息...')
+        await userStore.refreshUserInfo()
+
+        if (!userStore.user?.username) {
+            message.warning('请先登录')
+            router.push('/login')
+            return
+        }
+    }
+
+    // 使用 store 中的用户名
+    const username = userStore.user.username
+    console.log('✅ 使用的用户名:', username)
 
     try {
-        const res = await axios.get('/api/user/profile', { params: { username: currentUsername } })
+        console.log('📡 请求用户信息 API，用户名:', username)
 
-        // 🔥 修复点：先解构出真正的后端数据体
-        // res.data 是 axios 的响应体
-        // res.data.data 才是后端返回的用户对象
-        const responseData = res.data;
+        // ✅ 使用封装的 api 方法
+        const res = await api.get('/user/profile', {
+            params: { username }
+        })
 
-        if (responseData.success) {
-            // ✅ 这里要改：从 .data 里拿数据，而不是 .user
-            const dbUser = responseData.data;
+        console.log('📦 API 响应:', res.data)
+        const responseData = res.data
 
-            // 再次确认一下拿到了数据
-            if (!dbUser) {
-                console.warn('未获取到用户数据详情');
-                return;
-            }
+        if (responseData.success && responseData.data) {
+            const dbUser = responseData.data
+            console.log('🗂️ 数据库用户数据:', dbUser)
 
+            // 更新用户数据
             Object.assign(user.value, {
-                id: dbUser.id,
-                username: dbUser.username,
-                nickname: dbUser.nickname || dbUser.username,
+                id: dbUser.id || '',
+                username: dbUser.username || '',
+                nickname: dbUser.nickname || dbUser.username || '',
                 email: dbUser.email || '',
                 avatar: dbUser.avatar || '',
                 birthday: dbUser.birthday || '',
@@ -229,28 +257,43 @@ const fetchUserInfo = async () => {
                 social_link: dbUser.social_link || ''
             })
 
+            console.log('✅ 用户数据更新完成:', user.value)
+
             // 处理电话号码回显逻辑
             if (user.value.phone) {
+                console.log('📱 处理电话号码:', user.value.phone)
                 const phoneMatch = user.value.phone.match(/^(\+\d+)\s(.+)$/)
                 if (phoneMatch) {
                     const code = phoneMatch[1]
                     phoneInput.value = phoneMatch[2]
                     const country = phoneCountries.find(c => c.code === code)
-                    if (country) selectedPhoneCountry.value = country
+                    if (country) {
+                        selectedPhoneCountry.value = country
+                        console.log('✅ 设置国家区号:', country)
+                    }
+                } else {
+                    // 如果是纯数字手机号
+                    phoneInput.value = user.value.phone
+                    selectedPhoneCountry.value = phoneCountries.find(c => c.code === '+86')
                 }
             }
 
+            // 备份原始数据
             originalUser.value = JSON.parse(JSON.stringify(user.value))
+            console.log('📝 原始数据备份完成')
 
-            // 同步更新 Store，防止刷新后数据丢失
+            // 更新 store
             userStore.updateUser(user.value)
+            console.log('🔄 Store 更新完成')
+        } else {
+            console.error('API 返回数据格式错误:', responseData)
+            message.error('获取用户信息失败：' + (responseData.message || '未知错误'))
         }
     } catch (error) {
-        console.error('获取用户信息失败:', error)
-        if (error.response && error.response.status === 401) {
-            // Token 过期处理
-            message.warning('登录已过期，请重新登录');
-            router.push('/login');
+        console.error('❌ 获取用户信息失败:', error)
+        // api 已经处理了错误，这里只需要处理特殊情况
+        if (error.response && error.response.status === 404) {
+            message.error('用户信息不存在')
         }
     }
 }
@@ -269,16 +312,91 @@ const handleCancel = () => {
     }
 }
 
+const validateForm = () => {
+    const errors = []
 
-// 提交
-// 🔥 核心修复：清理空字符串，防止触发数据库唯一键冲突
+    // 1. 昵称验证
+    if (!user.value.nickname || user.value.nickname.trim() === '') {
+        errors.push('昵称不能为空')
+    }
+
+    // 2. 用户名验证
+    if (!user.value.username || user.value.username.length < 3) {
+        errors.push('用户名长度至少需要3位')
+    }
+
+    const usernameRegex = /^[a-zA-Z0-9_]+$/
+    if (!usernameRegex.test(user.value.username)) {
+        errors.push('用户名只能包含字母、数字和下划线')
+    }
+
+    // 3. 邮箱验证
+    if (user.value.email && user.value.email.trim() !== '') {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+        if (!emailRegex.test(user.value.email)) {
+            errors.push('邮箱格式不正确')
+        }
+    }
+
+    // 4. 电话验证
+    if (phoneError.value) {
+        errors.push('电话号码格式不正确')
+    }
+
+    // 5. 网址验证
+    if (user.value.social_link && user.value.social_link.trim() !== '') {
+        try {
+            new URL(user.value.social_link)
+        } catch {
+            errors.push('社交媒体链接格式不正确')
+        }
+    }
+
+    return errors
+}
+
 // 提交保存逻辑
 const handlePublish = async () => {
+    console.log('📝 开始提交用户信息...')
+
+    // 表单验证
+    const errors = validateForm()
+    if (errors.length > 0) {
+        message.warning(errors[0])
+        return
+    }
+
+    isSaving.value = true
+
+
     // 1. 基础校验
-    if (!user.value.nickname) {
+    if (!user.value.nickname || user.value.nickname.trim() === '') {
         message.warning('昵称不能为空哦～')
         return
     }
+
+    if (!user.value.username || user.value.username.length < 3) {
+        message.warning('用户名长度至少需要3位')
+        return
+    }
+
+    // 检查用户名格式（只能包含字母、数字、下划线）
+    const usernameRegex = /^[a-zA-Z0-9_]+$/
+    if (!usernameRegex.test(user.value.username)) {
+        message.warning('用户名只能包含字母、数字和下划线')
+        return
+    }
+
+    // 邮箱格式验证（如果填写了邮箱）
+    if (user.value.email && user.value.email.trim() !== '') {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+        if (!emailRegex.test(user.value.email)) {
+            message.warning('邮箱格式不正确')
+            return
+        }
+    }
+
+    // 手机号验证
     if (phoneError.value) {
         message.warning('请检查电话号码格式')
         return
@@ -286,85 +404,124 @@ const handlePublish = async () => {
 
     isSaving.value = true
 
-    // 2. 构建提交数据
+    // 2. 构建提交数据 - 确保格式正确
     const payload = {
         id: user.value.id,
         username: user.value.username,
         nickname: user.value.nickname,
-        // 空串转 null，防止数据库唯一性冲突
-        email: user.value.email ? user.value.email : null,
-        phone: user.value.phone ? user.value.phone : null,
-        gender: user.value.gender,
-        birthday: user.value.birthday,
-        bio: user.value.bio,
-        social_link: user.value.social_link,
-        region: user.value.region,
+        // 如果邮箱是空字符串，发送 null
+        email: user.value.email && user.value.email.trim() !== '' ? user.value.email.trim() : null,
+        // 手机号同样处理
+        phone: user.value.phone && user.value.phone.trim() !== '' ? user.value.phone.trim() : null,
+        gender: user.value.gender || null,
+        birthday: user.value.birthday || null,
+        bio: user.value.bio && user.value.bio.trim() !== '' ? user.value.bio.trim() : null,
+        social_link: user.value.social_link && user.value.social_link.trim() !== '' ? user.value.social_link.trim() : null,
+        region: user.value.region || null,
     }
 
-    // 头像处理：如果是 base64 才传，否则不传（避免覆盖）
+    console.log('📦 提交的数据:', JSON.stringify(payload, null, 2))
+
+    // 头像处理
     if (user.value.avatar && user.value.avatar.startsWith('data:image')) {
+        payload.avatar = user.value.avatar
+    } else if (user.value.avatar) {
+        // 如果是URL，保持原样
         payload.avatar = user.value.avatar
     }
 
-    // 🔥 关键修复 1：获取 Token
-    const token = userStore.token || localStorage.getItem('token');
-
     try {
-        // 🔥 关键修复 2：在 headers 中带上 Authorization
-        const res = await axios.post('/api/user/update', payload, {
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        })
+        // ✅ 使用封装的 api 方法
+        console.log('📡 提交到 /user/update')
+        const res = await api.post('/user/update', payload)
 
-        // res.data 是后端返回的完整 JSON { success, message, data }
-        const responseData = res.data;
+        const responseData = res.data
+        console.log('✅ 服务器响应:', responseData)
 
         if (responseData.success) {
             message.success('🎉 保存成功! 数据已同步')
 
-            // 🔥 关键修复 3：使用后端返回的最新数据更新前端
-            // 这样能确保前端显示的和数据库里绝对一致
-            const updatedUserFromBackend = responseData.data;
-
             // 更新当前页面数据
-            Object.assign(user.value, updatedUserFromBackend);
+            if (responseData.data) {
+                Object.assign(user.value, responseData.data)
+            }
 
             // 更新 Store
             userStore.updateUser(user.value)
 
-            // 更新备份，让"放弃修改"按钮变回灰色
+            // 如果用户名有修改，更新本地存储
+            if (originalUser.value.username !== user.value.username) {
+                localStorage.setItem('username', user.value.username)
+                message.success(`用户名已修改为: ${user.value.username}`)
+            }
+
+            // 更新备份
             originalUser.value = JSON.parse(JSON.stringify(user.value))
 
         } else {
+            console.error('❌ 保存失败，服务器返回:', responseData)
             message.error('保存失败: ' + (responseData.message || '未知错误'))
         }
     } catch (error) {
-        console.error('提交失败详情:', error)
+        console.error('❌ 提交失败详情:', error)
 
+        // 根据不同的错误类型提供更具体的提示
         if (error.response) {
-            // Token 过期处理
-            if (error.response.status === 401) {
-                message.error('登录已过期，请重新登录');
-                router.push('/login');
-                return;
-            }
+            const status = error.response.status
+            const errorData = error.response.data
 
-            if (error.response.status === 413) {
-                message.error('❌ 保存失败：头像文件太大了')
-            } else if (error.response.data && error.response.data.message && error.response.data.message.includes('Duplicate entry')) {
-                message.error('❌ 保存失败：邮箱或手机号已被其他账号占用')
-            } else {
-                message.error('❌ 保存失败：' + (error.response.data.message || '服务器错误'))
+            console.error('服务器错误详情:', errorData)
+
+            switch (status) {
+                case 400:
+                    // 验证错误
+                    if (errorData.message?.includes('邮箱') || errorData.message?.includes('email')) {
+                        message.error('邮箱格式不正确')
+                    } else if (errorData.message?.includes('用户名') || errorData.message?.includes('username')) {
+                        message.error('用户名格式不正确或已存在')
+                    } else if (errorData.message) {
+                        message.error('验证失败: ' + errorData.message)
+                    } else {
+                        message.error('输入数据有误，请检查填写内容')
+                    }
+                    break
+                case 401:
+                    message.error('登录已过期，请重新登录')
+                    setTimeout(() => {
+                        router.push('/login')
+                    }, 1500)
+                    break
+                case 403:
+                    message.error('没有权限修改用户信息')
+                    break
+                case 404:
+                    message.error('用户不存在')
+                    break
+                case 409:
+                    message.error('用户名已存在')
+                    break
+                case 413:
+                    message.error('头像文件太大了')
+                    break
+                case 500:
+                    message.error('服务器内部错误，请稍后重试')
+                    break
+                default:
+                    message.error('保存失败，请稍后重试')
             }
+        } else if (error.request) {
+            // 请求已发送但无响应
+            console.error('请求无响应:', error.request)
+            message.error('网络连接失败，请检查网络')
         } else {
-            message.error('❌ 网络连接失败')
+            // 请求配置出错
+            console.error('请求配置错误:', error.message)
+            message.error('请求配置出错: ' + error.message)
         }
     } finally {
         isSaving.value = false
     }
 }
-
 
 const fileInput = ref(null)
 const triggerUpload = () => fileInput.value.click()
@@ -380,15 +537,68 @@ const handleFileChange = (event) => {
         reader.readAsDataURL(file)
     }
 }
-const hasUnsavedChanges = computed(() => JSON.stringify(user.value) !== JSON.stringify(originalUser.value))
+// 在 computed 中添加安全访问
+const hasUnsavedChanges = computed(() => {
+    if (!user.value || !originalUser.value) return false
+    return JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
+})
 
 const closeAllDropdowns = () => {
     showGenderDropdown.value = false
     showPhoneDropdown.value = false
 }
 
-onMounted(() => {
-    fetchUserInfo()
+
+// 修改 watch，添加 null 检查
+watch(() => userStore.user, (newUser) => {
+    console.log('👤 用户状态变化:', newUser)
+    if (newUser && newUser.username) {
+        // 只有当有新的用户名时才重新获取
+        if (newUser.username !== user.value.username) {
+            fetchUserInfo()
+        }
+    } else {
+        console.log('⚠️ 用户信息为空')
+    }
+}, { immediate: true, deep: true })
+
+// 在 Account.vue 的 setup 函数中
+onMounted(async () => {
+    try {
+        // 添加延迟，确保路由完全加载
+        await new Promise(resolve => setTimeout(resolve, 100))
+
+        // 检查用户状态
+        if (!userStore.user || !userStore.user.username) {
+            // 尝试从本地存储恢复
+            const storedUsername = localStorage.getItem('username')
+            if (storedUsername) {
+                console.log('从本地存储恢复用户名:', storedUsername)
+                userStore.setUsername(storedUsername)
+            } else {
+                // 如果没有用户信息，跳转到登录页
+                console.warn('未找到用户信息，跳转到登录页')
+                router.push('/login')
+                return
+            }
+        }
+
+        // 获取用户信息
+        await fetchUserInfo()
+
+    } catch (error) {
+        console.error('Account页面初始化失败:', error)
+        // 如果是网络错误，可能是扩展引起的
+        if (error.message.includes('Failed to fetch') ||
+            error.message.includes('adblock')) {
+            console.warn('忽略扩展相关的网络错误')
+            // 继续尝试获取用户信息
+            await fetchUserInfo()
+        } else {
+            message.error('页面加载失败，请刷新重试')
+        }
+    }
+
     window.addEventListener('click', closeAllDropdowns)
 })
 
@@ -415,7 +625,7 @@ onUnmounted(() => {
             <main class="content">
                 <div v-if="activeTab === 'personal'" class="panel">
                     <div class="panel-header">
-                        <button class="back-btn" @click="router.back()" title="返回上一页">
+                        <button class="back-btn" @click="handleCancel" title="返回上一页">
                             <svg viewBox="0 0 24 24" class="back-icon">
                                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
                                     fill="currentColor" />
@@ -442,8 +652,15 @@ onUnmounted(() => {
                     </div>
 
                     <div class="form-group">
-                        <label class="label">用户名</label>
-                        <input type="text" v-model="user.username" class="input" disabled />
+                        <label class="label">
+                            用户名
+                            <span class="hint">(可修改，3-50位，字母、数字、下划线)</span>
+                        </label>
+                        <input type="text" v-model="user.username" class="input"
+                            :placeholder="user.username || '加载中...'" />
+                        <p class="tip" v-if="user.username && originalUser.username !== user.username">
+                            ⚠️ 注意：修改用户名会影响个人主页地址
+                        </p>
                     </div>
 
                     <div class="form-group">
@@ -455,6 +672,8 @@ onUnmounted(() => {
                         <label class="label">邮箱</label>
                         <input type="email" v-model="user.email" class="input" placeholder="请输入邮箱" />
                     </div>
+
+
 
                     <div class="form-group">
                         <label class="label">生日</label>
@@ -622,6 +841,16 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 添加加载状态样式 */
+.loading-state {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 300px;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 18px;
+}
+
 /* ==================== 1. 布局容器 ==================== */
 /* 🔥 外部容器：锁定全屏，禁止页面级滚动 */
 .account-container {
@@ -638,7 +867,7 @@ onUnmounted(() => {
     box-sizing: border-box;
 }
 
-/* 🔥 卡片容器：固定比例高度，作为内部滑动的“窗口” */
+/* 🔥 卡片容器：固定比例高度，作为内部滑动的"窗口" */
 .unified-card {
     display: flex;
     width: 90%;
@@ -798,6 +1027,20 @@ onUnmounted(() => {
     margin-bottom: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
+}
+
+.hint {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+    font-weight: normal;
+    margin-left: 8px;
+}
+
+.tip {
+    font-size: 12px;
+    color: #ff9800;
+    margin-top: 5px;
+    padding-left: 5px;
 }
 
 .input,
@@ -1135,7 +1378,7 @@ onUnmounted(() => {
 /* ⚪️ 次要操作按钮 (放弃/取消) - 升级为实体毛玻璃风格 */
 .btn-secondary,
 .btn-cancel {
-    /* 之前的透明背景太弱了，现在加深背景色，让它看起来也是个“实体按钮” */
+    /* 之前的透明背景太弱了，现在加深背景色，让它看起来也是个"实体按钮" */
     background: rgba(255, 255, 255, 0.1);
     color: rgba(255, 255, 255, 0.9);
     border-color: rgba(255, 255, 255, 0.1);

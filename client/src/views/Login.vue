@@ -4,6 +4,8 @@ import axios from 'axios'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user.js'
 import { message } from '@/utils/message.js'
+// 🔥 引入 api 封装
+import { api } from '@/utils/api'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -30,16 +32,23 @@ const showPhoneInput = ref(false)
 const showPhoneDropdown = ref(false)
 
 const phoneCountries = [
-    { code: '+86', country: '中国', flag: '🇨🇳', placeholder: '请输入11位手机号' },
-    { code: '+1', country: '美国', flag: '🇺🇸', placeholder: '请输入10位号码' },
-    { code: '+81', country: '日本', flag: '🇯🇵', placeholder: '请输入10-11位号码' },
-    { code: '+82', country: '韩国', flag: '🇰🇷', placeholder: '请输入10-11位号码' },
-    { code: '+44', country: '英国', flag: '🇬🇧', placeholder: '请输入10位号码' },
-    { code: '+33', country: '法国', flag: '🇫🇷', placeholder: '请输入9位号码' },
-    { code: '+49', country: '德国', flag: '🇩🇪', placeholder: '请输入10-11位号码' },
-    { code: '+61', country: '澳大利亚', flag: '🇦🇺', placeholder: '请输入9位号码' }
+    { code: '+86', country: '中国', flag: '🇨🇳' },
+    { code: '+1', country: '美国', flag: '🇺🇸' },
 ]
 const selectedPhoneCountry = ref(phoneCountries[0])
+
+// ==================== 🔥 找回密码状态 (之前漏掉的部分) ====================
+const showForgotPassword = ref(false)
+const resetStep = ref(1)
+const resetForm = reactive({
+    account: '',
+    code: '',
+    newPassword: '',
+    confirmNewPassword: ''
+})
+const resetLoading = ref(false)
+const countdown = ref(0)
+let timer = null
 
 // ==================== 核心逻辑 ====================
 const generateCaptcha = () => {
@@ -68,33 +77,95 @@ const toggleMode = () => {
     isLoginMode.value = !isLoginMode.value
     form.password = ''
     form.confirmPassword = ''
-    form.phone = showPhoneInput.value ? form.account : ''
     captchaCode.value = ''
     captchaError.value = false
     if (isLoginMode.value) generateCaptcha()
 }
 
-const selectPhoneCountry = (country) => {
-    selectedPhoneCountry.value = country
-    showPhoneDropdown.value = false
+// ==================== 找回密码逻辑 ====================
+const openForgotPassword = () => {
+    showForgotPassword.value = true
+    resetStep.value = 1
+    // 预填当前输入的账号
+    resetForm.account = form.account || ''
+    resetForm.code = ''
+    resetForm.newPassword = ''
+    resetForm.confirmNewPassword = ''
 }
 
-const validateForm = () => {
-    if (!isLoginMode.value && showPhoneInput.value && !form.phone) {
-        message.warning('请输入手机号')
-        return false
+const sendResetCode = async () => {
+    if (!resetForm.account) return message.warning('请输入手机号或邮箱')
+
+    resetLoading.value = true
+    try {
+        const res = await api.post('/reset-password/send-code', { account: resetForm.account })
+        if (res.data.success) {
+            message.success('验证码已发送，请查看后端控制台(模拟)')
+
+            // 倒计时逻辑
+            countdown.value = 60
+            if (timer) clearInterval(timer)
+            timer = setInterval(() => {
+                countdown.value--
+                if (countdown.value <= 0) clearInterval(timer)
+            }, 1000)
+
+            resetStep.value = 2
+        } else {
+            message.error(res.data.message)
+        }
+    } catch (err) {
+        message.error(err.response?.data?.message || '发送失败')
+    } finally {
+        resetLoading.value = false
     }
-    if (!form.account && !form.phone) {
-        message.warning('请输入账号')
+}
+
+const handleResetPassword = async () => {
+    if (!resetForm.code) return message.warning('请输入验证码')
+    if (resetForm.newPassword.length < 6) return message.warning('新密码至少6位')
+    if (resetForm.newPassword !== resetForm.confirmNewPassword) return message.warning('两次密码不一致')
+
+    resetLoading.value = true
+    try {
+        const res = await api.post('/reset-password/verify', {
+            account: resetForm.account,
+            code: resetForm.code,
+            newPassword: resetForm.newPassword
+        })
+        if (res.data.success) {
+            message.success('🎉 密码重置成功，请登录')
+            showForgotPassword.value = false
+
+            // 自动填入新账号
+            form.account = resetForm.account
+            form.password = ''
+            isLoginMode.value = true
+            generateCaptcha() // 刷新验证码
+        } else {
+            message.error(res.data.message)
+        }
+    } catch (err) {
+        message.error(err.response?.data?.message || '重置失败')
+    } finally {
+        resetLoading.value = false
+    }
+}
+
+// ==================== 登录/注册逻辑 ====================
+const validateForm = () => {
+    if (!form.account) {
+        message.warning('请输入账号/手机号/邮箱')
         return false
     }
     if (!form.password) {
         message.warning('密码不能为空')
         return false
     }
+
     if (!isLoginMode.value) {
         if (form.password.length < 6) {
-            message.warning('密码长度至少需要6位')
+            message.warning('密码长度至少需要 6 位')
             return false
         }
         if (form.password !== form.confirmPassword) {
@@ -102,6 +173,7 @@ const validateForm = () => {
             return false
         }
     }
+
     if (isLoginMode.value) {
         if (!captchaCode.value) {
             message.warning('请输入验证码')
@@ -122,27 +194,15 @@ const handleSubmit = async () => {
 
     try {
         if (isLoginMode.value) {
-            // ============== 登录逻辑 (已适配新后端) ==============
-            const loginData = {
-                account: form.account || form.phone,
-                password: form.password,
-                // captcha: captchaCode.value // 后端暂未校验验证码，前端校验即可
-            }
-
+            // 登录
+            const loginData = { account: form.account, password: form.password }
             const res = await axios.post('/api/login', loginData)
-
-            // 🔥 修复点：剥离数据层级
             const responseData = res.data;
 
             if (responseData.success) {
-                // 🔥 修复点：从 responseData.data 里解构 token 和 user
-                // 后端返回结构: { success: true, data: { token: '...', user: {...} } }
                 const { token, user } = responseData.data;
-
-                // 存储 Token (重要！)
                 localStorage.setItem('token', token);
 
-                // 处理切换账号逻辑
                 const isSwitching = sessionStorage.getItem('isSwitchingAccount')
                 if (isSwitching) {
                     message.success(`切换成功！欢迎 ${user.username}`)
@@ -152,35 +212,17 @@ const handleSubmit = async () => {
                     const name = user.nickname || user.username
                     message.success(`欢迎回来, ${name} 👋`)
                 }
-
-                // 更新 Store
                 userStore.login(user)
-
                 router.push('/')
             } else {
                 message.error(responseData.message || '登录失败')
                 generateCaptcha()
             }
         } else {
-            // ============== 注册逻辑 ==============
-            let phoneToSend = null
-            if (form.phone) {
-                phoneToSend = `${selectedPhoneCountry.value.code} ${form.phone}`
-            }
-
-            const registerData = {
-                username: form.account,
-                password: form.password,
-                phone: phoneToSend
-            }
-
-            // 如果账号本身就是手机号
-            if (phoneToSend && form.account === form.phone) {
-                registerData.username = phoneToSend
-            }
-
+            // 注册
+            const registerData = { account: form.account, password: form.password }
             const res = await axios.post('/api/register', registerData)
-            const responseData = res.data; // 🔥 剥离层级
+            const responseData = res.data;
 
             if (responseData.success) {
                 message.success('🎉 注册成功！请登录')
@@ -190,73 +232,55 @@ const handleSubmit = async () => {
             }
         }
     } catch (error) {
-        console.error('认证失败:', error)
-        // 🔥 优化错误处理：处理 axios 抛出的错误对象
+        console.error('操作失败:', error)
         if (error.response) {
-            // 后端返回了具体的错误状态码
             const status = error.response.status;
-            const msg = error.response.data?.message || '请求失败';
+            const backendMsg = error.response.data?.message;
+            const validationErr = error.response.data?.errors?.[0]?.msg;
+            const showMsg = validationErr || backendMsg || '请求被拒绝';
 
-            if (status === 409) {
-                message.warning('该账号已被注册，请直接登录');
-            } else if (status === 401) {
-                message.error('账号或密码错误');
-            } else {
-                message.error(`操作失败: ${msg}`);
-            }
+            if (status === 400) message.warning(`❌ ${showMsg}`);
+            else if (status === 409) message.warning('❌ 该账号已被注册，请直接登录');
+            else if (status === 401) message.error('账号或密码错误');
+            else message.error(`❌ ${showMsg}`);
         } else {
-            message.error('网络连接失败，请检查服务器');
+            message.error('❌ 网络连接失败，请检查网络');
         }
-
         if (isLoginMode.value) generateCaptcha()
     }
 }
 
-const closeDropdowns = () => {
-    showPhoneDropdown.value = false
-}
+const closeDropdowns = () => { showPhoneDropdown.value = false }
 
 onMounted(() => {
     const savedBg = localStorage.getItem('activeWallpaperUrl')
     bgUrl.value = savedBg || 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixlib=rb-4.0.3&auto=format&fit=crop&w=2940&q=80'
     generateCaptcha()
-    if (sessionStorage.getItem('isSwitchingAccount') === 'true') {
-        isSwitchingAccount.value = true
-    }
+    if (sessionStorage.getItem('isSwitchingAccount') === 'true') isSwitchingAccount.value = true
     window.addEventListener('click', closeDropdowns)
 })
 
 onBeforeUnmount(() => {
     window.removeEventListener('click', closeDropdowns)
-    if (!userStore.isLoggedIn && isSwitchingAccount.value) {
-        sessionStorage.removeItem('isSwitchingAccount')
-        sessionStorage.removeItem('previousUsername')
-    }
+    if (timer) clearInterval(timer)
 })
 </script>
 
 <template>
     <div class="login-page" :style="{ backgroundImage: `url(${bgUrl})` }">
         <div class="bg-overlay"></div>
-
         <div class="scroll-container">
             <div class="login-card-wrapper">
                 <div class="illustration-side" :style="{ backgroundImage: `url(${illustrationUrl})` }"></div>
-
                 <div class="glass-container">
                     <div class="logo-section">
-                        <router-link to="/" class="logo-link">
-                            <span class="logo-text">𝓥𝓮𝓻𝓲𝓽𝓪𝓼</span>
-                        </router-link>
+                        <router-link to="/" class="logo-link"><span
+                                class="logo-text">𝓥𝓮𝓻𝓲𝓽𝓪𝓼</span></router-link>
                     </div>
 
                     <transition name="fade">
                         <div v-if="isSwitchingAccount" class="switch-account-notice">
-                            <svg viewBox="0 0 24 24" class="notice-icon">
-                                <path fill="currentColor"
-                                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
-                            </svg>
-                            <span>正在切换账号...</span>
+                            <span>🔄 正在切换账号...</span>
                         </div>
                     </transition>
 
@@ -265,7 +289,6 @@ onBeforeUnmount(() => {
                             {{ isLoginMode ? '登录' : '注册' }}
                             <div class="title-underline"></div>
                         </h2>
-
                         <div class="sub-link-area">
                             {{ isLoginMode ? '没有账号？' : '已有账号？' }}
                             <span class="switch-link" @click="toggleMode">
@@ -277,29 +300,17 @@ onBeforeUnmount(() => {
                     <div class="form-area">
                         <div class="input-group">
                             <div class="main-input-wrapper">
-                                <div v-if="showPhoneInput" class="phone-country-prefix"
-                                    @click.stop="showPhoneDropdown = !showPhoneDropdown">
-                                    <span class="flag">{{ selectedPhoneCountry.flag }}</span>
-                                    <span class="code">{{ selectedPhoneCountry.code }}</span>
-                                    <svg class="dropdown-icon" viewBox="0 0 24 24">
-                                        <path d="M7 10l5 5 5-5z" fill="currentColor" />
-                                    </svg>
-                                    <div v-if="showPhoneDropdown" class="phone-country-dropdown">
-                                        <div v-for="country in phoneCountries" :key="country.code"
-                                            class="country-option" @click.stop="selectPhoneCountry(country)">
-                                            <span class="flag">{{ country.flag }}</span>
-                                            <span class="country-name">{{ country.country }}</span>
-                                            <span class="country-code">{{ country.code }}</span>
-                                        </div>
-                                    </div>
+                                <div v-if="showPhoneInput" class="phone-country-prefix">
+                                    <span class="flag">🇨🇳</span><span class="code">+86</span>
                                 </div>
-
                                 <input type="text" v-model="form.account" id="account" required placeholder=" "
                                     :class="{ 'has-prefix': showPhoneInput }" @input="checkInputType"
                                     @keyup.enter="handleSubmit">
-                                <label for="account" :class="{ 'label-shifted': showPhoneInput }">
-                                    {{ isLoginMode ? '账号 / 手机号 / 邮箱' : '设置账号' }}
+
+                                <label :class="{ 'label-shifted': showPhoneInput }">
+                                    {{ isLoginMode ? '用户名 / 邮箱 / 手机号' : '邮箱(推荐) / 手机号' }}
                                 </label>
+
                                 <div class="glow-bar"></div>
                             </div>
                         </div>
@@ -307,7 +318,7 @@ onBeforeUnmount(() => {
                         <div class="input-group">
                             <input type="password" v-model="form.password" id="password" required placeholder=" "
                                 @keyup.enter="handleSubmit">
-                            <label for="password">密码</label>
+                            <label>密码</label>
                             <div class="glow-bar"></div>
                         </div>
 
@@ -315,45 +326,79 @@ onBeforeUnmount(() => {
                             <div v-if="!isLoginMode" class="input-group">
                                 <input type="password" v-model="form.confirmPassword" id="confirm" required
                                     placeholder=" " @keyup.enter="handleSubmit">
-                                <label for="confirm">确认密码</label>
+                                <label>确认密码</label>
                                 <div class="glow-bar"></div>
                             </div>
                         </transition>
 
                         <transition name="slide-fade">
-                            <div v-if="isLoginMode" class="captcha-row">
-                                <div class="input-group captcha-input">
-                                    <input type="text" v-model="captchaCode" id="captcha" required placeholder=" "
-                                        @keyup.enter="handleSubmit" :class="{ 'input-error': captchaError }">
-                                    <label for="captcha">验证码</label>
-                                    <div class="glow-bar"></div>
+                            <div v-if="isLoginMode">
+                                <div class="captcha-row">
+                                    <div class="input-group captcha-input">
+                                        <input type="text" v-model="captchaCode" required placeholder=" "
+                                            @keyup.enter="handleSubmit" :class="{ 'input-error': captchaError }">
+                                        <label>验证码</label>
+                                        <div class="glow-bar"></div>
+                                    </div>
+                                    <div class="captcha-box" @click="generateCaptcha"><span class="captcha-code">{{
+                                        captchaText }}</span></div>
                                 </div>
-
-                                <div class="captcha-box" @click="generateCaptcha" title="点击刷新">
-                                    <span class="captcha-code">{{ captchaText }}</span>
+                                <div class="forgot-pwd-row">
+                                    <span class="forgot-link" @click="openForgotPassword">忘记密码?</span>
                                 </div>
                             </div>
                         </transition>
 
                         <button class="submit-btn" @click="handleSubmit">
-                            <svg class="rocket-icon" viewBox="0 0 1024 1024" version="1.1"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <path
-                                    d="M831.301657 142.018329c-74.572756 0-135.027799 165.650191-135.027799 369.979896 0 204.338579 60.455043 369.979896 135.027799 369.979896 74.572756 0 135.018925-165.641317 135.018925-369.979896 0-204.329705-60.44617-369.979896-135.018925-369.979896z"
-                                    fill="#89B7FF"></path>
-                                <path
-                                    d="M831.295445 353.073248c-30.675633 0-55.539133 71.156464-55.539133 158.92409 0 87.776499 24.863501 158.932964 55.539133 158.932964 30.675633 0 55.539133-71.156464 55.539134-158.932964 0-87.767626-24.863501-158.92409-55.539134-158.92409z"
-                                    fill="#FFFFFF"></path>
-                                <path
-                                    d="M529.695501 416.364256c-43.532423-43.532423-88.269865-69.37112-99.934059-57.706925-11.657983 11.657983 14.173615 56.401636 57.706038 99.934946a409.351542 409.351542 0 0 0 18.158697 17.097428c-47.576957-8.550489-111.252187-13.776971-181.220492-13.77697-147.3087 0-266.728042 23.168666-266.728042 51.750156 0 28.590364 119.419341 51.759029 266.728042 51.759029 67.734849 0 129.571494-4.898163 176.615154-12.968596a413.708423 413.708423 0 0 0-13.551584 12.957061c-43.532423 43.532423-69.370232 88.268977-57.706038 99.933171 11.657983 11.657983 56.401636-14.173615 99.934059-57.706038 34.850607-34.850607 58.356464-70.477643 60.364533-89.283216 0.715203-1.544873 1.08079-3.110156 1.080791-4.691411 0-1.497844-0.328319-2.98149-0.970759-4.445615 1.005366-17.569497-23.27426-55.650939-60.47634-92.852132z"
-                                    fill="#89B7FF"></path>
-                            </svg>
                             <span>{{ isLoginMode ? '登 录' : '注 册' }}</span>
                         </button>
                     </div>
                 </div>
             </div>
         </div>
+
+        <transition name="modal-fade">
+            <div v-if="showForgotPassword" class="modal-overlay" @click.self="showForgotPassword = false">
+                <div class="modal-card">
+                    <div class="modal-header">
+                        <h3>🔐 找回密码</h3>
+                        <span class="close-btn" @click="showForgotPassword = false">×</span>
+                    </div>
+
+                    <div v-if="resetStep === 1" class="modal-body">
+                        <p class="modal-desc">请输入您注册时使用的手机号或邮箱，我们将发送验证码。</p>
+                        <div class="input-group dark-input">
+                            <input type="text" v-model="resetForm.account" placeholder=" " required>
+                            <label>邮箱 / 手机号</label>
+                        </div>
+                        <button class="modal-btn" @click="sendResetCode" :disabled="resetLoading">
+                            {{ resetLoading ? '发送中...' : '获取验证码' }}
+                        </button>
+                    </div>
+
+                    <div v-else class="modal-body">
+                        <p class="modal-desc">验证码已发送至 <b>{{ resetForm.account }}</b></p>
+                        <div class="input-group dark-input">
+                            <input type="text" v-model="resetForm.code" placeholder=" " required>
+                            <label>输入验证码</label>
+                            <span class="resend-text" v-if="countdown > 0">{{ countdown }}s 后重发</span>
+                            <span class="resend-btn" v-else @click="sendResetCode">重新发送</span>
+                        </div>
+                        <div class="input-group dark-input">
+                            <input type="password" v-model="resetForm.newPassword" placeholder=" " required>
+                            <label>新密码</label>
+                        </div>
+                        <div class="input-group dark-input">
+                            <input type="password" v-model="resetForm.confirmNewPassword" placeholder=" " required>
+                            <label>确认新密码</label>
+                        </div>
+                        <button class="modal-btn" @click="handleResetPassword" :disabled="resetLoading">
+                            {{ resetLoading ? '提交中...' : '重置密码' }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </transition>
     </div>
 </template>
 
@@ -959,5 +1004,142 @@ onBeforeUnmount(() => {
         box-shadow: none;
         border: 1px solid #ccc;
     }
+}
+
+/* 忘记密码链接 */
+.forgot-pwd-row {
+    text-align: right;
+    margin-top: 8px;
+}
+
+.forgot-link {
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.6);
+    cursor: pointer;
+    transition: color 0.3s;
+}
+
+.forgot-link:hover {
+    color: #42b883;
+    text-decoration: underline;
+}
+
+/* 模态框样式 */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(5px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-card {
+    background: #ffffff;
+    width: 400px;
+    max-width: 90%;
+    border-radius: 16px;
+    padding: 25px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    animation: zoomIn 0.3s ease;
+}
+
+@keyframes zoomIn {
+    from {
+        opacity: 0;
+        transform: scale(0.9);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: #333;
+    font-size: 1.2rem;
+}
+
+.close-btn {
+    font-size: 1.5rem;
+    color: #999;
+    cursor: pointer;
+}
+
+.close-btn:hover {
+    color: #333;
+}
+
+.modal-desc {
+    color: #666;
+    font-size: 0.9rem;
+    margin-bottom: 20px;
+    line-height: 1.5;
+}
+
+/* 模态框内的深色输入框适配 */
+.dark-input input {
+    color: #333 !important;
+    border-bottom: 1px solid #ddd !important;
+}
+
+.dark-input label {
+    color: #999 !important;
+}
+
+.dark-input input:focus~label,
+.dark-input input:not(:placeholder-shown)~label {
+    color: #42b883 !important;
+}
+
+.resend-text {
+    position: absolute;
+    right: 0;
+    top: 10px;
+    font-size: 0.85rem;
+    color: #999;
+}
+
+.resend-btn {
+    position: absolute;
+    right: 0;
+    top: 10px;
+    font-size: 0.85rem;
+    color: #42b883;
+    cursor: pointer;
+}
+
+.modal-btn {
+    width: 100%;
+    padding: 12px;
+    margin-top: 20px;
+    background: #42b883;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.modal-btn:hover {
+    background: #3aa876;
+}
+
+.modal-btn:disabled {
+    background: #ccc;
+    cursor: not-allowed;
 }
 </style>
