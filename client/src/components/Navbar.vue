@@ -3,6 +3,7 @@ import { ref, onMounted, watch, computed, nextTick, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user.js'
 import { message } from '@/utils/message.js' // 确保引入 message 工具
+import AuthManager from '@/utils/auth.js'
 
 const router = useRouter()
 const route = useRoute()
@@ -16,6 +17,7 @@ const prevScrollY = ref(0)
 const isNavbarVisible = ref(true)
 const isMouseOnNavbar = ref(false)
 const showBackground = ref(false)
+const isDev = import.meta.env.DEV
 
 const closeUserMenu = () => {
   showUserMenu.value = false
@@ -23,13 +25,19 @@ const closeUserMenu = () => {
 
 // ==================== 🔥 核心修复：纯粹的响应式用户数据 ====================
 // 1. 是否登录：直接依赖 store 中的 token 和 user 对象
-const isLoggedIn = computed(() => !!userStore.token && !!userStore.user)
+const isLoggedIn = computed(() => {
+  // 直接返回 store 的 computed 属性
+  return userStore.isLoggedIn
+})
+
 
 // 2. 是否管理员
 const isAdmin = computed(() => userStore.user?.role === 'admin')
 
 // 3. 用户名
-const username = computed(() => userStore.user?.username || 'Guest')
+const username = computed(() => {
+  return userStore.user?.username || 'Guest'
+})
 
 // 4. 头像：只从 store 获取，它是响应式的，登录后会自动更新
 const userAvatar = computed(() => {
@@ -44,11 +52,13 @@ const nickname = computed(() => {
   return userStore.user?.nickname || userStore.user?.username || '用户'
 })
 
+
 // 7. 头像占位文字（取首字母）
 const avatarText = computed(() => {
   const name = nickname.value
   return name ? name.charAt(0).toUpperCase() : '?'
 })
+
 
 // 8. 推特风格 Handle (@username)
 const handle = computed(() => {
@@ -61,7 +71,25 @@ const handleAvatarError = (e) => {
   e.target.src = 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'
 }
 
-// ==================== ⬇️ 请保留你原有的数据 (不要删除) ====================
+// ==================== 🔥 修复2：添加调试方法和强制刷新 ====================
+const debugUserState = () => {
+  console.log('🔍 Navbar 当前状态:', {
+    storeUser: userStore.user,
+    storeToken: userStore.token,
+    localStorageToken: localStorage.getItem('token'),
+    localStorageUser: localStorage.getItem('user'),
+    isLoggedIn: userStore.isLoggedIn,
+    computedIsLoggedIn: isLoggedIn.value
+  })
+}
+
+const forceRefreshUser = async () => {
+  console.log('🔄 强制刷新用户状态...')
+  await userStore.checkLoginStatus()
+  debugUserState()
+}
+
+
 // ==================== 1. 导航数据（完整无省略）===================
 const navItems = [
   {
@@ -312,7 +340,6 @@ const loginIcon = {
   ]
 }
 
-// ==================== ⬆️ 数据部分结束 ====================
 
 // ==================== 导航交互逻辑 ====================
 const handleMouseEnter = () => {
@@ -380,6 +407,8 @@ const onScroll = () => {
   }
 }
 
+
+
 // ==================== 主题切换 ====================
 const toggleTheme = () => {
   isDark.value = !isDark.value
@@ -405,16 +434,27 @@ const switchAccount = () => {
   router.push('/login')
 }
 
+// ==================== 🔥 修复4：优化登出逻辑 ====================
 const handleLogout = () => {
   if (confirm('确定要退出登录吗？')) {
+    // 先清除所有存储
+    AuthManager.logout()
     userStore.logout()
+
+    // 触发全局登出事件
+    window.dispatchEvent(new CustomEvent('user-logout'))
+
     showUserMenu.value = false
-    router.push('/login').then(() => {
-      // 刷新页面以清除所有残留状态
-      window.location.reload()
-    })
+
+    // 立即跳转并刷新
+    setTimeout(() => {
+      router.push('/login').then(() => {
+        window.location.reload()
+      })
+    }, 100)
   }
 }
+
 
 const handleLocationClick = () => {
   if (!isLoggedIn.value) {
@@ -455,10 +495,27 @@ const handleDropdownEnter = () => {
   }
 }
 
-// ==================== 监听器 ====================
-watch(() => route.path, () => {
+
+// ==================== 🔥 修复3：监听全局登录事件 ====================
+const handleUserLogin = (event) => {
+  console.log('📢 收到用户登录事件:', event.detail.user?.username)
+  // 直接从事件中更新 store
+  if (event.detail.user && event.detail.token) {
+    userStore.login(event.detail.user, event.detail.token)
+  }
+}
+
+// ==================== 🔥 修复5：添加路由守卫监听 ====================
+watch(() => route.path, async (newPath) => {
+  console.log('📍 路由变化到:', newPath)
   activeDropdown.value = null
   showUserMenu.value = false
+
+  // 每次路由变化时检查一次状态
+  if (localStorage.getItem('token') && !userStore.user) {
+    console.log('🔄 路由变化时恢复用户状态')
+    await userStore.checkLoginStatus()
+  }
 })
 
 // 监听登录状态，自动获取位置信息
@@ -470,15 +527,28 @@ watch(() => isLoggedIn.value, (loggedIn) => {
   }
 }, { immediate: true })
 
-// 调试用：监听用户数据变化
-watch(() => userStore.user, (newUser) => {
-  if (newUser) {
-    console.log('Navbar: 用户数据已更新', newUser.username)
-  }
+// ==================== 🔥 修复6：添加状态变化监听 ====================
+watch(() => userStore.user, (newUser, oldUser) => {
+  console.log('👤 userStore.user 变化:',
+    oldUser?.username || 'null',
+    '->',
+    newUser?.username || 'null'
+  )
 }, { deep: true })
+
+watch(() => userStore.token, (newToken, oldToken) => {
+  console.log('🔑 userStore.token 变化:',
+    oldToken ? '有' : '无',
+    '->',
+    newToken ? '有' : '无'
+  )
+})
+
 
 // ==================== 生命周期 ====================
 onMounted(async () => {
+  console.log('🚀 Navbar 挂载')
+
   // 1. 恢复主题
   const savedTheme = localStorage.getItem('theme')
   if (savedTheme === 'dark') {
@@ -486,15 +556,33 @@ onMounted(async () => {
     document.documentElement.classList.add('dark')
   }
 
-  // 2. 🔥 关键修复：页面加载时尝试恢复用户信息
-  // 如果本地有 token 但 Store 里没用户，主动拉取一次 profile
-  const token = localStorage.getItem('token')
-  if (token && !userStore.user) {
-    console.log('Navbar: 检测到 Token，正在恢复用户信息...')
-    await userStore.checkLoginStatus()
+  // 2. 🔥 关键修复：立即检查登录状态（同步执行，不等待）
+  const authStatus = AuthManager.checkAuthStatus()
+  console.log('🔐 AuthManager 检查:', authStatus)
+
+  if (authStatus.isLoggedIn && authStatus.isTokenValid) {
+    console.log('✅ AuthManager 确认用户已登录:', authStatus.username)
+
+    // 如果 store 中没有用户数据，尝试从 localStorage 恢复
+    if (!userStore.user && authStatus.user) {
+      console.log('🔄 从 AuthManager 恢复用户到 store')
+      userStore.login(authStatus.user, authStatus.token)
+    } else if (!userStore.user) {
+      // 如果 AuthManager 没有用户数据但 token 有效，调用 store 的恢复方法
+      console.log('🔄 调用 userStore.checkLoginStatus')
+      await userStore.checkLoginStatus()
+    }
+  } else if (authStatus.token && !authStatus.isTokenValid) {
+    console.log('⚠️ Token 无效，清除')
+    AuthManager.logout()
+    userStore.logout()
   }
 
-  // 3. 获取导航栏高度
+  // 3. 监听用户登录事件
+  window.addEventListener('user-login', handleUserLogin)
+  window.addEventListener('user-state-changed', forceRefreshUser)
+
+  // 4. 获取导航栏高度
   nextTick(() => {
     const navbar = document.querySelector('.navbar')
     if (navbar) {
@@ -502,16 +590,22 @@ onMounted(async () => {
     }
   })
 
-  // 4. 注册全局事件
+  // 5. 注册全局事件
   window.addEventListener('click', closeUserMenu)
   window.addEventListener('scroll', onScroll, { passive: true })
   onScroll()
+
+  // 6. 调试输出
+  debugUserState()
 })
 
 onUnmounted(() => {
+  window.removeEventListener('user-login', handleUserLogin)
+  window.removeEventListener('user-state-changed', forceRefreshUser)
   window.removeEventListener('click', closeUserMenu)
   window.removeEventListener('scroll', onScroll)
 })
+
 </script>
 
 <template>
@@ -519,6 +613,10 @@ onUnmounted(() => {
     'navbar-active': shouldShowBackground,
     'navbar-hidden': !shouldShowNavbar
   }" @mouseenter="handleMouseEnter()" @mouseleave="handleMouseLeave">
+    <!-- 🔥 调试按钮（仅开发环境） -->
+    <div v-if="isDev" class="debug-badge" @click="debugUserState">
+      🔍
+    </div>
     <div class="nav-content">
       <router-link to="/" class="logo">𝓥𝓮𝓻𝓲𝓽𝓪𝓼</router-link>
 
@@ -1356,5 +1454,19 @@ onUnmounted(() => {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* 🔥 添加调试样式 */
+.debug-badge {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  padding: 5px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  z-index: 10000;
+  cursor: pointer;
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import axios from 'axios'
 import { useUserStore } from '@/stores/user.js'
 import { useRouter } from 'vue-router'
@@ -221,17 +221,50 @@ const categories = [
 ]
 const activeCategory = ref('latest')
 
-const articles = ref(Array.from({ length: 6 }, (_, i) => ({
-    id: i + 1,
-    title: `探索未知的真理 v${4.0 + i}`,
-    summary: '生活总是充满了未知的惊喜，我们需要用一颗探索的心去发现真理...',
-    cover: `https://picsum.photos/600/400?random=${i}`,
-    created_at: '2025-12-12',
-    category: '最新',
-    views: 1024 + i * 100,
-    comments: 5 + i,
-    tagId: (i % rawTags.length) + 1
-})))
+// 获取后端文章
+
+// 文章数据（不再使用假数据）
+const articles = ref([])
+const isLoadingArticles = ref(false)
+
+// 获取文章列表
+const fetchArticles = async (categoryName = 'latest') => {
+    console.log(`📝 开始获取文章，分类: ${categoryName}`)
+    isLoadingArticles.value = true
+    try {
+        const res = await axios.get('/api/articles', {
+            params: { category: categoryName }
+        })
+
+        console.log('📦 后端返回数据:', res.data)
+
+        if (res.data.success) {
+            console.log(`✅ 获取到 ${res.data.data.length} 篇文章`)
+            console.log('第一篇文章数据:', res.data.data[0])
+            articles.value = res.data.data
+        } else {
+            console.error('❌ 获取文章失败:', res.data.message)
+        }
+    } catch (error) {
+        console.error('❌ 请求出错:', error)
+        if (error.response) {
+            console.error('状态码:', error.response.status)
+            console.error('错误数据:', error.response.data)
+        }
+    } finally {
+        isLoadingArticles.value = false
+    }
+}
+
+
+// 监听分类变化 (点击菜单时触发)
+watch(activeCategory, (newCategory) => {
+    // 找到分类对象，获取其中文名称
+    const categoryObj = categories.find(c => c.id === newCategory)
+    const queryCat = newCategory === 'latest' ? 'latest' : categoryObj?.name
+
+    fetchArticles(queryCat)
+})
 
 const notices = ref([
     { id: 1, content: '🎉 欢迎访问 Veritas 的个人博客！' },
@@ -250,20 +283,13 @@ const handleSearch = () => {
     alert(`🔍 正在搜索: ${searchQuery.value}`)
 }
 
-const recommendedArticles = ref([
-    { id: 101, title: 'POETIZE - 文档导航与网站美化', date: '2024-06-04', cover: 'https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?q=80&w=200&auto=format&fit=crop' },
-    { id: 102, title: 'Vue 3 + Vite 实战教程', date: '2022-12-26', cover: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?q=80&w=200&auto=format&fit=crop' },
-    { id: 103, title: 'Node.js 后端开发指南', date: '2022-08-21', cover: 'https://images.unsplash.com/photo-1496307667243-6b5d2447d8ef?q=80&w=200&auto=format&fit=crop' }
-])
-
 const selectedTagId = ref(null)
+
 const filteredArticles = computed(() => {
-    if (activeCategory.value === 'friends') return []
-    let result = articles.value
     if (selectedTagId.value) {
-        result = result.filter(article => article.tagId === selectedTagId.value)
+        return articles.value.filter(article => article.tag_id === selectedTagId.value)
     }
-    return result
+    return articles.value
 })
 
 const handleFriendClick = () => {
@@ -271,7 +297,165 @@ const handleFriendClick = () => {
     scrollToContent()
 }
 
-// ==================== 5. 其他逻辑 ====================
+// 添加日期格式化函数
+const formatDate = (dateStr) => {
+    if (!dateStr) return ''
+    const date = new Date(dateStr)
+    return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`
+}
+
+// ==================== 7. 推荐文章逻辑 ====================
+const recommendedArticles = ref([])
+const isLoadingHotArticles = ref(false)
+
+// 🔥 修复后的获取热门文章函数
+const fetchHotArticles = async () => {
+    console.log('🔥 开始获取热门文章...')
+    isLoadingHotArticles.value = true
+
+    try {
+        // ✅ 使用相对路径，与其他接口保持一致
+        const res = await axios.get('/api/articles/hot', {
+            params: { limit: 3 },
+            timeout: 10000
+        })
+
+        console.log('🔥 热门文章API响应:', res)
+        console.log('📊 响应状态:', res.status)
+        console.log('📦 响应数据:', res.data)
+
+        if (res.data.success) {
+            if (!res.data.data || res.data.data.length === 0) {
+                console.log('⚠️ 热门文章列表为空')
+                recommendedArticles.value = getDefaultRecommendations()
+                return
+            }
+
+            const hotArticles = res.data.data
+            console.log(`✅ 获取到 ${hotArticles.length} 篇热门文章`)
+
+            // 转换格式
+            recommendedArticles.value = hotArticles.map(article => {
+                let coverImage = article.cover_image
+                if (!coverImage) {
+                    coverImage = getDefaultCoverByCategory(article.category)
+                }
+
+                return {
+                    id: article.id,
+                    title: article.title,
+                    date: article.has_been_updated
+                        ? `📝 ${formatDateTime(article.updated_at)}`
+                        : `📅 ${formatDateTime(article.created_at)}`,
+                    isUpdated: article.has_been_updated || false,
+                    cover: coverImage,
+                    views: article.views || 0,
+                    comments: article.comments || 0,
+                    category: article.category || '',
+                    summary: article.summary
+                        ? (article.summary.length > 50
+                            ? article.summary.substring(0, 50) + '...'
+                            : article.summary)
+                        : ''
+                }
+            })
+
+            console.log('✅ 热门文章处理完成:', recommendedArticles.value)
+        } else {
+            console.error('❌ API返回失败:', res.data)
+            recommendedArticles.value = getDefaultRecommendations()
+        }
+    } catch (error) {
+        console.error('❌ 获取热门文章失败:')
+
+        if (error.response) {
+            console.error('- 响应状态:', error.response.status)
+            console.error('- 响应数据:', error.response.data)
+            console.error('- 响应头:', error.response.headers)
+        } else if (error.request) {
+            console.error('- 请求已发出但无响应')
+            console.error('- 请求对象:', error.request)
+        } else {
+            console.error('- 请求配置错误:', error.message)
+        }
+
+        recommendedArticles.value = getDefaultRecommendations()
+    } finally {
+        isLoadingHotArticles.value = false
+    }
+}
+
+// 根据分类获取默认封面图
+const getDefaultCoverByCategory = (category) => {
+    const categoryCovers = {
+        'Veritas': 'https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?q=80&w=200&auto=format&fit=crop',
+        '生活倒影': 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?q=80&w=200&auto=format&fit=crop',
+        '视听盛宴': 'https://images.unsplash.com/photo-1496307667243-6b5d2447d8ef?q=80&w=200&auto=format&fit=crop',
+        '学习人生': 'https://images.unsplash.com/photo-1501504905252-473c47e087f8?q=80&w=200&auto=format&fit=crop',
+        '海外趣事': 'https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?q=80&w=200&auto=format&fit=crop',
+        '爱心资源': 'https://images.unsplash.com/photo-1513475382585-d06e58bcb0e0?q=80&w=200&auto=format&fit=crop',
+        '战友': 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=200&auto=format&fit=crop'
+    }
+    return categoryCovers[category] || 'https://images.unsplash.com/photo-1518709268805-4e9042af2176?q=80&w=200&auto=format&fit=crop'
+}
+
+// 格式化日期时间
+const formatDateTime = (dateStr) => {
+    if (!dateStr) return ''
+    const date = new Date(dateStr)
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day} ${hours}:${minutes}`
+}
+
+// 默认推荐文章（API失败时的后备方案）
+const getDefaultRecommendations = () => {
+    console.log('⚠️ 使用默认推荐数据')
+    const currentDate = new Date()
+    const formattedDate = formatDateTime(currentDate)
+
+    return [
+        {
+            id: 101,
+            title: 'POETIZE - 文档导航与网站美化',
+            date: `📅 ${formattedDate}`,
+            cover: 'https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?q=80&w=200&auto=format&fit=crop',
+            isUpdated: false,
+            views: 150,
+            comments: 12,
+            category: 'Veritas',
+            summary: '探索POETIZE的强大功能'
+        },
+        {
+            id: 102,
+            title: 'Vue 3 + Vite 实战教程',
+            date: `📝 ${formattedDate}`,
+            cover: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?q=80&w=200&auto=format&fit=crop',
+            isUpdated: true,
+            views: 280,
+            comments: 25,
+            category: '学习人生',
+            summary: '从入门到精通的Vue 3教程'
+        },
+        {
+            id: 103,
+            title: 'Node.js 后端开发指南',
+            date: `📅 ${formattedDate}`,
+            cover: 'https://images.unsplash.com/photo-1496307667243-6b5d2447d8ef?q=80&w=200&auto=format&fit=crop',
+            isUpdated: false,
+            views: 95,
+            comments: 8,
+            category: '学习人生',
+            summary: '构建高效Node.js后端服务'
+        }
+    ]
+}
+
+
+// ==================== 8. 其他逻辑 ====================
 const typedText = ref('')
 const fullText = "成就源于真理！"
 let typeIndex = 0
@@ -314,6 +498,9 @@ onMounted(async () => {
     nextTick(() => {
         animate()
     })
+
+    fetchArticles() // 🔥 加载文章
+    fetchHotArticles() // 🔥 加载热门文章
 })
 
 onUnmounted(() => {
@@ -426,16 +613,27 @@ onUnmounted(() => {
                         <div class="mac-dots"><span class="dot red"></span><span class="dot yellow"></span><span
                                 class="dot green"></span></div>
                     </div>
-                    <div class="recommend-list">
+
+                    <!-- 加载状态 -->
+                    <div v-if="isLoadingHotArticles" class="loading-state">
+                        <div class="loading-spinner"></div>
+                        <div class="loading-text">加载推荐中...</div>
+                    </div>
+
+                    <div v-else class="recommend-list">
                         <div v-for="item in recommendedArticles" :key="item.id" class="recommend-item"
                             @click="router.push('/article/' + item.id)">
                             <div class="rec-top-section">
                                 <div class="rec-thumb"><img :src="item.cover" alt="cover"></div>
                                 <div class="rec-title-box">
                                     <h4 class="rec-title">{{ item.title }}</h4>
+                                    <div v-if="item.isUpdated" class="rec-updated-badge">已更新</div>
                                 </div>
                             </div>
-                            <div class="rec-bottom-section"><span class="rec-date">📅 {{ item.date }}</span></div>
+                            <div class="rec-bottom-section">
+                                <span class="rec-date">📅 {{ item.date }}</span>
+                                <span v-if="item.views" class="rec-views">👁️ {{ item.views }}</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -527,16 +725,17 @@ onUnmounted(() => {
                 </div>
                 <div v-else class="article-grid">
                     <div v-for="article in filteredArticles" :key="article.id" class="article-card">
-                        <div class="card-cover"><router-link :to="'/article/' + article.id"><img :src="article.cover"
-                                    alt="cover"></router-link><span class="card-tag">{{ article.category }}</span></div>
+                        <div class="card-cover"><router-link :to="'/article/' + article.id"><img
+                                    :src="article.cover_image" alt="cover"></router-link><span class="card-tag">{{
+                                        article.category }}</span></div>
                         <div class="card-info">
-                            <div class="publish-time">📅 {{ article.created_at }}</div>
+                            <div class="publish-time">📅 {{ formatDate(article.created_at) }}</div>
                             <h3 class="title"><router-link :to="'/article/' + article.id">{{ article.title
-                                    }}</router-link></h3>
+                            }}</router-link></h3>
                             <p class="summary">{{ article.summary }}</p>
                             <div class="card-footer">
                                 <div class="meta"><span>🔥 {{ article.views }}</span><span>💬 {{ article.comments
-                                        }}</span></div><router-link :to="'/article/' + article.id"
+                                }}</span></div><router-link :to="'/article/' + article.id"
                                     class="read-btn">阅读全文</router-link>
                             </div>
                         </div>
@@ -1595,5 +1794,117 @@ onUnmounted(() => {
     font-size: 0.9rem;
     color: #000;
     font-weight: 400;
+}
+
+/* 🔥 新增：加载状态样式 */
+.loading-state {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 60px 20px;
+    color: #666;
+}
+
+.loading-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #42b883;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 15px;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+/* 🔥 推荐文章的额外样式 */
+.recommend-item .rec-title-box {
+    position: relative;
+}
+
+.rec-updated-badge {
+    position: absolute;
+    top: -5px;
+    right: 0;
+    background: linear-gradient(90deg, #ff6b6b, #ff8e53);
+    color: white;
+    font-size: 0.6rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: bold;
+    transform: scale(0.8);
+}
+
+.rec-bottom-section {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: #999;
+    margin-top: 5px;
+}
+
+.rec-views {
+    font-size: 0.7rem;
+    opacity: 0.8;
+}
+
+/* 加载状态样式 */
+.loading-state {
+    text-align: center;
+    padding: 20px;
+}
+
+.loading-spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #48cbb6;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 10px;
+}
+
+.loading-text {
+    color: #999;
+    font-size: 0.9rem;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+/* 推荐项目悬停效果增强 */
+.recommend-item {
+    position: relative;
+    overflow: hidden;
+}
+
+.recommend-item::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(72, 203, 182, 0.1), transparent);
+    transition: left 0.5s;
+}
+
+.recommend-item:hover::before {
+    left: 100%;
 }
 </style>

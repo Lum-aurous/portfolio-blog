@@ -24,6 +24,13 @@ export const useUserStore = defineStore("user", () => {
 
     console.log("✅ 用户登录成功:", userData.username);
 
+    // 🔥 关键：立即触发响应式更新
+    // 不需要额外操作，因为 user.value 和 token.value 已经是响应式的
+    // 但可以添加一个微任务确保更新
+    Promise.resolve().then(() => {
+      console.log("🔄 用户状态已更新");
+    });
+
     // 登录成功后自动获取地理位置
     getLocation();
   };

@@ -6,6 +6,7 @@ import { useUserStore } from '@/stores/user.js'
 import { message } from '@/utils/message.js'
 // 🔥 引入 api 封装
 import { api } from '@/utils/api'
+import AuthManager from '@/utils/auth.js'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -197,11 +198,17 @@ const handleSubmit = async () => {
             // 登录
             const loginData = { account: form.account, password: form.password }
             const res = await axios.post('/api/login', loginData)
-            const responseData = res.data;
+            const responseData = res.data
 
             if (responseData.success) {
-                const { token, user } = responseData.data;
-                localStorage.setItem('token', token);
+                const { token, user } = responseData.data
+
+                // 🔥 修复1：调用 AuthManager 和 userStore
+                AuthManager.login(user, token)  // 先更新 localStorage
+                userStore.login(user, token)    // 再更新 store
+
+                // 🔥 修复2：触发全局状态更新事件
+                window.dispatchEvent(new CustomEvent('user-login', { detail: { user, token } }))
 
                 const isSwitching = sessionStorage.getItem('isSwitchingAccount')
                 if (isSwitching) {
@@ -212,8 +219,16 @@ const handleSubmit = async () => {
                     const name = user.nickname || user.username
                     message.success(`欢迎回来, ${name} 👋`)
                 }
-                userStore.login(user)
-                router.push('/')
+
+                // 🔥 修复3：延迟跳转确保状态同步
+                setTimeout(() => {
+                    router.push('/')
+
+                    // 🔥 修复4：轻微延迟后刷新，确保 Navbar 更新
+                    setTimeout(() => {
+                        window.location.reload()
+                    }, 50)
+                }, 300)
             } else {
                 message.error(responseData.message || '登录失败')
                 generateCaptcha()

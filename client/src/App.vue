@@ -8,7 +8,6 @@ import { useUserStore } from '@/stores/user.js'
 const userStore = useUserStore()
 const wallpaperStore = useWallpaperStore()
 const isAppReady = ref(false)
-// 🔥 新增：精确控制图片是否已在内存中加载完成
 const imageLoaded = ref(false)
 
 // ==================== 1. 动态背景样式计算 ====================
@@ -17,9 +16,12 @@ const backgroundStyle = computed(() => {
   const blur = wallpaperStore.wallpaperBlur
   const mask = wallpaperStore.wallpaperMask
 
-  // 如果没有 URL，返回兜底深色背景
+  // 🔥 修复：如果没有URL，返回透明背景
   if (!url) {
-    return { backgroundColor: '#1a1a1a' }
+    return {
+      backgroundColor: 'transparent',
+      opacity: 0
+    }
   }
 
   // URL 格式化处理
@@ -33,20 +35,30 @@ const backgroundStyle = computed(() => {
     backgroundSize: 'cover',
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
+    backgroundAttachment: 'fixed',
     // 动态模糊
     filter: `blur(${blur}px)`,
     // 动态遮罩叠加
-    backgroundColor: mask ? 'rgba(0, 0, 0, 0.4)' : 'transparent', // 稍微加深一点遮罩让文字更清晰
+    backgroundColor: mask ? 'rgba(0, 0, 0, 0.2)' : 'transparent',
     backgroundBlendMode: mask ? 'overlay' : 'normal',
     // 样式的变化（如模糊度调整）也要平滑过渡
-    transition: 'filter 0.3s ease, background-color 0.3s ease'
+    transition: 'filter 0.3s ease, background-color 0.3s ease, opacity 0.5s ease',
+    // 确保背景层覆盖整个页面
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: -1,
+    opacity: imageLoaded.value ? 1 : 0
   }
 })
 
-// ==================== 2. 核心：壁纸预加载监听 ====================
+// ==================== 2. 壁纸预加载监听 ====================
 watch(() => wallpaperStore.currentWallpaper, (newUrl) => {
-  // 1. URL 变化那一刻，先将加载状态置为 false (背景会根据 css 变透明，或保持上一张)
-  // 如果你想实现双缓冲（新图盖旧图），逻辑会更复杂，这里先用淡入淡出
+  console.log('🖼️ App: 壁纸URL变化:', newUrl)
+
+  // 1. URL 变化那一刻，先将加载状态置为 false
   imageLoaded.value = false
 
   if (newUrl) {
@@ -66,14 +78,13 @@ watch(() => wallpaperStore.currentWallpaper, (newUrl) => {
 
     img.onload = () => {
       // ✅ 图片下载完毕，浏览器缓存中已存在
-      // 此时设置 true，DOM 中的 div 才会应用 opacity: 1，瞬间显示出来
-      console.log('🖼️ 壁纸预加载成功:', formattedUrl)
+      console.log('✅ App: 壁纸预加载成功:', formattedUrl)
       imageLoaded.value = true
     }
 
     img.onerror = (err) => {
-      console.error('❌ 壁纸加载失败:', err)
-      // 即使失败，也设为 true，至少显示背景色，避免一直是透明的
+      console.error('❌ App: 壁纸加载失败:', err)
+      // 即使失败，也设为 true，至少显示背景色
       imageLoaded.value = true
     }
 
@@ -90,45 +101,49 @@ onMounted(async () => {
   console.log('🚀 App.vue 全局挂载')
 
   try {
-    // 1. 先检查登录状态（同步）
+    // 1. 先检查登录状态（这会自动恢复 localStorage 中的用户状态）
     userStore.checkLoginStatus()
-    console.log('👤 用户状态检查完成:', userStore.user?.username)
+    console.log('👤 App: 用户状态检查完成:', userStore.user?.username)
 
-    // 等待下一个 tick，确保 DOM 已更新
+    // 2. 等待 DOM 更新
     await nextTick()
 
-    // 2. 初始化壁纸系统
+    // 3. 🔥 关键修复：确保壁纸系统只初始化一次
     if (!wallpaperStore.isInitialized) {
-      console.log('🎨 开始初始化壁纸系统...')
+      console.log('🎨 App: 开始初始化壁纸系统...')
       await wallpaperStore.initialize()
+      console.log('✅ App: 壁纸系统初始化完成')
+    } else {
+      console.log('🔄 App: 壁纸已初始化，跳过重复初始化')
     }
 
-    console.log('✅ 应用初始化完成')
+    console.log('✅ App: 应用初始化完成')
   } catch (error) {
-    console.error('❌ 全局初始化异常:', error)
+    console.error('❌ App: 全局初始化异常:', error)
   } finally {
     // 无论成功失败，都要移除加载遮罩，让用户看到界面
-    // 稍微延迟一点点，给用户一种"稳重"的感觉
     setTimeout(() => {
       isAppReady.value = true
-      console.log('✨ 应用准备就绪')
+      console.log('✨ App: 应用准备就绪')
     }, 500)
   }
 })
 
 // ==================== 4. 监听用户状态变化 ====================
 watch(() => userStore.user, (newUser) => {
-  console.log('👤 用户状态变化:', newUser?.username || '未登录')
+  console.log('👤 App: 用户状态变化:', newUser?.username || '未登录')
 }, { deep: true })
 
 watch(() => userStore.isLoggedIn, (loggedIn) => {
-  console.log('🔐 登录状态变化:', loggedIn ? '已登录' : '未登录')
+  console.log('🔐 App: 登录状态变化:', loggedIn ? '已登录' : '未登录')
 })
 </script>
 
 <template>
   <div class="app-container">
     <ToastManager />
+
+    <!-- 🔥 修复：确保背景层正确渲染 -->
     <div class="global-background" :style="backgroundStyle" :class="{ 'background-loaded': imageLoaded }">
     </div>
 

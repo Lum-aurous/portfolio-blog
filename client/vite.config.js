@@ -1,11 +1,8 @@
-// vite.config.js
 import { defineConfig, loadEnv } from "vite";
 import vue from "@vitejs/plugin-vue";
 import path from "path";
 
-// https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // 加载环境变量
   const env = loadEnv(mode, process.cwd(), "");
 
   return {
@@ -17,31 +14,40 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
-      host: "0.0.0.0", // 允许局域网访问
+      host: "0.0.0.0",
       proxy: {
         "/api": {
-          target: env.VITE_API_TARGET || "http://localhost:3000",
+          // 建议1: 使用 127.0.0.1 避免 DNS 解析问题
+          target: env.VITE_API_TARGET || "http://127.0.0.1:3000",
           changeOrigin: true,
           secure: false,
-          rewrite: (path) => path.replace(/^\/api/, "/api"),
-          // 添加详细的日志
+          // 建议2: 你的后端路由定义里包含了 /api，所以这里不需要 rewrite
+          // 默认情况下 proxy 会把 /api/xxx 原样发给后端，这正是你需要的
+
+          // 保留你的日志配置，非常有价值
           configure: (proxy, options) => {
             proxy.on("error", (err, req, res) => {
               console.log("❌ 代理错误:", err);
             });
             proxy.on("proxyReq", (proxyReq, req, res) => {
-              console.log("📡 代理请求:", req.method, req.url);
+              // 在终端显示真实发出的请求
+              console.log(
+                "📡 发送请求到后端:",
+                req.method,
+                req.url,
+                " => ",
+                proxyReq.path
+              );
             });
             proxy.on("proxyRes", (proxyRes, req, res) => {
-              console.log("📦 代理响应:", req.url, proxyRes.statusCode);
+              console.log("📦 后端响应状态:", proxyRes.statusCode, req.url);
             });
           },
         },
         "/uploads": {
-          target: env.VITE_API_TARGET || "http://localhost:3000",
+          target: env.VITE_API_TARGET || "http://127.0.0.1:3000",
           changeOrigin: true,
           secure: false,
-          rewrite: (path) => path.replace(/^\/uploads/, "/uploads"),
         },
       },
       // 添加 HMR 配置

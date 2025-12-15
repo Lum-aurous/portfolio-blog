@@ -41,7 +41,6 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-
 // 开发环境下同时输出到控制台
 if (process.env.NODE_ENV !== "production") {
   logger.add(
@@ -169,11 +168,19 @@ function generateToken(user) {
 }
 
 // 验证 Token 中间件
+// 修改认证中间件，增加更详细的日志
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
 
+  logger.info(`🔐 认证检查 - 路径: ${req.path}, 方法: ${req.method}`);
+  logger.info(`🔐 认证检查 - Token 头: ${authHeader}`);
+  logger.info(
+    `🔐 认证检查 - Token 值: ${token ? token.substring(0, 20) + "..." : "无"}`
+  );
+
   if (!token) {
+    logger.warn("❌ 未提供认证令牌");
     return res.status(401).json({
       success: false,
       message: "未提供认证令牌，请先登录",
@@ -182,14 +189,17 @@ function authenticateToken(req, res, next) {
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      logger.warn("JWT验证失败:", err.message);
+      logger.warn(`❌ JWT验证失败: ${err.message}`);
+      logger.warn(`❌ Token: ${token.substring(0, 20)}...`);
       return res.status(403).json({
         success: false,
         message: "令牌无效或已过期，请重新登录",
+        error: err.message,
       });
     }
 
     req.user = user; // 将用户信息附加到请求对象
+    logger.info(`✅ JWT验证成功: 用户ID=${user.id}, 用户名=${user.username}`);
     next();
   });
 }
@@ -406,12 +416,135 @@ app.get("/api/profile", async (req, res) => {
   }
 });
 
-// 获取文章列表接口
+// ==========================================
+// 🔥 获取热门文章（按浏览量排名）
+// ==========================================
+app.get("/api/articles/hot", async (req, res) => {
+  try {
+    // 默认返回3篇文章，但允许前端传递不同的limit参数
+    const limit = parseInt(req.query.limit) || 3;
+
+    console.log(`📊 请求热门文章, limit=${limit}`);
+
+    // ✅ 关键修改：你的articles表没有status字段，所以不需要WHERE条件
+    // 按浏览量降序排序，如果浏览量相同，按更新时间降序排序
+    const [results] = await dbPool.query(
+      `SELECT 
+        id, 
+        title, 
+        cover_image, 
+        created_at, 
+        updated_at,
+        views,
+        comments,
+        category,
+        summary,
+        author_id
+      FROM articles 
+      ORDER BY views DESC, updated_at DESC 
+      LIMIT ?`,
+      [limit]
+    );
+
+    // 如果没有文章，返回空数组
+    if (results.length === 0) {
+      console.log("ℹ️ 数据库中没有文章");
+      return apiResponse.success(res, "暂无热门文章", []);
+    }
+
+    console.log(`✅ 从数据库查询到 ${results.length} 篇热门文章`);
+
+    // 格式化处理
+    const formattedResults = await Promise.all(
+      results.map(async (article) => {
+        // 获取作者信息（如果需要的话）
+        let authorInfo = null;
+        if (article.author_id) {
+          try {
+            const [authorResult] = await dbPool.query(
+              "SELECT username, nickname, avatar FROM users WHERE id = ?",
+              [article.author_id]
+            );
+            if (authorResult.length > 0) {
+              authorInfo = {
+                username: authorResult[0].username,
+                nickname: authorResult[0].nickname,
+                avatar: authorResult[0].avatar,
+              };
+            }
+          } catch (err) {
+            console.log(`⚠️ 获取作者信息失败: ${err.message}`);
+          }
+        }
+
+        const createdDate = new Date(article.created_at);
+        const updatedDate = new Date(article.updated_at);
+        const isUpdated =
+          Math.abs(updatedDate.getTime() - createdDate.getTime()) > 1000;
+
+        return {
+          id: article.id,
+          title: article.title,
+          cover_image: article.cover_image,
+          views: article.views || 0,
+          comments: article.comments || 0,
+          category: article.category || "未分类",
+          summary: article.summary || "",
+          created_at: article.created_at,
+          updated_at: article.updated_at,
+          // 格式化后的日期
+          created_at_formatted: formatDateTime(article.created_at),
+          updated_at_formatted: formatDateTime(article.updated_at),
+          // 显示用日期（带前缀说明）
+          display_date: isUpdated
+            ? `📝 ${formatDateTime(article.updated_at)}`
+            : `📅 ${formatDateTime(article.created_at)}`,
+          // 是否更新过
+          has_been_updated: isUpdated,
+          // 作者信息
+          author: authorInfo,
+        };
+      })
+    );
+
+    logger.info(`热门文章获取成功: ${formattedResults.length}篇`);
+    apiResponse.success(res, "获取热门文章成功", formattedResults);
+  } catch (err) {
+    logger.error("获取热门文章失败:", err);
+    // 返回更详细的错误信息
+    apiResponse.error(res, "获取热门文章失败: " + err.message, 500);
+  }
+});
+
+// 添加日期格式化辅助函数
+function formatDateTime(dateStr) {
+  if (!dateStr) return "";
+  const date = new Date(dateStr);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}`;
+}
+
+// 获取文章列表接口 (支持分类筛选)
 app.get("/api/articles", async (req, res) => {
   try {
-    const [results] = await dbPool.query(
-      "SELECT * FROM articles ORDER BY created_at DESC"
-    );
+    const { category } = req.query;
+
+    let sql = "SELECT * FROM articles";
+    let params = [];
+
+    if (category && category !== "latest") {
+      sql += " WHERE category = ?";
+      params.push(category);
+    }
+
+    // 🔥 修改：按最后更新时间倒序排列，这样最新修改的文章会排在最前面
+    sql += " ORDER BY updated_at DESC, created_at DESC";
+
+    const [results] = await dbPool.query(sql, params);
     apiResponse.success(res, "获取成功", results);
   } catch (err) {
     logger.error("查询文章出错:", err);
@@ -423,8 +556,15 @@ app.get("/api/articles", async (req, res) => {
 app.get("/api/articles/:id", async (req, res) => {
   try {
     const id = req.params.id;
+    // 🔥 核心修改：使用 LEFT JOIN 关联查询 users 表
     const [results] = await dbPool.query(
-      "SELECT * FROM articles WHERE id = ?",
+      `SELECT 
+        a.*, 
+        u.nickname AS author_name, 
+        u.avatar AS author_avatar 
+      FROM articles a 
+      LEFT JOIN users u ON a.author_id = u.id 
+      WHERE a.id = ?`,
       [id]
     );
 
@@ -456,17 +596,275 @@ app.post(
     }
 
     try {
-      const { title, summary, content, cover_image } = req.body;
+      const { title, summary, content, category, cover_image } = req.body;
+      // 🔥 核心修改：从 req.user.id 获取当前登录用户的 ID (由 authenticateToken 中间件解析)
+      const authorId = req.user.id;
+
       const [result] = await dbPool.query(
-        "INSERT INTO articles (title, summary, content, cover_image) VALUES (?, ?, ?, ?)",
-        [title, summary, content, cover_image]
+        "INSERT INTO articles (title, summary, content, category, cover_image, author_id) VALUES (?, ?, ?, ?, ?, ?)",
+        [title, summary, content, category, cover_image, authorId]
       );
 
-      logger.info(`文章发布成功: ID=${result.insertId}, 标题=${title}`);
+      logger.info(
+        `文章发布成功: ID=${result.insertId}, 标题=${title}, 作者ID=${authorId}`
+      );
       apiResponse.success(res, "发布成功", { id: result.insertId }, 201);
     } catch (err) {
       logger.error("发布文章失败:", err);
       apiResponse.error(res, "发布失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 更新文章接口（用于修改内容后重新发布）
+// ==========================================
+app.put(
+  "/api/articles/:id",
+  authenticateToken,
+  requireAdmin,
+  [
+    body("title").trim().notEmpty().withMessage("标题不能为空"),
+    body("summary").trim().notEmpty().withMessage("摘要不能为空"),
+    body("content").trim().notEmpty().withMessage("内容不能为空"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, "输入验证失败", 400, errors.array());
+    }
+
+    try {
+      const articleId = req.params.id;
+      const { title, summary, content, category, cover_image } = req.body;
+      const authorId = req.user.id; // 当前登录用户
+
+      // 1. 首先检查文章是否存在且属于当前用户
+      const [existingArticle] = await dbPool.query(
+        "SELECT author_id, updated_at FROM articles WHERE id = ?",
+        [articleId]
+      );
+
+      if (existingArticle.length === 0) {
+        return apiResponse.error(res, "文章不存在", 404);
+      }
+
+      // 2. 检查权限：只有文章作者或管理员可以修改
+      if (
+        existingArticle[0].author_id !== authorId &&
+        req.user.role !== "admin"
+      ) {
+        return apiResponse.error(res, "无权修改此文章", 403);
+      }
+
+      // 3. 记录更新前的时间（用于日志）
+      const oldUpdateTime = existingArticle[0].updated_at;
+
+      // 4. 更新文章内容
+      // 注意：updated_at 字段会自动更新（ON UPDATE CURRENT_TIMESTAMP）
+      const [result] = await dbPool.query(
+        `UPDATE articles 
+         SET title = ?, summary = ?, content = ?, category = ?, cover_image = ?
+         WHERE id = ?`,
+        [title, summary, content, category, cover_image, articleId]
+      );
+
+      if (result.affectedRows === 0) {
+        return apiResponse.error(res, "更新失败，文章可能已被删除", 404);
+      }
+
+      // 5. 获取更新后的文章信息
+      const [updatedArticle] = await dbPool.query(
+        `SELECT 
+          a.*, 
+          u.nickname AS author_name, 
+          u.avatar AS author_avatar 
+        FROM articles a 
+        LEFT JOIN users u ON a.author_id = u.id 
+        WHERE a.id = ?`,
+        [articleId]
+      );
+
+      const article = updatedArticle[0];
+
+      logger.info(`📝 文章更新成功: ID=${articleId}, 作者ID=${authorId}`);
+      logger.info(`🕐 更新时间变化: ${oldUpdateTime} → ${article.updated_at}`);
+
+      apiResponse.success(res, "文章更新成功", article);
+    } catch (err) {
+      logger.error("更新文章失败:", err);
+      apiResponse.error(res, "更新失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 增加文章浏览量（自动统计）
+// ==========================================
+app.post("/api/articles/:id/view", async (req, res) => {
+  try {
+    const articleId = req.params.id;
+
+    // 1. 获取客户端IP（用于简单的防刷）
+    const clientIp =
+      req.headers["x-forwarded-for"] || req.connection.remoteAddress;
+
+    // 2. 使用原子操作，避免并发问题
+    const [result] = await dbPool.query(
+      "UPDATE articles SET views = views + 1 WHERE id = ?",
+      [articleId]
+    );
+
+    if (result.affectedRows === 0) {
+      return apiResponse.error(res, "文章不存在", 404);
+    }
+
+    // 3. 获取更新后的浏览量
+    const [article] = await dbPool.query(
+      "SELECT views FROM articles WHERE id = ?",
+      [articleId]
+    );
+
+    logger.info(
+      `📊 浏览量增加: 文章ID=${articleId}, IP=${clientIp}, 新浏览量=${article[0].views}`
+    );
+
+    apiResponse.success(res, "浏览量增加", { views: article[0].views });
+  } catch (err) {
+    logger.error("增加浏览量失败:", err);
+    apiResponse.error(res, "操作失败");
+  }
+});
+
+// ==========================================
+// 🔥 获取文章的更新时间信息（判断是否被修改过）
+// ==========================================
+app.get("/api/articles/:id/update-status", async (req, res) => {
+  try {
+    const articleId = req.params.id;
+
+    const [results] = await dbPool.query(
+      "SELECT created_at, updated_at FROM articles WHERE id = ?",
+      [articleId]
+    );
+
+    if (results.length === 0) {
+      return apiResponse.error(res, "文章不存在", 404);
+    }
+
+    const article = results[0];
+
+    // 判断文章是否被修改过（允许1秒的误差）
+    const created = new Date(article.created_at).getTime();
+    const updated = new Date(article.updated_at).getTime();
+    const hasBeenUpdated = Math.abs(updated - created) > 1000;
+
+    apiResponse.success(res, "获取成功", {
+      created_at: article.created_at,
+      updated_at: article.updated_at,
+      has_been_updated: hasBeenUpdated,
+      // 如果被修改过，返回时间差（小时）
+      hours_since_update: hasBeenUpdated
+        ? Math.round((updated - created) / (1000 * 60 * 60))
+        : 0,
+    });
+  } catch (err) {
+    logger.error("获取文章更新时间失败:", err);
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
+// 🔥 批量更新评论数（当评论被添加或删除时调用）
+// ==========================================
+app.post("/api/articles/:id/update-comments-count", async (req, res) => {
+  try {
+    const articleId = req.params.id;
+
+    // 统计当前文章的评论数量
+    const [commentResults] = await dbPool.query(
+      "SELECT COUNT(*) as count FROM comments WHERE article_id = ?",
+      [articleId]
+    );
+
+    const commentCount = commentResults[0].count;
+
+    // 更新文章的评论数
+    const [result] = await dbPool.query(
+      "UPDATE articles SET comments = ? WHERE id = ?",
+      [commentCount, articleId]
+    );
+
+    if (result.affectedRows === 0) {
+      return apiResponse.error(res, "文章不存在", 404);
+    }
+
+    logger.info(
+      `📝 更新文章评论数: 文章ID=${articleId}, 新评论数=${commentCount}`
+    );
+
+    apiResponse.success(res, "评论数更新成功", {
+      article_id: articleId,
+      comments: commentCount,
+    });
+  } catch (err) {
+    logger.error("更新评论数失败:", err);
+    apiResponse.error(res, "更新失败");
+  }
+});
+
+// ==========================================
+// 🔥 删除文章接口（需要认证和管理员权限）
+// ==========================================
+app.delete(
+  "/api/articles/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const articleId = req.params.id;
+      const authorId = req.user.id;
+
+      // 1. 检查文章是否存在
+      const [existingArticle] = await dbPool.query(
+        "SELECT author_id, title FROM articles WHERE id = ?",
+        [articleId]
+      );
+
+      if (existingArticle.length === 0) {
+        return apiResponse.error(res, "文章不存在", 404);
+      }
+
+      // 2. 检查权限：只有文章作者或管理员可以删除
+      if (
+        existingArticle[0].author_id !== authorId &&
+        req.user.role !== "admin"
+      ) {
+        return apiResponse.error(res, "无权删除此文章", 403);
+      }
+
+      // 3. 先删除相关评论（如果有外键约束，数据库会自动处理）
+      await dbPool.query("DELETE FROM comments WHERE article_id = ?", [
+        articleId,
+      ]);
+
+      // 4. 删除文章
+      const [result] = await dbPool.query("DELETE FROM articles WHERE id = ?", [
+        articleId,
+      ]);
+
+      if (result.affectedRows === 0) {
+        return apiResponse.error(res, "删除失败", 500);
+      }
+
+      logger.info(
+        `🗑️ 文章删除成功: ID=${articleId}, 标题=${existingArticle[0].title}, 操作者ID=${authorId}`
+      );
+
+      apiResponse.success(res, "文章删除成功");
+    } catch (err) {
+      logger.error("删除文章失败:", err);
+      apiResponse.error(res, "删除失败");
     }
   }
 );
@@ -819,17 +1217,81 @@ app.post(
   }
 );
 
+// 🔥 新增：根据 Token 获取当前登录用户信息 (用于页面刷新后恢复状态)
+app.get("/api/current-user", authenticateToken, async (req, res) => {
+  try {
+    // req.user.id 是由 authenticateToken 中间件解析出来的
+    const userId = req.user.id;
+
+    const [results] = await dbPool.query(
+      `SELECT id, username, role, avatar, nickname, email, phone 
+       FROM users 
+       WHERE id = ?`,
+      [userId]
+    );
+
+    if (results.length === 0) {
+      return apiResponse.error(res, "用户不存在", 404);
+    }
+
+    const user = results[0];
+
+    // 成功返回用户信息
+    apiResponse.success(res, "获取成功", {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      avatar: user.avatar || null,
+      nickname: user.nickname || null,
+      email: user.email || null,
+      phone: user.phone || null,
+    });
+  } catch (err) {
+    logger.error("获取当前用户失败:", err);
+    apiResponse.error(res, "服务器错误");
+  }
+});
+
 // ==========================================
 // 评论相关接口
 // ==========================================
 
-// 🔥 发表评论（需要认证）
+// 🔥 评论图片上传接口（新增）
+app.post(
+  "/api/upload/comment-images",
+  authenticateToken,
+  upload.array("images", 9), // 最多9张图片
+  async (req, res) => {
+    try {
+      const files = req.files;
+      if (!files || files.length === 0) {
+        return apiResponse.error(res, "请选择图片", 400);
+      }
+
+      // 生成图片URL数组
+      const urls = files.map((file) => {
+        // 返回相对路径，前端可以通过静态资源访问
+        const relativePath = file.path.replace(/\\/g, "/");
+        return `/uploads/${path.basename(relativePath)}`;
+      });
+
+      logger.info(`评论图片上传成功: ${urls.length} 张图片`);
+      apiResponse.success(res, "图片上传成功", { urls });
+    } catch (err) {
+      logger.error("评论图片上传失败:", err);
+      apiResponse.error(res, "图片上传失败");
+    }
+  }
+);
+
+// 🔥 发表评论（修改版：支持图片）
 app.post(
   "/api/comments",
   authenticateToken,
   [
     body("article_id").isInt().withMessage("文章ID无效"),
     body("content").trim().notEmpty().withMessage("评论内容不能为空"),
+    body("images").optional().isArray().withMessage("图片格式不正确"),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -838,20 +1300,49 @@ app.post(
     }
 
     try {
-      const { article_id, content } = req.body;
-      const nickname = req.user.username; // 从 JWT 获取用户名
+      const { article_id, content, images } = req.body;
+      const userId = req.user.id; // 从 JWT 获取用户ID
+
+      // 获取用户昵称
+      const [userResults] = await dbPool.query(
+        "SELECT nickname, avatar FROM users WHERE id = ?",
+        [userId]
+      );
+
+      if (userResults.length === 0) {
+        return apiResponse.error(res, "用户不存在", 404);
+      }
+
+      const user = userResults[0];
+      const nickname = user.nickname || req.user.username;
 
       logger.info(`正在尝试写入评论: 文章ID=${article_id}, 用户=${nickname}`);
 
+      // 将 images 数组转为 JSON 字符串（如果数据库支持 JSON 类型，可以直接存数组）
+      const imagesJSON =
+        images && images.length > 0 ? JSON.stringify(images) : null;
+
       const [result] = await dbPool.query(
-        "INSERT INTO comments (article_id, nickname, content) VALUES (?, ?, ?)",
-        [article_id, nickname, content]
+        "INSERT INTO comments (article_id, nickname, content, images) VALUES (?, ?, ?, ?)",
+        [article_id, nickname, content, imagesJSON]
       );
 
-      apiResponse.success(res, "评论成功", { id: result.insertId }, 201);
+      logger.info(`评论成功: ID=${result.insertId}, 文章ID=${article_id}`);
+      apiResponse.success(
+        res,
+        "评论成功",
+        {
+          id: result.insertId,
+          nickname,
+          content,
+          images,
+          avatar: user.avatar,
+        },
+        201
+      );
     } catch (err) {
       logger.error("评论失败:", err);
-      apiResponse.error(res, "评论失败");
+      apiResponse.error(res, "评论失败: " + err.message);
     }
   }
 );
@@ -888,7 +1379,7 @@ app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
   }
 });
 
-// 获取评论列表
+// 🔥 获取评论列表（修改版：返回图片）
 app.get("/api/comments", async (req, res) => {
   try {
     const article_id = req.query.article_id;
@@ -897,12 +1388,38 @@ app.get("/api/comments", async (req, res) => {
       return apiResponse.error(res, "缺少文章ID", 400);
     }
 
+    // 关联查询用户头像
     const [results] = await dbPool.query(
-      "SELECT * FROM comments WHERE article_id = ? ORDER BY created_at DESC",
+      `SELECT c.*, u.avatar 
+       FROM comments c 
+       LEFT JOIN users u ON c.nickname = u.username 
+       WHERE c.article_id = ? 
+       ORDER BY c.created_at DESC`,
       [article_id]
     );
 
-    apiResponse.success(res, "获取成功", results);
+    // 处理 images 字段：如果是字符串就解析为数组
+    const processedResults = results.map((comment) => {
+      let images = [];
+      if (comment.images) {
+        try {
+          if (typeof comment.images === "string") {
+            images = JSON.parse(comment.images);
+          } else if (Array.isArray(comment.images)) {
+            images = comment.images;
+          }
+        } catch (e) {
+          logger.warn(`解析评论图片失败: ${e.message}`);
+        }
+      }
+
+      return {
+        ...comment,
+        images,
+      };
+    });
+
+    apiResponse.success(res, "获取成功", processedResults);
   } catch (err) {
     logger.error("获取评论失败:", err);
     apiResponse.error(res, "获取评论失败");
