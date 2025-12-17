@@ -108,16 +108,18 @@ export const useUserStore = defineStore("user", () => {
   };
 
   // 检查登录状态（从 localStorage 恢复）
-  const checkLoginStatus = () => {
+  const checkLoginStatus = async () => {
+    // 🔥 1. 改为 async
     const storedToken = localStorage.getItem("token");
     const storedUser = localStorage.getItem("user");
     const loggedIn = localStorage.getItem("isLoggedIn") === "true";
 
     if (loggedIn && storedToken && storedUser) {
       try {
-        user.value = JSON.parse(storedUser);
+        const parsedUser = JSON.parse(storedUser);
+        user.value = parsedUser;
         token.value = storedToken;
-        console.log("✅ 登录状态已恢复:", user.value?.username);
+        console.log("✅ 登录状态已从缓存恢复:", user.value?.username);
 
         // 恢复地理位置
         const storedLocation = localStorage.getItem("userLocation");
@@ -128,6 +130,12 @@ export const useUserStore = defineStore("user", () => {
             console.warn("解析缓存位置失败:", e);
           }
         }
+
+        // 🔥🔥🔥 核心修复在这里 🔥🔥🔥
+        // 缓存的数据可能是旧的或者不完整的（例如缺少头像）
+        // 所以恢复状态后，立即在后台静默刷新一次用户信息
+        console.log("🔄 正在后台同步最新用户信息...");
+        await refreshUserInfo();
       } catch (e) {
         console.error("解析用户信息失败:", e);
         logout(); // 解析失败，清除所有状态
@@ -135,7 +143,7 @@ export const useUserStore = defineStore("user", () => {
     } else {
       // 如果 token 存在但没有用户数据，尝试用 token 获取用户信息
       if (storedToken && !storedUser) {
-        restoreUserFromToken(storedToken);
+        await restoreUserFromToken(storedToken); // 🔥 2. 这里也建议加 await
       }
     }
   };

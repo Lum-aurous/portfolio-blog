@@ -17,17 +17,26 @@ const getFullAvatarUrl = (path) => {
     return `${apiBase}${path}`
 }
 
+// 修改前的 profile 逻辑是完全依赖 userStore，现在我们将数据源改为 siteStats
 const profile = computed(() => {
+    // 基础数据（来自后端统计接口）
+    const statsData = {
+        // 🔥 确保这里有默认值 0，防止 undefined
+        articlesCount: siteStats.value.articleCount || 0,
+        categoryCount: siteStats.value.categoryCount || 0,
+        visits: siteStats.value.totalViews || 0
+    }
+
+    // 用户身份数据（来自 Store）
     if (userStore.user && userStore.user.username) {
         return {
             isLogin: true,
+            // 优先显示昵称，没有则显示用户名
             name: userStore.user.nickname || userStore.user.username,
             title: userStore.user.bio || '全栈开发者 / 追梦人',
             avatar: getFullAvatarUrl(userStore.user.avatar),
-            articlesCount: 108,
-            categoryCount: 6,
-            visits: '239890', // 模拟图片数据
-            github: userStore.user.social_link || 'https://github.com'
+            github: userStore.user.social_link || 'https://github.com',
+            ...statsData // 🔥 混入真实的统计数据
         }
     } else {
         return {
@@ -35,10 +44,8 @@ const profile = computed(() => {
             name: '访客',
             title: '登录以解锁更多功能',
             avatar: defaultAvatar,
-            articlesCount: '-',
-            categoryCount: '-',
-            visits: '-',
-            github: '#'
+            github: '#',
+            ...statsData // 🔥 即使是访客，也显示真实的站点文章数据
         }
     }
 })
@@ -105,53 +112,61 @@ const startCarousel = async () => {
     }, 6000)
 }
 
-// ==================== 3. 3D 标签云逻辑 ====================
-const rawTags = [
-    { id: 1, name: 'SpringCloud', color: '#ff9800' },
-    { id: 2, name: 'Dubbo', color: '#4caf50' },
-    { id: 3, name: 'MyBatis', color: '#8bc34a' },
-    { id: 4, name: 'Redis', color: '#f44336' },
-    { id: 5, name: 'MySQL', color: '#2196f3' },
-    { id: 6, name: 'Java', color: '#795548' },
-    { id: 7, name: 'SpringBoot', color: '#4caf50' },
-    { id: 8, name: 'Python', color: '#ffc107' },
-    { id: 9, name: 'Docker', color: '#03a9f4' },
-    { id: 10, name: 'Vue.js', color: '#009688' },
-    { id: 11, name: 'React', color: '#00bcd4' },
-    { id: 12, name: 'Git', color: '#ff5722' },
-    { id: 13, name: 'Linux', color: '#607d8b' },
-    { id: 14, name: 'Nginx', color: '#009688' },
-    { id: 15, name: '使用指南', color: '#3f51b5' },
-    { id: 16, name: '万卷书', color: '#9c27b0' },
-    { id: 17, name: '西游记', color: '#673ab7' },
-    { id: 18, name: '人间百态', color: '#e67e22' },
-    { id: 19, name: '八次危机', color: '#e91e63' },
-]
-
-const tags = ref([])
+// ==================== 3. 3D 标签云逻辑 (动态化) ====================
+const tags = ref([]) // 存储最终的标签对象
 let animationFrameId = null
 
 // 3D 配置
-const RADIUS = 125 // 稍微调小一点适应侧边栏
+const RADIUS = 130 // 稍微调大一点点
 const BASE_SPEED = 0.005
 const ACCELERATION = 0.0001
 let currentSpeed = 0
 let angleX = 0
 let angleY = 0
 
-const init3DTags = () => {
-    const len = rawTags.length
-    tags.value = rawTags.map((tag, i) => {
-        const phi = Math.acos(-1 + (2 * i) / len)
-        const theta = Math.sqrt(len * Math.PI) * phi
-        return {
-            ...tag,
-            x: RADIUS * Math.cos(theta) * Math.sin(phi),
-            y: RADIUS * Math.sin(theta) * Math.sin(phi),
-            z: RADIUS * Math.cos(phi),
-            style: {}
+// 预设好看的颜色池 (Material Design Colors)
+const colorPalette = [
+    '#F44336', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5',
+    '#2196F3', '#03A9F4', '#00BCD4', '#009688', '#4CAF50',
+    '#8BC34A', '#CDDC39', '#FFC107', '#FF9800', '#FF5722'
+]
+
+// 获取标签数据
+const fetchTags = async () => {
+    try {
+        const res = await axios.get('/api/tags/cloud')
+        if (res.data.success) {
+            const rawData = res.data.data
+
+            // 初始化 3D 坐标
+            const len = rawData.length
+            tags.value = rawData.map((tag, i) => {
+                const phi = Math.acos(-1 + (2 * i) / len)
+                const theta = Math.sqrt(len * Math.PI) * phi
+
+                // 如果后端没给颜色，前端随机分配一个
+                const color = tag.color || colorPalette[Math.floor(Math.random() * colorPalette.length)]
+
+                return {
+                    id: tag.id || i,
+                    name: tag.name, // 或者是 tag.title
+                    color: color,
+                    x: RADIUS * Math.cos(theta) * Math.sin(phi),
+                    y: RADIUS * Math.sin(theta) * Math.sin(phi),
+                    z: RADIUS * Math.cos(phi),
+                    style: {}
+                }
+            })
+
+            // 数据准备好后，开始动画
+            nextTick(() => {
+                animate()
+            })
         }
-    })
+    } catch (error) {
+        console.error('❌ 获取标签云失败:', error)
+        // 失败时不显示或使用空数组，避免报错
+    }
 }
 
 const animate = () => {
@@ -182,7 +197,8 @@ const rotateTag = (tag, speedX, speedY) => {
     const alpha = (tag.z + RADIUS) / (2 * RADIUS)
 
     tag.style = {
-        transform: `translate3d(${tag.x + 110}px, ${tag.y + 160}px, 0) scale(${scale})`, // 调整中心点
+        // 120和160是容器中心的偏移量，根据容器大小微调
+        transform: `translate3d(${tag.x + 120}px, ${tag.y + 140}px, 0) scale(${scale})`,
         opacity: 0.5 + 0.5 * alpha,
         zIndex: Math.floor(scale * 100),
         '--tag-color': tag.color
@@ -190,86 +206,243 @@ const rotateTag = (tag, speedX, speedY) => {
 }
 
 const handleTagClick = (tag) => {
-    selectedTagId.value = tag.id === selectedTagId.value ? null : tag.id
+    // 1. 视觉交互：把标签名自动填入搜索框，让用户知道发生了什么
+    searchQuery.value = tag.name
+
+    // 2. 逻辑交互：直接触发搜索
+    performSearch(tag.name)
+
+    // 3. 体验优化：平滑滚动到文章列表，直接看结果
     scrollToContent()
 }
 
-// ==================== 6. 🔥 弹幕数据 ====================
-const barrageList = ref([
-    { id: 1, avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100&auto=format&fit=crop', content: '究极好看' },
-    { id: 2, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100&auto=format&fit=crop', content: '好好好' },
-    { id: 3, avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=100&auto=format&fit=crop', content: '哈哈' },
-    { id: 4, avatar: 'https://images.unsplash.com/photo-1552374196-c4e7ffc6e126?q=80&w=100&auto=format&fit=crop', content: '厉害厉害' },
-    { id: 5, avatar: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?q=80&w=100&auto=format&fit=crop', content: '666' },
-    { id: 6, avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?q=80&w=100&auto=format&fit=crop', content: '我也实现这种效果的' },
-    { id: 7, avatar: 'https://images.unsplash.com/photo-1520813792240-56fc4a3765a7?q=80&w=100&auto=format&fit=crop', content: '你好' },
-    { id: 11, avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100&auto=format&fit=crop', content: '究极好看' },
-    { id: 12, avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100&auto=format&fit=crop', content: '好好好' },
-    { id: 13, avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=100&auto=format&fit=crop', content: '哈哈' },
-])
 
-// ==================== 4. 文章与分类逻辑 ====================
-const categories = [
-    { id: 'latest', name: '最新', icon: '🔥' },
-    { id: 'veritas', name: 'Veritas', icon: '🪐' },
-    { id: 'life', name: '生活倒影', icon: '☕' },
-    { id: 'visual', name: '视听盛宴', icon: '🎬' },
-    { id: 'study', name: '学习人生', icon: '📚' },
-    { id: 'abroad', name: '海外趣事', icon: '🌍' },
-    { id: 'love', name: '爱心资源', icon: '❤️' },
-    { id: 'friends', name: '战友', icon: '⭐' }
+
+// ==================== 6. 🔥 弹幕数据 (升级版：带缩略图) ====================
+// 默认数据也可以稍微带点图，模拟真实效果
+const defaultBarrage = [
+    { id: 'd1', avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100', content: '沙发是我的！', image: null },
+    { id: 'd2', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100', content: '图拍得不错', image: 'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?q=80&w=50&h=50&fit=crop' }, // 模拟带图
+    { id: 'd3', avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?q=80&w=100', content: '学到了', image: null },
 ]
+
+const barrageList = ref([...defaultBarrage])
+
+// 🔥 修复版：获取最新评论 (带详细调试)
+const fetchLatestComments = async () => {
+    try {
+        const res = await axios.get('/api/comments/latest', {
+            params: { limit: 15 }
+        })
+
+        // console.log('📦 最新弹幕原始数据:', res.data) // 减少控制台噪音
+
+        if (res.data.success && res.data.data.length > 0) {
+            const realComments = res.data.data.map(item => {
+                const avatar = getFullAvatarUrl(item.avatar)
+
+                let displayContent = item.content || ''
+                let thumbImage = null
+
+                // 🔥 1. 优先提取图片
+                // 确保 images 是数组且有长度
+                if (Array.isArray(item.images) && item.images.length > 0) {
+                    let imgPath = item.images[0]
+
+                    // 🔥 修复逻辑：确保 imgPath 是指向后端的完整 URL
+                    if (imgPath && typeof imgPath === 'string') {
+
+                        // 如果已经是 http 开头的完整链接（比如图床），直接用
+                        if (imgPath.startsWith('http')) {
+                            thumbImage = imgPath
+                        } else {
+
+                            const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'
+
+                            const host = apiBase.replace(/\/api\/?$/, '')
+
+                            // 确保 imgPath 以 / 开头
+                            const cleanPath = imgPath.startsWith('/') ? imgPath : '/' + imgPath
+
+                            // 拼接最终地址
+                            thumbImage = `${host}${cleanPath}`
+                        }
+                    }
+                }
+                // 🔥 2. 智能文案处理
+                // 情况A: 有图无字 -> 显示“分享图片”
+                if (!displayContent.trim() && thumbImage) {
+                    displayContent = '分享图片'
+                }
+                // 情况B: 无图无字 -> 显示默认文案
+                else if (!displayContent.trim() && !thumbImage) {
+                    displayContent = '收到一条新留言'
+                }
+
+                // 3. 截断过长文字
+                const maxLen = thumbImage ? 8 : 12
+                if (displayContent.length > maxLen) {
+                    displayContent = displayContent.substring(0, maxLen) + '...'
+                }
+
+                return {
+                    id: item.id,
+                    avatar: avatar,
+                    content: displayContent,
+                    image: thumbImage // 👈 确保这里有值
+                }
+            })
+
+            barrageList.value = realComments
+
+            // 数据太少时补充默认数据
+            if (realComments.length < 5) {
+                barrageList.value = [...realComments, ...defaultBarrage]
+            }
+        }
+    } catch (error) {
+        console.error('❌ 获取最新弹幕失败:', error)
+    }
+}
+
+// ==================== 4. 文章与分类逻辑 (动态化改造) ====================
+// 4.1 图标映射表 (配置特定分类的图标，未配置的将使用默认图标)
+const categoryIconMap = {
+    'Veritas': '🪐',
+    '生活倒影': '☕',
+    '视听盛宴': '🎬',
+    '学习人生': '📚',
+    '海外趣事': '🌍',
+    '爱心资源': '❤️',
+    '技术分享': '💻', // 预埋一些可能用到的
+    '心情随笔': '📝'
+}
+
+// 4.2 动态分类数据
+const dbCategories = ref([]) // 存放从后端拿到的分类名列表
+
+// 4.3 计算最终显示的分类菜单
+const categories = computed(() => {
+    // 1. 头部固定：最新
+    const list = [
+        { id: 'latest', name: '最新', icon: '🔥' }
+    ]
+
+    // 2. 中间动态：来自数据库
+    dbCategories.value.forEach(catName => {
+        list.push({
+            id: catName, // 使用分类名作为ID
+            name: catName,
+            icon: categoryIconMap[catName] || '📂' // 如果没配置图标，默认用文件夹图标
+        })
+    })
+
+    // 3. 尾部固定：战友 (友链)
+    list.push({ id: 'friends', name: '战友', icon: '⭐' })
+
+    return list
+})
+
 const activeCategory = ref('latest')
 
-// 获取后端文章
+// 🔥 获取所有分类
+const fetchCategories = async () => {
+    try {
+        const res = await axios.get('/api/categories')
+        if (res.data.success) {
+            dbCategories.value = res.data.data
+            // console.log('📦 动态分类加载完成:', dbCategories.value)
+        }
+    } catch (error) {
+        console.error('❌ 获取分类列表失败:', error)
+    }
+}
 
-// 文章数据（不再使用假数据）
+// 文章数据
 const articles = ref([])
 const isLoadingArticles = ref(false)
 
-// 获取文章列表
-const fetchArticles = async (categoryName = 'latest') => {
-    console.log(`📝 开始获取文章，分类: ${categoryName}`)
-    isLoadingArticles.value = true
+// 🔥 关键修改：获取文章列表（包含评论数自动处理）
+const fetchArticles = async (categoryName = 'latest', isSilent = false) => {
+    // isSilent 参数用于静默刷新，不显示 loading
+    if (!isSilent) {
+        console.log(`📝 开始获取文章，分类: ${categoryName}`)
+        isLoadingArticles.value = true
+    }
+
     try {
         const res = await axios.get('/api/articles', {
             params: { category: categoryName }
         })
 
-        console.log('📦 后端返回数据:', res.data)
-
         if (res.data.success) {
-            console.log(`✅ 获取到 ${res.data.data.length} 篇文章`)
-            console.log('第一篇文章数据:', res.data.data[0])
-            articles.value = res.data.data
-        } else {
-            console.error('❌ 获取文章失败:', res.data.message)
+            // 🔥 这里进行数据增强，确保 comments 和 views 是数字
+            // 如果后端返回的是 comment_count 也能兼容
+            articles.value = res.data.data.map(article => ({
+                ...article,
+                comments: article.comments || article.comment_count || 0,
+                views: article.views || article.view_count || 0
+            }))
         }
     } catch (error) {
         console.error('❌ 请求出错:', error)
-        if (error.response) {
-            console.error('状态码:', error.response.status)
-            console.error('错误数据:', error.response.data)
-        }
     } finally {
-        isLoadingArticles.value = false
+        if (!isSilent) isLoadingArticles.value = false
     }
 }
 
-
 // 监听分类变化 (点击菜单时触发)
 watch(activeCategory, (newCategory) => {
-    // 找到分类对象，获取其中文名称
-    const categoryObj = categories.find(c => c.id === newCategory)
-    const queryCat = newCategory === 'latest' ? 'latest' : categoryObj?.name
+    // 如果是 'latest' 或 'friends'，传参就是 'latest' 或 'friends'
+    // 如果是动态分类（id就是name），直接传 name
+    // 注意：如果是 'friends'，我们只切视图，不查文章接口（或者你以后想做专门的友链接口也可以）
 
+    if (newCategory === 'friends') {
+        // 友链不需要查文章，直接跳过
+        return
+    }
+
+    const queryCat = newCategory === 'latest' ? 'latest' : newCategory
     fetchArticles(queryCat)
 })
 
+// ==================== 🔥 新增：站点统计逻辑 ====================
+const siteStats = ref({
+    articleCount: 0,
+    categoryCount: 0,
+    totalViews: 0
+})
+
+// 获取站点统计数据 (确保数字实时更新)
+const fetchSiteStats = async () => {
+    try {
+        const res = await axios.get('/api/blog/stats')
+        if (res.data.success) {
+            siteStats.value = res.data.data
+        }
+    } catch (error) {
+        console.error('❌ 获取站点统计失败:', error)
+    }
+}
+
 const notices = ref([
-    { id: 1, content: '🎉 欢迎访问 Veritas 的个人博客！' },
+    { id: 1, content: '🎉 欢迎访问 Veritas 的个人博客！' }, // 默认值，接口加载前显示这个
     { id: 2, content: '💻 网站正在重构优化中，更多功能敬请期待...' }
 ])
+
+// 🔥 新增：获取最新公告
+const fetchLatestNotice = async () => {
+    try {
+        const res = await axios.get('/api/notices/latest')
+        if (res.data.success) {
+            // 直接覆盖第一条公告的内容
+            notices.value[0].content = res.data.data.content
+        }
+    } catch (error) {
+        console.error('❌ 获取公告失败:', error)
+        // 失败了也不用处理，直接显示默认的即可
+    }
+}
 
 const friendLinks = ref([
     { id: 1, name: 'Poetize', desc: '一个很棒的博客主题', avatar: 'https://poetize.cn/favicon.ico', link: 'https://poetize.cn' },
@@ -278,11 +451,6 @@ const friendLinks = ref([
 ])
 
 const searchQuery = ref('')
-const handleSearch = () => {
-    if (!searchQuery.value.trim()) return
-    alert(`🔍 正在搜索: ${searchQuery.value}`)
-}
-
 const selectedTagId = ref(null)
 
 const filteredArticles = computed(() => {
@@ -304,13 +472,25 @@ const formatDate = (dateStr) => {
     return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`
 }
 
+// 格式化日期时间
+const formatDateTime = (dateStr) => {
+    if (!dateStr) return ''
+    const date = new Date(dateStr)
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    return `${year}-${month}-${day} ${hours}:${minutes}`
+}
+
 // ==================== 7. 推荐文章逻辑 ====================
 const recommendedArticles = ref([])
 const isLoadingHotArticles = ref(false)
 
 // 🔥 修复后的获取热门文章函数
 const fetchHotArticles = async () => {
-    console.log('🔥 开始获取热门文章...')
+    // console.log('🔥 开始获取热门文章...')
     isLoadingHotArticles.value = true
 
     try {
@@ -320,19 +500,15 @@ const fetchHotArticles = async () => {
             timeout: 10000
         })
 
-        console.log('🔥 热门文章API响应:', res)
-        console.log('📊 响应状态:', res.status)
-        console.log('📦 响应数据:', res.data)
-
         if (res.data.success) {
             if (!res.data.data || res.data.data.length === 0) {
-                console.log('⚠️ 热门文章列表为空')
+                // console.log('⚠️ 热门文章列表为空')
                 recommendedArticles.value = getDefaultRecommendations()
                 return
             }
 
             const hotArticles = res.data.data
-            console.log(`✅ 获取到 ${hotArticles.length} 篇热门文章`)
+            // console.log(`✅ 获取到 ${hotArticles.length} 篇热门文章`)
 
             // 转换格式
             recommendedArticles.value = hotArticles.map(article => {
@@ -360,25 +536,13 @@ const fetchHotArticles = async () => {
                 }
             })
 
-            console.log('✅ 热门文章处理完成:', recommendedArticles.value)
+            // console.log('✅ 热门文章处理完成:', recommendedArticles.value)
         } else {
             console.error('❌ API返回失败:', res.data)
             recommendedArticles.value = getDefaultRecommendations()
         }
     } catch (error) {
-        console.error('❌ 获取热门文章失败:')
-
-        if (error.response) {
-            console.error('- 响应状态:', error.response.status)
-            console.error('- 响应数据:', error.response.data)
-            console.error('- 响应头:', error.response.headers)
-        } else if (error.request) {
-            console.error('- 请求已发出但无响应')
-            console.error('- 请求对象:', error.request)
-        } else {
-            console.error('- 请求配置错误:', error.message)
-        }
-
+        console.error('❌ 获取热门文章失败') // 简化日志
         recommendedArticles.value = getDefaultRecommendations()
     } finally {
         isLoadingHotArticles.value = false
@@ -399,21 +563,9 @@ const getDefaultCoverByCategory = (category) => {
     return categoryCovers[category] || 'https://images.unsplash.com/photo-1518709268805-4e9042af2176?q=80&w=200&auto=format&fit=crop'
 }
 
-// 格式化日期时间
-const formatDateTime = (dateStr) => {
-    if (!dateStr) return ''
-    const date = new Date(dateStr)
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    const hours = String(date.getHours()).padStart(2, '0')
-    const minutes = String(date.getMinutes()).padStart(2, '0')
-    return `${year}-${month}-${day} ${hours}:${minutes}`
-}
-
 // 默认推荐文章（API失败时的后备方案）
 const getDefaultRecommendations = () => {
-    console.log('⚠️ 使用默认推荐数据')
+    // console.log('⚠️ 使用默认推荐数据')
     const currentDate = new Date()
     const formattedDate = formatDateTime(currentDate)
 
@@ -455,11 +607,66 @@ const getDefaultRecommendations = () => {
 }
 
 
+// ==================== 🔥 搜索与交互逻辑 ====================
+const isSearching = ref(false) // 标记当前是否处于搜索状态
+
+// 执行搜索的核心函数
+const performSearch = async (keyword) => {
+    if (!keyword || !keyword.trim()) return
+
+    console.log(`🔍 开始全站搜索: ${keyword}`)
+    isLoadingArticles.value = true // 开启加载动画
+    isSearching.value = true       // 标记为搜索模式
+
+    try {
+        const res = await axios.get('/api/articles/search', {
+            params: { q: keyword }
+        })
+
+        if (res.data.success) {
+            // 🔥 这里也要确保评论数格式正确
+            articles.value = res.data.data.map(item => ({
+                ...item,
+                comments: item.comments || 0,
+                views: item.views || 0
+            }))
+
+            activeCategory.value = ''      // 清空分类高亮，因为现在是搜索结果
+
+            // 如果没搜到，给个提示
+            if (articles.value.length === 0) {
+                // 这里可以用 message 组件，或者直接让 UI 显示空状态
+                console.log('未找到相关文章')
+            }
+        }
+    } catch (error) {
+        console.error('❌ 搜索请求失败:', error)
+    } finally {
+        isLoadingArticles.value = false
+    }
+}
+
+// 搜索框的回车事件
+const handleSearch = () => {
+    if (!searchQuery.value.trim()) return
+    performSearch(searchQuery.value)
+    scrollToContent() // 自动滚动到内容区
+}
+
+// 清除搜索，回到“最新”列表
+const resetView = () => {
+    searchQuery.value = ''
+    isSearching.value = false
+    activeCategory.value = 'latest' // 这会自动触发 watch，重新加载所有文章
+    scrollToContent()
+}
+
 // ==================== 8. 其他逻辑 ====================
 const typedText = ref('')
 const fullText = "成就源于真理！"
 let typeIndex = 0
 let typeTimer = null
+let statsTimer = null // 🔥 统计数据自动刷新定时器
 
 const startTyping = () => {
     typeIndex = 0
@@ -486,26 +693,48 @@ const scrollToContent = () => {
     }
 }
 
+// 🔥🔥 核心：数据自动刷新逻辑 🔥🔥
+const refreshAllData = async () => {
+    // 只有在不是搜索状态下才刷新列表，避免打断用户的搜索结果
+    if (!isSearching.value && activeCategory.value !== 'friends') {
+        const queryCat = activeCategory.value === 'latest' ? 'latest' : activeCategory.value
+        await fetchArticles(queryCat, true) // true 表示静默刷新
+    }
+    // 始终刷新全站统计、弹幕和公告
+    fetchSiteStats()
+    fetchLatestComments()
+    fetchLatestNotice() // 👈 新增：自动刷新公告
+}
+
 onMounted(async () => {
-    if (!userStore.user) {
+    // 1. 检查登录状态
+    if (!userStore.user && localStorage.getItem('token')) {
         await userStore.checkLoginStatus()
     }
+
+    // 2. 初始化视觉效果
     initWallpapers()
     startTyping()
+    fetchTags()
 
-    // 3D 标签云启动
-    init3DTags()
-    nextTick(() => {
-        animate()
-    })
+    // 3. 🔥 获取数据 (初次加载)
+    await fetchCategories()
+    fetchArticles()
+    fetchHotArticles()
+    fetchSiteStats()
+    fetchLatestComments()
+    fetchLatestNotice() // 👈 新增：初次加载公告
 
-    fetchArticles() // 🔥 加载文章
-    fetchHotArticles() // 🔥 加载热门文章
+    // 4. 🔥 启动数据自动轮询 (每30秒刷新一次数据)
+    statsTimer = setInterval(() => {
+        refreshAllData()
+    }, 30000)
 })
 
 onUnmounted(() => {
     if (carouselTimer) clearInterval(carouselTimer)
     if (typeTimer) clearInterval(typeTimer)
+    if (statsTimer) clearInterval(statsTimer) // 销毁定时器
     if (animationFrameId) cancelAnimationFrame(animationFrameId)
 })
 </script>
@@ -566,19 +795,19 @@ onUnmounted(() => {
                             <div class="stat-label-row">
                                 <span class="stat-icon">📖</span> <span class="stat-label">文章</span>
                             </div>
-                            <div class="stat-num">{{ profile.articlesCount }}</div>
+                            <div class="stat-num">{{ profile.articlesCount || 0 }}</div>
                         </div>
                         <div class="stat-col">
                             <div class="stat-label-row">
                                 <span class="stat-icon">🗂️</span> <span class="stat-label">分类</span>
                             </div>
-                            <div class="stat-num">{{ profile.categoryCount }}</div>
+                            <div class="stat-num">{{ profile.categoryCount || 0 }}</div>
                         </div>
                         <div class="stat-col">
                             <div class="stat-label-row">
                                 <span class="stat-icon">🔥</span> <span class="stat-label">访问量</span>
                             </div>
-                            <div class="stat-num">{{ profile.visits }}</div>
+                            <div class="stat-num">{{ profile.visits || 0 }}</div>
                         </div>
                     </div>
 
@@ -614,7 +843,6 @@ onUnmounted(() => {
                                 class="dot green"></span></div>
                     </div>
 
-                    <!-- 加载状态 -->
                     <div v-if="isLoadingHotArticles" class="loading-state">
                         <div class="loading-spinner"></div>
                         <div class="loading-text">加载推荐中...</div>
@@ -673,8 +901,13 @@ onUnmounted(() => {
                                 <div class="barrage-avatar">
                                     <img :src="item.avatar" alt="user">
                                 </div>
+
                                 <div class="barrage-content-box">
-                                    <div class="barrage-text">{{ item.content }}</div>
+                                    <span class="barrage-text">{{ item.content }}</span>
+
+                                    <div v-if="item.image" class="barrage-thumb">
+                                        <img :src="item.image" alt="图" loading="lazy">
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -723,7 +956,19 @@ onUnmounted(() => {
                         </div>
                     </div>
                 </div>
+
                 <div v-else class="article-grid">
+                    <div v-if="isSearching" class="search-result-bar animate__animated animate__fadeIn">
+                        <div class="result-info">
+                            <span class="search-icon">🔍</span>
+                            <span>正在显示 <b>"{{ searchQuery }}"</b> 的搜索结果</span>
+                            <span class="result-count">({{ articles.length }}篇)</span>
+                        </div>
+                        <button class="clear-search-btn" @click="resetView">
+                            ✕ 清除筛选
+                        </button>
+                    </div>
+
                     <div v-for="article in filteredArticles" :key="article.id" class="article-card">
                         <div class="card-cover"><router-link :to="'/article/' + article.id"><img
                                     :src="article.cover_image" alt="cover"></router-link><span class="card-tag">{{
@@ -734,13 +979,18 @@ onUnmounted(() => {
                             }}</router-link></h3>
                             <p class="summary">{{ article.summary }}</p>
                             <div class="card-footer">
-                                <div class="meta"><span>🔥 {{ article.views }}</span><span>💬 {{ article.comments
-                                }}</span></div><router-link :to="'/article/' + article.id"
+                                <div class="meta"><span>🔥 {{ article.views || 0 }}</span><span>💬 {{ article.comments
+                                    || 0
+                                        }}</span></div><router-link :to="'/article/' + article.id"
                                     class="read-btn">阅读全文</router-link>
                             </div>
                         </div>
                     </div>
-                    <div v-if="filteredArticles.length === 0" class="empty-state">📭 该标签下暂无文章...</div>
+                    <div v-if="articles.length === 0" class="empty-state">
+                        📭 没有找到与 "{{ searchQuery }}" 相关的文章...
+                        <br>
+                        <span class="reset-link" @click="resetView">返回首页</span>
+                    </div>
                 </div>
             </section>
         </main>
@@ -1767,33 +2017,98 @@ onUnmounted(() => {
 /* 单条弹幕 */
 .barrage-item {
     color: #000;
+    flex-shrink: 0;
+    padding-right: 12px;
+    /* 右侧留点空隙给图片 */
     display: flex;
     align-items: center;
-    gap: 5px;
-    margin-bottom: 1px;
-    padding: 5px 12px;
+    gap: 8px;
+    margin-bottom: 6px;
+    padding: 4px 10px 4px 4px;
     border-radius: 50px;
-    transition: transform 0.2s;
+    background: rgba(255, 255, 255, 0.6);
+    backdrop-filter: blur(4px);
+    transition: transform 0.2s, background 0.2s;
     width: fit-content;
-    /* 宽度自适应内容 */
+    max-width: 98%;
+    /* 稍微放宽一点 */
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+
+    /* 🔥 关键：防止 flex 子元素被压缩 */
 }
 
 .barrage-item:hover {
-    transform: scale(1.05);
+    transform: scale(1.02) translateX(5px);
+    background: rgba(255, 255, 255, 0.9);
+    z-index: 10;
 }
 
 .barrage-avatar img {
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
-    border: 2px;
     object-fit: cover;
+    border: 1px solid #fff;
 }
 
+/* ==================== 🔥 弹幕图片显示修复 ==================== */
+
 .barrage-content-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    /* 关键：允许Flex子项收缩 */
+    flex: 1;
+}
+
+.barrage-text {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 140px;
+    /* 给图片留出位置 */
+    color: #333;
     font-size: 0.9rem;
-    color: #000;
-    font-weight: 400;
+}
+
+/* 🔥 图片容器核心修复 */
+/* 修改 Blog.vue 中的 .barrage-thumb */
+.barrage-thumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    margin-left: 4px;
+    background-color: #f0f0f0;
+    /* 🔥 加个底色调试 */
+    border-radius: 4px;
+    overflow: hidden;
+    /* 防止图片溢出 */
+}
+
+.barrage-thumb img {
+    width: 100%;
+    height: 100%;
+    border-radius: 4px;
+    object-fit: cover;
+    border: 1px solid rgba(255, 255, 255, 0.8);
+    background-color: #fff;
+    cursor: zoom-in;
+    display: block;
+}
+
+/* 悬停放大效果 */
+.barrage-thumb img:hover {
+    transform: scale(4);
+    z-index: 999;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    position: relative;
+    /* 确保层级生效 */
 }
 
 /* 🔥 新增：加载状态样式 */
@@ -1906,5 +2221,84 @@ onUnmounted(() => {
 
 .recommend-item:hover::before {
     left: 100%;
+}
+
+.search-result-bar {
+    background: #e8f5e9;
+    color: #2e7d32;
+    padding: 10px 15px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 0.95rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border: 1px solid #c8e6c9;
+}
+
+.clear-search {
+    cursor: pointer;
+    font-weight: bold;
+    opacity: 0.7;
+    transition: opacity 0.2s;
+}
+
+.clear-search:hover {
+    opacity: 1;
+}
+
+/* ==================== 🔥 搜索提示条样式 ==================== */
+.search-result-bar {
+    grid-column: 1 / -1;
+    /* 占满整行 */
+    background: #e0f7fa;
+    /* 浅青色背景 */
+    border: 1px solid #b2ebf2;
+    border-radius: 12px;
+    padding: 12px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    color: #006064;
+}
+
+.result-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.95rem;
+}
+
+.result-count {
+    background: rgba(255, 255, 255, 0.5);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: bold;
+}
+
+.clear-search-btn {
+    background: transparent;
+    border: 1px solid #0097a7;
+    color: #00838f;
+    padding: 6px 14px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.3s;
+}
+
+.clear-search-btn:hover {
+    background: #0097a7;
+    color: white;
+}
+
+.reset-link {
+    display: inline-block;
+    margin-top: 10px;
+    color: #48cbb6;
+    text-decoration: underline;
+    cursor: pointer;
 }
 </style>

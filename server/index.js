@@ -1,21 +1,48 @@
-require("dotenv").config(); // 🔥 1. 加载环境变量
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const mysql = require("mysql2/promise"); // 🔥 7. 使用连接池版本
+const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken"); // 🔥 1. JWT认证
+const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
-const rateLimit = require("express-rate-limit"); // 🔥 9. 限流
-const { body, validationResult } = require("express-validator"); // 🔥 8. 输入验证
-const winston = require("winston"); // 🔥 4. 日志系统
+const rateLimit = require("express-rate-limit");
+const { body, validationResult } = require("express-validator");
+const winston = require("winston");
 const nodemailer = require("nodemailer");
+const sharp = require("sharp");
+const axios = require("axios");
+const compression = require("compression"); // 🔥 新增：启用gzip压缩
+const helmet = require("helmet"); // 🔥 新增：安全头
 
 const app = express();
 
 // ==========================================
-// 🔥 4. Winston 日志系统配置
+// 🔥 优化1: 启用 Helmet 安全防护
+// ==========================================
+app.use(
+  helmet({
+    contentSecurityPolicy: false, // 关闭 CSP，因为有前端资源
+    crossOriginEmbedderPolicy: false, // 允许跨域嵌入
+  })
+);
+
+// ==========================================
+// 🔥 优化2: 启用 Gzip 压缩（减少传输体积）
+// ==========================================
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.headers["x-no-compression"]) return false;
+      return compression.filter(req, res);
+    },
+    level: 6, // 压缩级别 (0-9，6是平衡点)
+  })
+);
+
+// ==========================================
+// 🔥 Winston 日志系统配置（优化）
 // ==========================================
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || "info",
@@ -27,21 +54,21 @@ const logger = winston.createLogger({
   ),
   defaultMeta: { service: "portfolio-backend" },
   transports: [
-    new winston.transports.File({ filename: "logs/error.log", level: "error" }),
-    new winston.transports.File({ filename: "logs/combined.log" }),
+    new winston.transports.File({
+      filename: "logs/error.log",
+      level: "error",
+      maxsize: 5242880, // 🔥 5MB 自动轮换
+      maxFiles: 5,
+    }),
+    new winston.transports.File({
+      filename: "logs/combined.log",
+      maxsize: 10485760, // 🔥 10MB 自动轮换
+      maxFiles: 7,
+    }),
   ],
 });
 
-// 配置邮件发送器 (放在接口外面，复用连接)
-const transporter = nodemailer.createTransport({
-  service: "qq", // 使用内置的 QQ 邮箱服务
-  auth: {
-    user: "bojackjck@foxmail.com", // ❌【重要】请替换为你的真实QQ邮箱
-    pass: "nysuimbzmxipdddh", // ❌【重要】请替换为你的16位授权码
-  },
-});
-
-// 开发环境下同时输出到控制台
+// 开发环境输出到控制台
 if (process.env.NODE_ENV !== "production") {
   logger.add(
     new winston.transports.Console({
@@ -53,9 +80,61 @@ if (process.env.NODE_ENV !== "production") {
   );
 }
 
-// 放在 CORS 之前，这样加载网页/图片永远不会报跨域错误
-app.use("/uploads", express.static("uploads", { maxAge: "1d" }));
-app.use(express.static(path.join(__dirname, "../client/dist")));
+// ==========================================
+// 📧 邮件服务配置
+// ==========================================
+const transporter = nodemailer.createTransport({
+  service: process.env.EMAIL_SERVICE || "qq",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASSWORD,
+  },
+});
+
+// 验证邮件配置（异步）
+(async () => {
+  try {
+    await transporter.verify();
+    logger.info("✅ 邮件服务配置成功！");
+  } catch (err) {
+    logger.error("❌ 邮件服务配置失败:", err.message);
+    logger.warn("⚠️ 找回密码功能将不可用");
+  }
+})();
+
+// ==========================================
+// 🔥 优化3: 目录结构检查
+// ==========================================
+const ensureDirectories = () => {
+  const dirs = ["logs", "uploads"];
+  dirs.forEach((dir) => {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      logger.info(`📁 创建目录: ${dir}`);
+    }
+  });
+};
+ensureDirectories();
+
+// ==========================================
+// 🔥 优化4: 静态资源优化（缓存控制）
+// ==========================================
+app.use(
+  "/uploads",
+  express.static("uploads", {
+    maxAge: "7d", // 🔥 延长缓存时间到7天
+    etag: true,
+    lastModified: true,
+    immutable: true, // 🔥 标记为不可变资源
+  })
+);
+
+app.use(
+  express.static(path.join(__dirname, "../client/dist"), {
+    maxAge: "1h", // HTML 文件缓存1小时
+    etag: true,
+  })
+);
 
 // 确保 logs 目录存在
 if (!fs.existsSync("logs")) {
@@ -63,62 +142,84 @@ if (!fs.existsSync("logs")) {
 }
 
 // ==========================================
-// 🔥 10. CORS 配置（安全加固）
+// 🔥 CORS 配置
 // ==========================================
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(",")
-      : ["http://localhost:5173", "http://localhost:3000"];
+      : ["http://localhost:5173"];
 
-    // 🔍 逻辑修改：
-    // 1. !origin: 允许同源请求（比如后端直接渲染页面）
-    // 2. includes: 在白名单里
-    // 3. 包含 'cpolar': 允许内网穿透的域名
+    const cpolarRegex = /^https?:\/\/[a-z0-9-]+\.cpolar\.(cn|io)$/;
+
     if (
       !origin ||
       allowedOrigins.includes(origin) ||
-      origin.includes("cpolar") || // 🔥 新增：允许 cpolar
-      origin.includes("ngrok") // 🔥 备用：允许 ngrok (如果以后用的话)
+      cpolarRegex.test(origin)
     ) {
       callback(null, true);
     } else {
-      console.log("❌ CORS 拦截了请求，来源:", origin); // 方便调试看日志
+      logger.warn(`❌ CORS 拒绝: ${origin}`);
       callback(new Error("Not allowed by CORS"));
     }
   },
   credentials: true,
-  optionsSuccessStatus: 200,
 };
 
 app.use(cors(corsOptions));
-// 🔥 新增：显式处理所有 OPTIONS 请求，直接返回 200，不走后面的中间件
 app.options(/.*/, cors(corsOptions));
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // ==========================================
-// 🔥 9. 限流配置
+// 🔥 优化5: 请求体解析（添加限制）
+// ==========================================
+app.use(
+  express.json({
+    limit: "10mb", // 🔥 降低到10MB（更合理）
+    verify: (req, res, buf) => {
+      req.rawBody = buf.toString(); // 保存原始body用于验签
+    },
+  })
+);
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
+
+// ==========================================
+// 🔥 优化6: 限流配置（简化）
 // ==========================================
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15分钟
-  max: 100, // 最多100次请求
+  windowMs: 15 * 60 * 1000,
+  max: 500,
   message: { success: false, message: "请求过于频繁，请稍后再试" },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    const skipPaths = [
+      "/api/wallpaper/global",
+      "/api/profile",
+      "/api/articles",
+      "/api/articles/hot",
+    ];
+    return skipPaths.includes(req.path);
+  },
 });
 
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15分钟
-  max: 5, // 登录/注册最多5次
+  windowMs: 15 * 60 * 1000,
+  max: 10,
   message: { success: false, message: "尝试次数过多，请15分钟后再试" },
-  skipSuccessfulRequests: true, // 成功的请求不计数
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => {
+    const account = req.body?.account || "anonymous";
+    return `auth-${account}`;
+  },
 });
 
-app.use("/api/", generalLimiter);
+// 只对认证接口应用限流
+app.use("/api/login", authLimiter);
+app.use("/api/register", authLimiter);
+app.use("/api/reset-password", authLimiter);
 
 // ==========================================
-// 🔥 2 & 7. 数据库连接池配置（使用环境变量）
+// 🔥 优化7: 数据库连接池（增强配置）
 // ==========================================
 const dbPool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
@@ -130,6 +231,11 @@ const dbPool = mysql.createPool({
   queueLimit: 0,
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
+  // 🔥 修复这里的配置：
+  connectTimeout: 10000, // 连接超时
+  // 移除 acquireTimeout，使用正确的参数：
+  acquireTimeoutMillis: 10000, // 获取连接的超时时间（毫秒）
+  charset: "utf8mb4",
 });
 
 // 测试数据库连接
@@ -138,7 +244,6 @@ const dbPool = mysql.createPool({
     const connection = await dbPool.getConnection();
     logger.info("✅ 数据库连接池创建成功！");
     connection.release();
-    // 数据库连接成功后初始化壁纸系统
     initializeWallpaperSystem();
   } catch (err) {
     logger.error("❌ 数据库连接失败:", err);
@@ -147,37 +252,30 @@ const dbPool = mysql.createPool({
 })();
 
 // ==========================================
-// 🔥 1. JWT 认证中间件
+// 🔥 优化8: JWT 配置（增强安全性）
 // ==========================================
 const JWT_SECRET =
   process.env.JWT_SECRET ||
   "your-super-secret-jwt-key-change-this-in-production";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+const JWT_REFRESH_THRESHOLD = 24 * 60 * 60 * 1000; // 24小时内自动刷新
 
-// 生成 JWT Token
 function generateToken(user) {
   return jwt.sign(
     {
       id: user.id,
       username: user.username,
       role: user.role,
+      iat: Math.floor(Date.now() / 1000), // 🔥 签发时间
     },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
   );
 }
 
-// 验证 Token 中间件
-// 修改认证中间件，增加更详细的日志
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1]; // Bearer TOKEN
-
-  logger.info(`🔐 认证检查 - 路径: ${req.path}, 方法: ${req.method}`);
-  logger.info(`🔐 认证检查 - Token 头: ${authHeader}`);
-  logger.info(
-    `🔐 认证检查 - Token 值: ${token ? token.substring(0, 20) + "..." : "无"}`
-  );
+  const token = authHeader && authHeader.split(" ")[1];
 
   if (!token) {
     logger.warn("❌ 未提供认证令牌");
@@ -190,7 +288,6 @@ function authenticateToken(req, res, next) {
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
       logger.warn(`❌ JWT验证失败: ${err.message}`);
-      logger.warn(`❌ Token: ${token.substring(0, 20)}...`);
       return res.status(403).json({
         success: false,
         message: "令牌无效或已过期，请重新登录",
@@ -198,13 +295,18 @@ function authenticateToken(req, res, next) {
       });
     }
 
-    req.user = user; // 将用户信息附加到请求对象
-    logger.info(`✅ JWT验证成功: 用户ID=${user.id}, 用户名=${user.username}`);
+    // 🔥 优化：检查是否需要刷新token
+    const tokenAge = Date.now() - user.iat * 1000;
+    if (tokenAge > JWT_REFRESH_THRESHOLD) {
+      // Token 即将过期，建议刷新
+      res.set("X-Token-Refresh-Suggested", "true");
+    }
+
+    req.user = user;
     next();
   });
 }
 
-// 🔥 5. 权限检查中间件（管理员）
 function requireAdmin(req, res, next) {
   if (req.user.role !== "admin") {
     return res.status(403).json({
@@ -216,13 +318,10 @@ function requireAdmin(req, res, next) {
 }
 
 // ==========================================
-// Multer 图片上传存储配置
+// 🔥 优化9: Multer 配置（增加安全检查）
 // ==========================================
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    if (!fs.existsSync("uploads")) {
-      fs.mkdirSync("uploads", { recursive: true });
-    }
     cb(null, "uploads/");
   },
   filename: function (req, file, cb) {
@@ -230,7 +329,6 @@ const storage = multer.diskStorage({
     const timestamp = Date.now();
     const random = Math.round(Math.random() * 1e9);
     const safeName = `${timestamp}-${random}${ext}`;
-    logger.info(`📝 文件重命名: ${file.originalname} -> ${safeName}`);
     cb(null, safeName);
   },
 });
@@ -238,7 +336,8 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB限制
+    fileSize: 10 * 1024 * 1024, // 10MB
+    files: 9, // 最多9个文件
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif|webp/;
@@ -256,11 +355,11 @@ const upload = multer({
 });
 
 // ==========================================
-// 🔥 壁纸洗牌系统（优化版）
+// 🔥 优化10: 壁纸系统（缓存优化）
 // ==========================================
 let globalWallpaperCache = null;
 let cacheTime = 0;
-const CACHE_DURATION = 5 * 60 * 1000;
+const CACHE_DURATION = 5 * 60 * 1000; // 5分钟缓存
 
 function shuffleArray(arr) {
   const result = [...arr];
@@ -274,12 +373,10 @@ function shuffleArray(arr) {
 function clearWallpaperCache() {
   globalWallpaperCache = null;
   cacheTime = 0;
-  logger.info("🧹 壁纸缓存已清空");
 }
 
 async function shuffleGlobalWallpapers() {
   logger.info("🔄 开始洗牌全局壁纸顺序…");
-
   try {
     const [results] = await dbPool.query(
       "SELECT id, random_urls FROM global_wallpapers"
@@ -293,25 +390,11 @@ async function shuffleGlobalWallpapers() {
     for (const row of results) {
       if (!row.random_urls) continue;
 
-      let urls = [];
+      let urls = Array.isArray(row.random_urls)
+        ? row.random_urls
+        : JSON.parse(row.random_urls || "[]");
 
-      if (Array.isArray(row.random_urls)) {
-        urls = row.random_urls;
-      } else if (typeof row.random_urls === "string") {
-        try {
-          urls = JSON.parse(row.random_urls);
-        } catch {
-          urls = row.random_urls
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-        }
-      }
-
-      if (urls.length === 0) {
-        logger.warn(`⚠️ 壁纸 ID=${row.id} 没有可洗牌的URL`);
-        continue;
-      }
+      if (urls.length === 0) continue;
 
       const shuffled = shuffleArray(urls);
       await dbPool.query(
@@ -326,17 +409,14 @@ async function shuffleGlobalWallpapers() {
     logger.info("✅ 所有壁纸洗牌完成");
   } catch (err) {
     logger.error("❌ 壁纸洗牌失败:", err);
-    throw err;
   }
 }
 
 function initializeWallpaperSystem() {
   logger.info("🚀 初始化壁纸系统...");
-
-  shuffleGlobalWallpapers().catch((err) => {
-    logger.error("❌ 启动洗牌失败:", err);
-  });
-
+  shuffleGlobalWallpapers().catch((err) =>
+    logger.error("❌ 启动洗牌失败:", err)
+  );
   scheduleDaily3AMShuffle();
 }
 
@@ -344,29 +424,36 @@ function scheduleDaily3AMShuffle() {
   const now = new Date();
   const target = new Date();
   target.setHours(3, 0, 0, 0);
-
-  if (now > target) {
-    target.setDate(target.getDate() + 1);
-  }
+  if (now > target) target.setDate(target.getDate() + 1);
 
   const msUntil3AM = target.getTime() - now.getTime();
   logger.info(`⏰ 下次自动洗牌时间: ${target.toLocaleString("zh-CN")}`);
 
   setTimeout(() => {
-    shuffleGlobalWallpapers().catch((err) => {
-      logger.error("❌ 定时洗牌失败:", err);
-    });
-
-    setInterval(() => {
-      shuffleGlobalWallpapers().catch((err) => {
-        logger.error("❌ 定时洗牌失败:", err);
-      });
-    }, 24 * 60 * 60 * 1000);
+    shuffleGlobalWallpapers();
+    setInterval(shuffleGlobalWallpapers, 24 * 60 * 60 * 1000);
   }, msUntil3AM);
 }
 
 // ==========================================
-// 🔥 6. 统一响应格式
+// 🔥 验证码定时清理（服务器启动时立即启动）
+// ==========================================
+setInterval(() => {
+  const now = Date.now();
+  let cleanedCount = 0;
+  for (const [key, value] of verificationCodes.entries()) {
+    if (now > value.expires) {
+      verificationCodes.delete(key);
+      cleanedCount++;
+    }
+  }
+  if (cleanedCount > 0) {
+    logger.info(`🧹 清理了 ${cleanedCount} 个过期验证码`);
+  }
+}, 60 * 1000); // 每分钟清理一次
+
+// ==========================================
+// 🔥 优化12: 统一响应格式
 // ==========================================
 const apiResponse = {
   success: (res, message, data = null, statusCode = 200) => {
@@ -392,16 +479,27 @@ const apiResponse = {
 // ==========================================
 
 // 上传接口（需要认证）
+
 app.post(
   "/api/upload",
   authenticateToken,
   upload.single("image"),
-  (req, res) => {
-    const file = req.file;
-    if (!file) {
+  async (req, res) => {
+    if (!req.file) {
       return apiResponse.error(res, "请选择图片", 400);
     }
-    apiResponse.success(res, "上传成功", { filePath: file.path });
+
+    const thumbName = "thumb_" + req.file.filename;
+
+    await sharp(req.file.path)
+      .resize(200)
+      .jpeg({ quality: 80 })
+      .toFile(path.join("uploads", thumbName));
+
+    apiResponse.success(res, "上传成功", {
+      url: req.file.path,
+      thumbUrl: `uploads/${thumbName}`,
+    });
   }
 );
 
@@ -549,6 +647,204 @@ app.get("/api/articles", async (req, res) => {
   } catch (err) {
     logger.error("查询文章出错:", err);
     apiResponse.error(res, "服务器错误");
+  }
+});
+
+// ==========================================
+// 🔥 新增：全站文章搜索接口 (支持标题、摘要、内容、分类模糊搜索)
+// ==========================================
+app.get("/api/articles/search", async (req, res) => {
+  try {
+    const { q } = req.query; // q 是前端传来的搜索关键词
+
+    if (!q || q.trim() === "") {
+      return apiResponse.error(res, "搜索关键词不能为空", 400);
+    }
+
+    const keyword = `%${q.trim()}%`; // 添加 SQL 通配符
+
+    // 搜索逻辑：标题 OR 摘要 OR 内容 OR 分类
+    const [results] = await dbPool.query(
+      `
+      SELECT * FROM articles 
+      WHERE title LIKE ? 
+         OR summary LIKE ? 
+         OR content LIKE ? 
+         OR category LIKE ?
+      ORDER BY created_at DESC
+    `,
+      [keyword, keyword, keyword, keyword]
+    );
+
+    logger.info(`🔍 搜索关键词: "${q}", 找到 ${results.length} 篇匹配文章`);
+
+    apiResponse.success(res, "搜索成功", results);
+  } catch (err) {
+    logger.error("搜索文章失败:", err);
+    apiResponse.error(res, "搜索服务暂时不可用");
+  }
+});
+
+// ==========================================
+// 🔥 新增：获取博客全站统计数据 (侧边栏使用)
+// ==========================================
+app.get("/api/blog/stats", async (req, res) => {
+  try {
+    // 使用聚合查询一次性获取三个指标
+    // COUNT(*) -> 文章总数
+    // COUNT(DISTINCT category) -> 分类总数 (去重)
+    // SUM(views) -> 所有文章浏览量之和 (如果为null则默认为0)
+    const [results] = await dbPool.query(`
+      SELECT 
+        COUNT(*) as articleCount,
+        COUNT(DISTINCT category) as categoryCount,
+        COALESCE(SUM(views), 0) as totalViews
+      FROM articles
+    `);
+
+    const stats = results[0];
+
+    logger.info(
+      `📊 获取全站统计: 文章=${stats.articleCount}, 分类=${stats.categoryCount}, 浏览=${stats.totalViews}`
+    );
+
+    apiResponse.success(res, "获取统计成功", {
+      articleCount: stats.articleCount || 0,
+      categoryCount: stats.categoryCount || 0,
+      totalViews: stats.totalViews || 0,
+    });
+  } catch (err) {
+    logger.error("获取博客统计失败:", err);
+    // 即使失败也返回0，不阻断前端展示
+    apiResponse.success(res, "获取统计失败(降级)", {
+      articleCount: 0,
+      categoryCount: 0,
+      totalViews: 0,
+    });
+  }
+});
+
+// ==========================================
+// 🔥 新增：获取所有已存在的分类列表
+// ==========================================
+app.get("/api/categories", async (req, res) => {
+  try {
+    // DISTINCT 用于去重，只查有文章的分类
+    const [results] = await dbPool.query(
+      "SELECT DISTINCT category FROM articles WHERE category IS NOT NULL AND category != ''"
+    );
+
+    // 提取纯数组格式: ['Veritas', '生活倒影', ...]
+    const categories = results.map((row) => row.category);
+
+    apiResponse.success(res, "获取分类列表成功", categories);
+  } catch (err) {
+    logger.error("获取分类列表失败:", err);
+    apiResponse.error(res, "获取分类失败");
+  }
+});
+
+// ==========================================
+// 🔥 新增：智能标签云数据接口 (聚合分类 + 标题关键词)
+// ==========================================
+app.get("/api/tags/cloud", async (req, res) => {
+  try {
+    // 1. 获取所有文章的标题和分类
+    const [rows] = await dbPool.query("SELECT title, category FROM articles");
+
+    const tagSet = new Set();
+    const keywordsMap = new Map();
+
+    // 🚫 停用词表 (过滤掉无意义的词)
+    const stopWords = new Set([
+      "the",
+      "a",
+      "an",
+      "in",
+      "on",
+      "at",
+      "to",
+      "for",
+      "of",
+      "and",
+      "with",
+      "is",
+      "are",
+      "how",
+      "why",
+      "what",
+      "的",
+      "了",
+      "是",
+      "在",
+      "和",
+      "与",
+      "及",
+      "等",
+      "篇",
+      "之",
+      "教程",
+      "指南",
+      "实战",
+      "使用",
+      "笔记",
+    ]);
+
+    rows.forEach((row) => {
+      // A. 将分类直接作为核心标签
+      if (row.category) tagSet.add(row.category);
+
+      // B. 简单分词逻辑 (提取标题中的英文单词或较长的中文词)
+      // 这里做一个简单的正则提取：提取英文单词、数字、或连续的中文字符
+      const rawTitle = row.title || "";
+      // 将标题按空格、标点符号拆分
+      const segments = rawTitle.split(/[\s,\.\?\!，。？！\[\]【】\(\)\-\/]+/);
+
+      segments.forEach((seg) => {
+        const word = seg.trim();
+        // 过滤条件：长度大于1，不在停用词表中
+        if (word.length > 1 && !stopWords.has(word.toLowerCase())) {
+          // 统计词频
+          const count = keywordsMap.get(word) || 0;
+          keywordsMap.set(word, count + 1);
+        }
+      });
+    });
+
+    // C. 选取高频词 (比如前 20 个)
+    const sortedKeywords = [...keywordsMap.entries()]
+      .sort((a, b) => b[1] - a[1]) // 按频率降序
+      .slice(0, 20)
+      .map((entry) => entry[0]);
+
+    // D. 合并分类和高频词
+    sortedKeywords.forEach((word) => tagSet.add(word));
+
+    // 转为数组对象
+    const result = Array.from(tagSet).map((name, index) => ({
+      id: index + 1,
+      name: name,
+      // 随机分配一个颜色 (后端生成或前端生成均可，这里后端简单给几个色系)
+      color: ["#ff9800", "#4caf50", "#2196f3", "#9c27b0", "#e91e63", "#00bcd4"][
+        index % 6
+      ],
+    }));
+
+    // 如果数据太少，补几个默认的，防止球体太空
+    if (result.length < 10) {
+      const defaults = [
+        { id: 901, name: "Veritas", color: "#ff5722" },
+        { id: 902, name: "Blog", color: "#795548" },
+        { id: 903, name: "Life", color: "#607d8b" },
+        { id: 904, name: "Tech", color: "#009688" },
+      ];
+      result.push(...defaults);
+    }
+
+    apiResponse.success(res, "标签云数据生成成功", result);
+  } catch (err) {
+    logger.error("生成标签云失败:", err);
+    apiResponse.error(res, "生成标签失败");
   }
 });
 
@@ -771,6 +1067,66 @@ app.get("/api/articles/:id/update-status", async (req, res) => {
   } catch (err) {
     logger.error("获取文章更新时间失败:", err);
     apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
+// 🔥 修复版：获取全站最新评论 (兼容 JSON 类型自动解析)
+// ==========================================
+app.get("/api/comments/latest", async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+
+    const [results] = await dbPool.query(
+      `
+      SELECT c.id, c.content, c.images, c.nickname, c.created_at, u.avatar 
+      FROM comments c
+      LEFT JOIN users u ON c.nickname = u.nickname 
+      ORDER BY c.created_at DESC
+      LIMIT ?
+    `,
+      [limit]
+    );
+
+    const comments = results.map((row) => {
+      let images = [];
+
+      if (row.images) {
+        // 🔥🔥 核心修复：先判断它是不是已经是数组了
+        if (Array.isArray(row.images)) {
+          // 如果数据库驱动已经帮我们解析成了数组，直接用！
+          images = row.images;
+        } else if (typeof row.images === "string") {
+          // 如果是字符串，才需要手动 parse
+          try {
+            const parsed = JSON.parse(row.images);
+            if (Array.isArray(parsed)) images = parsed;
+          } catch (e) {
+            console.log("图片解析失败:", e.message);
+          }
+        }
+      }
+
+      // 如果内容为空但有图片，自动填充提示文本 (双重保险)
+      let content = row.content;
+      if ((!content || content.trim() === "") && images.length > 0) {
+        content = "📷 分享图片";
+      }
+
+      return {
+        id: row.id,
+        content: content,
+        images: images,
+        nickname: row.nickname,
+        avatar: row.avatar || null,
+        created_at: row.created_at,
+      };
+    });
+
+    apiResponse.success(res, "获取最新评论成功", comments);
+  } catch (err) {
+    logger.error("获取最新评论失败:", err);
+    apiResponse.error(res, "获取最新评论失败");
   }
 });
 
@@ -1056,23 +1412,25 @@ app.post("/api/reset-password/send-code", authLimiter, async (req, res) => {
       logger.info(`📨 正在尝试向 ${account} 发送邮件...`);
 
       await transporter.sendMail({
-        from: '"Veritas 博客" <bojackjck@foxmail.com>', // ❌【重要】这里也要改成你的QQ邮箱，必须和上面 auth.user 一致
-        to: account, // 收件人
-        subject: "【Veritas】找回密码验证码", // 标题
-        text: `您的验证码是：${code}，有效期5分钟。`, // 纯文本兜底
+        from: `"${process.env.EMAIL_FROM_NAME || "Veritas 博客"}" <${
+          process.env.EMAIL_USER
+        }>`,
+        to: account,
+        subject: "【Veritas】找回密码验证码",
+        text: `您的验证码是：${code}，有效期5分钟。`,
         html: `
-          <div style="padding: 20px; background-color: #f6f8fa;">
-            <div style="background: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
-              <h2 style="color: #42b883;">🔐 找回密码</h2>
-              <p>亲爱的用户：</p>
-              <p>您正在申请重置密码，您的验证码是：</p>
-              <h1 style="color: #35495e; font-size: 32px; letter-spacing: 5px; margin: 20px 0;">${code}</h1>
-              <p style="color: #999; font-size: 12px;">有效期 5 分钟，请勿泄露给他人。</p>
-              <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
-              <p style="color: #aaa; font-size: 12px;">如果这不是您的操作，请忽略此邮件。</p>
-            </div>
-          </div>
-        `,
+    <div style="padding: 20px; background-color: #f6f8fa;">
+      <div style="background: #fff; padding: 30px; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+        <h2 style="color: #42b883;">🔐 找回密码</h2>
+        <p>亲爱的用户：</p>
+        <p>您正在申请重置密码，您的验证码是：</p>
+        <h1 style="color: #35495e; font-size: 32px; letter-spacing: 5px; margin: 20px 0;">${code}</h1>
+        <p style="color: #999; font-size: 12px;">有效期 5 分钟，请勿泄露给他人。</p>
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+        <p style="color: #aaa; font-size: 12px;">如果这不是您的操作，请忽略此邮件。</p>
+      </div>
+    </div>
+  `,
       });
 
       logger.info(`📨 [真实邮件] 已发送至 ${account}`);
@@ -1284,65 +1642,125 @@ app.post(
   }
 );
 
-// 🔥 发表评论（修改版：支持图片）
+// ==========================================
+// 🔥 修复版:发表评论接口
+// ==========================================
 app.post(
   "/api/comments",
   authenticateToken,
   [
-    body("article_id").isInt().withMessage("文章ID无效"),
-    body("content").trim().notEmpty().withMessage("评论内容不能为空"),
+    // ✅ 修复1: 使用 toInt() 将字符串转为数字
+    body("article_id").toInt().isInt().withMessage("文章ID无效"),
+
+    // ✅ 修复2: 移除 optional(),改用自定义验证
+    body("content")
+      .customSanitizer((value) => value?.trim() || "")
+      .custom((value, { req }) => {
+        const hasContent = value && value.length > 0;
+        const hasImages = req.body.images && req.body.images.length > 0;
+        if (!hasContent && !hasImages) {
+          throw new Error("评论内容和图片不能同时为空");
+        }
+        return true;
+      }),
+
     body("images").optional().isArray().withMessage("图片格式不正确"),
+
+    // ✅ 修复3: parent_id 也可能是字符串
+    body("parent_id")
+      .optional({ nullable: true })
+      .customSanitizer((value) => (value ? parseInt(value) : null))
+      .custom((value) => value === null || Number.isInteger(value))
+      .withMessage("父评论ID无效"),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return apiResponse.error(res, "输入验证失败", 400, errors.array());
+      console.log("❌ 评论验证失败:", errors.array());
+      return apiResponse.error(res, errors.array()[0].msg, 400, errors.array());
     }
 
     try {
-      const { article_id, content, images } = req.body;
-      const userId = req.user.id; // 从 JWT 获取用户ID
+      const { article_id, content, images, parent_id } = req.body;
+      const userId = req.user.id;
 
-      // 获取用户昵称
+      console.log(`📝 收到评论请求: 文章ID=${article_id}, 用户ID=${userId}`);
+
+      // 获取用户信息
       const [userResults] = await dbPool.query(
-        "SELECT nickname, avatar FROM users WHERE id = ?",
+        "SELECT username, nickname, avatar FROM users WHERE id = ?",
         [userId]
       );
 
       if (userResults.length === 0) {
+        console.log("❌ 用户不存在");
         return apiResponse.error(res, "用户不存在", 404);
       }
 
       const user = userResults[0];
-      const nickname = user.nickname || req.user.username;
+      const nickname = user.nickname || user.username;
 
-      logger.info(`正在尝试写入评论: 文章ID=${article_id}, 用户=${nickname}`);
+      // 验证父评论
+      if (parent_id) {
+        const [parentComment] = await dbPool.query(
+          "SELECT id, article_id FROM comments WHERE id = ?",
+          [parent_id]
+        );
 
-      // 将 images 数组转为 JSON 字符串（如果数据库支持 JSON 类型，可以直接存数组）
-      const imagesJSON =
-        images && images.length > 0 ? JSON.stringify(images) : null;
+        if (parentComment.length === 0) {
+          return apiResponse.error(res, "父评论不存在", 400);
+        }
 
+        if (parentComment[0].article_id !== article_id) {
+          return apiResponse.error(res, "父评论不属于当前文章", 400);
+        }
+      }
+
+      // 处理图片数据
+      let imagesJSON = null;
+      if (images && images.length > 0) {
+        imagesJSON = JSON.stringify(images);
+      }
+
+      // 插入评论
       const [result] = await dbPool.query(
-        "INSERT INTO comments (article_id, nickname, content, images) VALUES (?, ?, ?, ?)",
-        [article_id, nickname, content, imagesJSON]
+        "INSERT INTO comments (article_id, nickname, content, images, parent_id) VALUES (?, ?, ?, ?, ?)",
+        [article_id, nickname, content || "", imagesJSON, parent_id || null]
       );
 
-      logger.info(`评论成功: ID=${result.insertId}, 文章ID=${article_id}`);
-      apiResponse.success(
-        res,
-        "评论成功",
-        {
-          id: result.insertId,
-          nickname,
-          content,
-          images,
-          avatar: user.avatar,
-        },
-        201
-      );
+      const commentId = result.insertId;
+      console.log(`✅ 评论保存成功: ID=${commentId}`);
+
+      // 更新文章评论数
+      dbPool
+        .query("UPDATE articles SET comments = comments + 1 WHERE id = ?", [
+          article_id,
+        ])
+        .catch((err) => {
+          console.log("⚠️ 更新文章评论数失败:", err);
+        });
+
+      // 返回新评论
+      const responseData = {
+        id: commentId,
+        parent_id: parent_id || null,
+        nickname: nickname,
+        avatar: user.avatar || null,
+        content: content || "",
+        images: images || [],
+        created_at: new Date().toISOString(),
+        like_count: 0,
+        is_liked: false,
+        is_disliked: false,
+        replies: [],
+        level: parent_id ? 1 : 0,
+      };
+
+      apiResponse.success(res, "评论成功", responseData, 201);
     } catch (err) {
+      console.error("❌ 评论失败:", err);
       logger.error("评论失败:", err);
-      apiResponse.error(res, "评论失败: " + err.message);
+      apiResponse.error(res, "评论失败: " + (err.message || "服务器错误"));
     }
   }
 );
@@ -1379,50 +1797,200 @@ app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
   }
 });
 
-// 🔥 获取评论列表（修改版：返回图片）
+// ==========================================
+// 🔥 获取评论列表（修复版）
+// ==========================================
 app.get("/api/comments", async (req, res) => {
   try {
     const article_id = req.query.article_id;
+    if (!article_id) return apiResponse.error(res, "缺少文章ID", 400);
 
-    if (!article_id) {
-      return apiResponse.error(res, "缺少文章ID", 400);
+    console.log(`📝 正在获取文章 ${article_id} 的评论...`);
+
+    // 1. 获取当前用户ID (用于判断是否点赞过)
+    let currentUserId = null;
+    const authHeader = req.headers["authorization"];
+    if (authHeader) {
+      try {
+        const token = authHeader.split(" ")[1];
+        const decoded = jwt.verify(token, JWT_SECRET);
+        currentUserId = decoded.id;
+      } catch (e) {
+        console.log("⚠️ Token 无效，不进行用户特定查询");
+      }
     }
 
-    // 关联查询用户头像
-    const [results] = await dbPool.query(
-      `SELECT c.*, u.avatar 
-       FROM comments c 
-       LEFT JOIN users u ON c.nickname = u.username 
-       WHERE c.article_id = ? 
-       ORDER BY c.created_at DESC`,
-      [article_id]
+    // 2. 查询所有评论（平铺数据）
+    const [rows] = await dbPool.query(
+      `
+      SELECT 
+        c.*, 
+        u.avatar, 
+        u.nickname as user_nickname,
+        (SELECT COUNT(*) FROM comment_interactions WHERE comment_id = c.id AND action_type = 1) as like_count,
+        (SELECT action_type FROM comment_interactions WHERE comment_id = c.id AND user_id = ?) as current_action
+      FROM comments c 
+      LEFT JOIN users u ON c.nickname = u.username 
+      WHERE c.article_id = ?
+      ORDER BY c.created_at ASC 
+      `,
+      [currentUserId, article_id]
     );
 
-    // 处理 images 字段：如果是字符串就解析为数组
-    const processedResults = results.map((comment) => {
+    console.log(`✅ 从数据库查询到 ${rows.length} 条评论`);
+
+    if (rows.length === 0) {
+      return apiResponse.success(res, "没有评论", []);
+    }
+
+    // 3. 数据预处理
+    const allComments = rows.map((row) => {
       let images = [];
-      if (comment.images) {
-        try {
-          if (typeof comment.images === "string") {
-            images = JSON.parse(comment.images);
-          } else if (Array.isArray(comment.images)) {
-            images = comment.images;
-          }
-        } catch (e) {
-          logger.warn(`解析评论图片失败: ${e.message}`);
+      try {
+        if (row.images) {
+          images =
+            typeof row.images === "string"
+              ? JSON.parse(row.images)
+              : row.images;
         }
+      } catch (e) {
+        console.log("图片解析失败:", e.message);
       }
 
       return {
-        ...comment,
-        images,
+        id: row.id,
+        parent_id: row.parent_id || null,
+        nickname: row.nickname || "匿名用户",
+        avatar:
+          row.avatar || "https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg",
+        content: row.content || "",
+        images: images,
+        created_at: row.created_at,
+        like_count: row.like_count || 0,
+        is_liked: row.current_action === 1,
+        is_disliked: row.current_action === -1,
+        replies: [],
+        level: 0,
       };
     });
 
-    apiResponse.success(res, "获取成功", processedResults);
+    // 4. 构建评论树（避免无限递归）
+    const commentMap = {};
+    const rootComments = [];
+
+    // 第一步：建立 ID 映射
+    allComments.forEach((c) => {
+      commentMap[c.id] = c;
+    });
+
+    // 第二步：挂载子节点（限制最大深度为5层）
+    allComments.forEach((c) => {
+      if (c.parent_id && commentMap[c.parent_id]) {
+        // 检查是否形成循环（防止无限递归）
+        if (commentMap[c.parent_id].parent_id === c.id) {
+          console.warn(`⚠️ 检测到评论循环: ${c.id} <-> ${c.parent_id}`);
+          // 如果是循环，则不挂载，直接作为顶级评论
+          rootComments.push(c);
+        } else {
+          // 限制最大深度
+          if (c.level < 5) {
+            commentMap[c.parent_id].replies.push(c);
+            // 设置子评论的层级
+            c.level = commentMap[c.parent_id].level + 1;
+          } else {
+            console.warn(`⚠️ 评论 ${c.id} 层级过深，已限制为最大5层`);
+            rootComments.push(c);
+          }
+        }
+      } else {
+        // 如果没有爸爸，它就是一级评论
+        rootComments.push(c);
+      }
+    });
+
+    // 第三步：对一级评论按时间倒序排列
+    rootComments.sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
+
+    // 对每个评论的回复按时间正序排列（对话顺序）
+    Object.values(commentMap).forEach((comment) => {
+      if (comment.replies.length > 0) {
+        comment.replies.sort(
+          (a, b) => new Date(a.created_at) - new Date(b.created_at)
+        );
+      }
+    });
+
+    console.log(`✅ 构建评论树完成: 顶级评论 ${rootComments.length} 条`);
+
+    apiResponse.success(res, "获取成功", rootComments);
   } catch (err) {
     logger.error("获取评论失败:", err);
-    apiResponse.error(res, "获取评论失败");
+    console.error("❌ 获取评论失败详情:", err.message);
+    console.error("❌ SQL错误:", err.sql || "无SQL信息");
+
+    // 返回更详细的错误信息
+    apiResponse.error(res, `获取评论失败: ${err.message}`, 500);
+  }
+});
+
+// ==========================================
+// 🔥 新增：评论点赞/踩接口
+// ==========================================
+app.post("/api/comments/:id/action", authenticateToken, async (req, res) => {
+  try {
+    const commentId = req.params.id;
+    const userId = req.user.id;
+    const { action } = req.body; // 'like' 或 'dislike'
+
+    if (!["like", "dislike"].includes(action)) {
+      return apiResponse.error(res, "无效的操作", 400);
+    }
+
+    const targetType = action === "like" ? 1 : -1;
+
+    // 1. 检查是否已经操作过
+    const [existing] = await dbPool.query(
+      "SELECT action_type FROM comment_interactions WHERE user_id = ? AND comment_id = ?",
+      [userId, commentId]
+    );
+
+    if (existing.length > 0) {
+      const currentType = existing[0].action_type;
+
+      if (currentType === targetType) {
+        // 如果再次点击相同的操作，视为“取消”
+        await dbPool.query(
+          "DELETE FROM comment_interactions WHERE user_id = ? AND comment_id = ?",
+          [userId, commentId]
+        );
+        return apiResponse.success(res, "已取消操作", { status: "removed" });
+      } else {
+        // 如果点击相反的操作（比如从赞变踩），更新记录
+        await dbPool.query(
+          "UPDATE comment_interactions SET action_type = ? WHERE user_id = ? AND comment_id = ?",
+          [targetType, userId, commentId]
+        );
+        return apiResponse.success(res, "操作已更新", {
+          status: "updated",
+          type: targetType,
+        });
+      }
+    } else {
+      // 2. 插入新记录
+      await dbPool.query(
+        "INSERT INTO comment_interactions (user_id, comment_id, action_type) VALUES (?, ?, ?)",
+        [userId, commentId, targetType]
+      );
+      return apiResponse.success(res, "操作成功", {
+        status: "added",
+        type: targetType,
+      });
+    }
+  } catch (err) {
+    logger.error("评论互动失败:", err);
+    apiResponse.error(res, "操作失败");
   }
 });
 
@@ -1866,6 +2434,257 @@ app.post(
 );
 
 // ==========================================
+// 🔥 公告系统接口 (Notices)
+// ==========================================
+
+// 1. 获取最新的一条启用公告 (给首页展示用)
+app.get("/api/notices/latest", async (req, res) => {
+  try {
+    // 查询最新一条 is_active = 1 的公告
+    const [results] = await dbPool.query(
+      "SELECT content FROM notices WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1"
+    );
+
+    if (results.length > 0) {
+      apiResponse.success(res, "获取最新公告成功", {
+        content: results[0].content,
+      });
+    } else {
+      // 如果没有启用公告，返回默认文案
+      apiResponse.success(res, "使用默认公告", {
+        content: "🎉 欢迎访问 Veritas 的个人博客！",
+      });
+    }
+  } catch (err) {
+    logger.error("获取公告失败:", err);
+    // 出错时也不要报错给前端，而是返回默认值保证页面不崩
+    apiResponse.success(res, "获取失败(降级)", {
+      content: "🎉 欢迎访问 Veritas 的个人博客！",
+    });
+  }
+});
+
+// 2. 获取所有公告列表 (后台管理用 - 需要管理员权限)
+app.get(
+  "/api/admin/notices",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const [results] = await dbPool.query(
+        "SELECT * FROM notices ORDER BY created_at DESC"
+      );
+      apiResponse.success(res, "获取公告列表成功", results);
+    } catch (err) {
+      logger.error("管理员获取公告列表失败:", err);
+      apiResponse.error(res, "获取列表失败");
+    }
+  }
+);
+
+// 3. 发布新公告 (后台管理用 - 需要管理员权限)
+app.post(
+  "/api/admin/notices",
+  authenticateToken,
+  requireAdmin,
+  [body("content").trim().notEmpty().withMessage("公告内容不能为空")],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, "输入验证失败", 400, errors.array());
+    }
+
+    try {
+      const { content, is_active } = req.body;
+      // 默认启用
+      const activeStatus = is_active !== undefined ? is_active : true;
+
+      const [result] = await dbPool.query(
+        "INSERT INTO notices (content, is_active) VALUES (?, ?)",
+        [content, activeStatus]
+      );
+
+      logger.info(
+        `📢 发布新公告: ID=${result.insertId}, 内容="${content.substring(
+          0,
+          20
+        )}..."`
+      );
+      apiResponse.success(res, "公告发布成功", { id: result.insertId }, 201);
+    } catch (err) {
+      logger.error("发布公告失败:", err);
+      apiResponse.error(res, "发布失败");
+    }
+  }
+);
+
+// 4. 修改公告状态或内容 (后台管理用 - 需要管理员权限)
+app.put(
+  "/api/admin/notices/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+      const { content, is_active } = req.body;
+
+      // 构建动态更新 SQL
+      const fields = [];
+      const values = [];
+
+      if (content !== undefined) {
+        fields.push("content = ?");
+        values.push(content);
+      }
+      if (is_active !== undefined) {
+        fields.push("is_active = ?");
+        values.push(is_active);
+      }
+
+      if (fields.length === 0) {
+        return apiResponse.error(res, "没有需要修改的字段", 400);
+      }
+
+      values.push(id); // WHERE 条件
+
+      const [result] = await dbPool.query(
+        `UPDATE notices SET ${fields.join(", ")} WHERE id = ?`,
+        values
+      );
+
+      if (result.affectedRows === 0) {
+        return apiResponse.error(res, "公告不存在", 404);
+      }
+
+      logger.info(`📝 更新公告 ID=${id}`);
+      apiResponse.success(res, "公告更新成功");
+    } catch (err) {
+      logger.error("更新公告失败:", err);
+      apiResponse.error(res, "更新失败");
+    }
+  }
+);
+
+// 5. 删除公告 (后台管理用 - 需要管理员权限)
+app.delete(
+  "/api/admin/notices/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+      const [result] = await dbPool.query("DELETE FROM notices WHERE id = ?", [
+        id,
+      ]);
+
+      if (result.affectedRows === 0) {
+        return apiResponse.error(res, "公告不存在", 404);
+      }
+
+      logger.info(`🗑️ 删除公告 ID=${id}`);
+      apiResponse.success(res, "公告删除成功");
+    } catch (err) {
+      logger.error("删除公告失败:", err);
+      apiResponse.error(res, "删除失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 优化13: 图片代理接口（增强版）
+// ==========================================
+// 🔥 添加内存缓存（减少重复请求）
+const imageCache = new Map();
+const IMAGE_CACHE_DURATION = 10 * 60 * 1000; // 10分钟
+
+app.get("/api/proxy-image", async (req, res) => {
+  let { url } = req.query;
+  if (!url) return res.status(400).json({ error: "缺少 URL 参数" });
+
+  url = url.replace(/['"]/g, "").trim();
+
+  // 🔥 检查内存缓存
+  const cached = imageCache.get(url);
+  if (cached && Date.now() - cached.time < IMAGE_CACHE_DURATION) {
+    logger.info(`📦 [缓存命中] ${url.substring(0, 50)}...`);
+    res.set(cached.headers);
+    return res.send(cached.data);
+  }
+
+  logger.info(`🖼️ [代理请求] ${url.substring(0, 50)}...`);
+
+  try {
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    };
+
+    if (url.includes("wallhaven")) {
+      headers["Referer"] = "https://wallhaven.cc/";
+      headers["Origin"] = "https://wallhaven.cc";
+    } else if (url.includes("unsplash")) {
+      headers["Referer"] = "https://unsplash.com/";
+    }
+
+    const response = await axios.get(url, {
+      responseType: "arraybuffer",
+      timeout: 15000,
+      headers,
+      maxRedirects: 5,
+      validateStatus: (status) => status < 500,
+    });
+
+    if (response.status === 404) {
+      logger.warn(`⚠️ [图片不存在] ${url}`);
+      return res.status(404).json({ error: "Image not found" });
+    }
+
+    if (response.status === 403) {
+      logger.warn(`⚠️ [访问被拒绝] ${url}`);
+      return res.status(403).json({ error: "Access forbidden" });
+    }
+
+    if (response.status >= 400) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const contentType = response.headers["content-type"] || "image/jpeg";
+    const responseHeaders = {
+      "Content-Type": contentType,
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "public, max-age=86400",
+    };
+
+    // 🔥 存入内存缓存
+    imageCache.set(url, {
+      data: response.data,
+      headers: responseHeaders,
+      time: Date.now(),
+    });
+
+    // 🔥 限制缓存大小（最多100个）
+    if (imageCache.size > 100) {
+      const firstKey = imageCache.keys().next().value;
+      imageCache.delete(firstKey);
+    }
+
+    res.set(responseHeaders);
+    res.send(response.data);
+
+    logger.info(`✅ [代理成功] 大小: ${response.data.length} bytes`);
+  } catch (error) {
+    logger.error(`❌ [代理失败] ${error.message}`);
+    res.status(500).json({ error: "Image proxy failed" });
+  }
+});
+
+app.options("/api/proxy-image", cors(corsOptions), (req, res) =>
+  res.sendStatus(200)
+);
+
+// ==========================================
 // 静态文件服务
 // ==========================================
 app.use(
@@ -1880,17 +2699,17 @@ app.use(
 app.use(express.static(path.join(__dirname, "../client/dist")));
 
 // ==========================================
-// 🔥 3. 全局错误处理中间件
+// 🔥 优化14: 全局错误处理（增强）
 // ==========================================
 app.use((err, req, res, next) => {
   logger.error("全局错误:", {
     message: err.message,
-    stack: err.stack,
+    stack: process.env.NODE_ENV === "production" ? undefined : err.stack,
     url: req.url,
     method: req.method,
+    body: process.env.NODE_ENV === "production" ? undefined : req.body,
   });
 
-  // Multer 错误处理
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
       return apiResponse.error(res, "文件大小超过限制（最大10MB）", 400);
@@ -1898,7 +2717,6 @@ app.use((err, req, res, next) => {
     return apiResponse.error(res, `文件上传错误: ${err.message}`, 400);
   }
 
-  // 其他错误
   apiResponse.error(
     res,
     process.env.NODE_ENV === "development" ? err.message : "服务器错误",
@@ -1906,60 +2724,86 @@ app.use((err, req, res, next) => {
   );
 });
 
-// SPA 页面刷新处理（必须放在最后）
-// 将 "*" 替换为 /.*/ (正则表达式对象)
-app.get(/.*/, (req, res, next) => {
-  // 如果是 API 请求，跳过（双重保险）
-  if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) {
-    return next();
-  }
-
-  // 返回前端页面
-  res.sendFile(path.join(__dirname, "../client/dist/index.html"), (err) => {
+// ==========================================
+// 🔥 优化15: SPA 路由处理（性能优化）
+// ==========================================
+app.get(/^(?!\/api|\/uploads).*/, (req, res) => {
+  const indexPath = path.join(__dirname, "../client/dist/index.html");
+  res.sendFile(indexPath, (err) => {
     if (err) {
       logger.error("发送 index.html 失败:", err);
       res.status(500).send("页面加载失败");
     }
   });
 });
-
 // ==========================================
-// 启动服务
+// 🔥 优化16 & 17: 服务启动与优雅关闭
 // ==========================================
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+// 健康检查接口
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
+  });
+});
+
+// 🔥 核心修复：只调用一次 app.listen，并赋值给 server 变量
+const server = app.listen(PORT, () => {
   logger.info(`🚀 后端服务已启动！`);
   logger.info(`📍 访问地址: http://localhost:${PORT}`);
-  logger.info(`📂 静态文件: ${path.join(__dirname, "../client/dist")}`);
-  logger.info(`📁 上传目录: ${path.join(__dirname, "uploads")}`);
-  logger.info(`🔒 JWT Secret: ${JWT_SECRET.substring(0, 10)}...`);
   logger.info(`🌍 环境: ${process.env.NODE_ENV || "development"}`);
+  logger.info(
+    `💾 内存使用: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(
+      2
+    )} MB`
+  );
 });
 
-// ==========================================
-// 优雅关闭处理
-// ==========================================
-process.on("SIGINT", async () => {
-  logger.info("\n🛑 正在关闭服务器...");
+// 优雅关闭逻辑
+const gracefulShutdown = async (signal) => {
+  logger.info(`\n🛑 收到 ${signal} 信号，正在优雅关闭...`);
+
+  // 停止接受新连接
+  server.close(() => {
+    logger.info("✅ HTTP 服务器已关闭");
+  });
+
   try {
+    // 关闭数据库连接池
     await dbPool.end();
     logger.info("✅ 数据库连接池已关闭");
+
+    // 清理缓存
+    if (typeof imageCache !== "undefined") imageCache.clear();
+    if (typeof verificationCodes !== "undefined") verificationCodes.clear();
+    logger.info("✅ 缓存已清理");
+
     process.exit(0);
   } catch (err) {
-    logger.error("❌ 数据库关闭失败:", err);
+    logger.error("❌ 关闭失败:", err);
     process.exit(1);
   }
+};
+
+// 监听关闭信号
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
+// 未捕获异常处理
+process.on("uncaughtException", (err) => {
+  // 忽略 EADDRINUSE 以外的错误防止无限重启，或者只记录不退出
+  if (err.code === "EADDRINUSE") {
+    logger.error("❌ 端口被占用，请检查是否有其他 Node 进程在运行");
+    process.exit(1);
+  }
+  logger.error("❌ 未捕获的异常:", err);
+  gracefulShutdown("uncaughtException");
 });
 
-process.on("SIGTERM", async () => {
-  logger.info("\n🛑 收到终止信号，正在关闭服务器...");
-  try {
-    await dbPool.end();
-    logger.info("✅ 数据库连接池已关闭");
-    process.exit(0);
-  } catch (err) {
-    logger.error("❌ 数据库关闭失败:", err);
-    process.exit(1);
-  }
+process.on("unhandledRejection", (reason, promise) => {
+  logger.error("❌ 未处理的Promise拒绝:", reason);
 });

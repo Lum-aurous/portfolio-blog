@@ -279,4 +279,69 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
     min-height: 100vh;
   }
 }
+
+/* 无限级评论树的视觉增强 */
+.comment-item {
+  position: relative;
+  transition: all 0.3s ease;
+}
+
+.comment-item:hover {
+  background-color: rgba(0, 0, 0, 0.01);
+}
+
+/* 深度指示器 */
+.comment-depth-0 {
+  border-left: 4px solid #42b983;
+}
+
+.comment-depth-1 {
+  border-left: 3px solid #3498db;
+}
+
+.comment-depth-2 {
+  border-left: 2px solid #9b59b6;
+}
+
+.comment-depth-3 {
+  border-left: 1px solid #e74c3c;
+}
+
+.comment-depth-4 {
+  border-left: 1px dashed #95a5a6;
+}
+
+.comment-depth-5 {
+  border-left: 1px dotted #bdc3c7;
+}
+
+/* 点击展开/收起动画 */
+.expand-transition-enter-active,
+.expand-transition-leave-active {
+  transition: all 0.3s ease;
+  max-height: 500px;
+  overflow: hidden;
+}
+
+.expand-transition-enter-from,
+.expand-transition-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+/* 滚动到评论高亮效果 */
+.comment-highlight {
+  animation: highlightComment 2s ease;
+  box-shadow: 0 0 0 2px rgba(66, 185, 131, 0.3);
+}
+
+@keyframes highlightComment {
+  0% {
+    box-shadow: 0 0 0 6px rgba(66, 185, 131, 0.5);
+  }
+
+  100% {
+    box-shadow: 0 0 0 2px rgba(66, 185, 131, 0.3);
+  }
+}
 </style>

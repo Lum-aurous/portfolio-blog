@@ -17,8 +17,6 @@ const prevScrollY = ref(0)
 const isNavbarVisible = ref(true)
 const isMouseOnNavbar = ref(false)
 const showBackground = ref(false)
-const isDev = import.meta.env.DEV
-
 const closeUserMenu = () => {
   showUserMenu.value = false
 }
@@ -29,7 +27,6 @@ const isLoggedIn = computed(() => {
   // 直接返回 store 的 computed 属性
   return userStore.isLoggedIn
 })
-
 
 // 2. 是否管理员
 const isAdmin = computed(() => userStore.user?.role === 'admin')
@@ -407,8 +404,6 @@ const onScroll = () => {
   }
 }
 
-
-
 // ==================== 主题切换 ====================
 const toggleTheme = () => {
   isDark.value = !isDark.value
@@ -561,17 +556,21 @@ onMounted(async () => {
   console.log('🔐 AuthManager 检查:', authStatus)
 
   if (authStatus.isLoggedIn && authStatus.isTokenValid) {
-    console.log('✅ AuthManager 确认用户已登录:', authStatus.username)
-
-    // 如果 store 中没有用户数据，尝试从 localStorage 恢复
+    // 1. 先用缓存数据快速渲染，避免留白
     if (!userStore.user && authStatus.user) {
-      console.log('🔄 从 AuthManager 恢复用户到 store')
       userStore.login(authStatus.user, authStatus.token)
-    } else if (!userStore.user) {
-      // 如果 AuthManager 没有用户数据但 token 有效，调用 store 的恢复方法
-      console.log('🔄 调用 userStore.checkLoginStatus')
-      await userStore.checkLoginStatus()
     }
+
+    // 2. 🔥 新增：然后立即在后台静默刷新最新的用户资料（获取最新头像）
+    // 这样即使用户换了头像，F5刷新后也能马上同步过来
+    userStore.refreshUserInfo().then(newData => {
+      if (newData) console.log('🖼️ 导航栏已同步最新头像')
+    })
+
+  } else if (!userStore.user) {
+    // 如果 AuthManager 没有用户数据但 token 有效，调用 store 的恢复方法
+    console.log('🔄 调用 userStore.checkLoginStatus')
+    await userStore.checkLoginStatus()
   } else if (authStatus.token && !authStatus.isTokenValid) {
     console.log('⚠️ Token 无效，清除')
     AuthManager.logout()
@@ -613,10 +612,6 @@ onUnmounted(() => {
     'navbar-active': shouldShowBackground,
     'navbar-hidden': !shouldShowNavbar
   }" @mouseenter="handleMouseEnter()" @mouseleave="handleMouseLeave">
-    <!-- 🔥 调试按钮（仅开发环境） -->
-    <div v-if="isDev" class="debug-badge" @click="debugUserState">
-      🔍
-    </div>
     <div class="nav-content">
       <router-link to="/" class="logo">𝓥𝓮𝓻𝓲𝓽𝓪𝓼</router-link>
 
@@ -1454,19 +1449,5 @@ onUnmounted(() => {
   to {
     transform: rotate(360deg);
   }
-}
-
-/* 🔥 添加调试样式 */
-.debug-badge {
-  position: fixed;
-  top: 10px;
-  left: 10px;
-  background: rgba(0, 0, 0, 0.7);
-  color: white;
-  padding: 5px 10px;
-  border-radius: 10px;
-  font-size: 12px;
-  z-index: 10000;
-  cursor: pointer;
 }
 </style>
