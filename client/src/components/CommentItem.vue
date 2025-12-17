@@ -1,180 +1,217 @@
-<!-- CommentItem.vue -->
 <script setup>
-import { defineProps, defineEmits } from 'vue'
+import { ref, computed } from 'vue'
+import { useUserStore } from '@/stores/user.js'
+
+// 1. 定义组件名称，用于递归调用
+defineOptions({
+    name: 'CommentItem'
+})
 
 const props = defineProps({
     comment: {
         type: Object,
         required: true
     },
+    // 记录视觉层级，用于控制缩进
     depth: {
         type: Number,
         default: 0
-    },
-    isLoggedIn: Boolean,
-    currentUser: Object,
-    isAdmin: Boolean
+    }
 })
 
-const emit = defineEmits(['reply', 'like', 'delete'])
+const emit = defineEmits(['reply', 'like', 'dislike', 'delete'])
+const userStore = useUserStore()
+const currentUser = computed(() => userStore.user || {})
+const isAdmin = computed(() => userStore.user?.role === 'admin')
 
-const handleReply = () => {
-    emit('reply', props.comment)
+// 状态：是否展开子评论
+const isExpanded = ref(true)
+
+// 格式化时间
+const formatRelativeTime = (dateStr) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diff = Math.floor((now - date) / 1000);
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+    if (diff < 2592000) return `${Math.floor(diff / 86400)} 天前`;
+    if (diff < 31536000) return `${Math.floor(diff / 2592000)} 个月前`;
+    return `${Math.floor(diff / 31536000)} 年前`;
 }
 
-const handleLike = () => {
-    emit('like', props.comment)
+const formatCount = (count) => {
+    if (!count) return '';
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
+    return count;
 }
 
-const handleDelete = () => {
-    emit('delete', props.comment.id)
-}
+// 代理事件：将底层触发的事件层层向上传递
+const handleAction = (type, payload) => emit(type, payload)
+// 代理事件向上抛出
+const onReply = (targetComment) => emit('reply', targetComment)
+const onLike = (targetComment) => emit('like', targetComment)
+const onDislike = (targetComment) => emit('dislike', targetComment)
+const onDelete = (targetId) => emit('delete', targetId)
 
-// 限制最大深度，防止无限递归和样式问题
-const maxDepth = 5
-const shouldStopRecursion = props.depth >= maxDepth
+// 递归事件处理
+const handleChildReply = (target) => emit('reply', target)
+const handleChildLike = (target) => emit('like', target)
+const handleChildDislike = (target) => emit('dislike', target)
+const handleChildDelete = (id) => emit('delete', id)
 </script>
 
 <template>
-    <div class="comment-item" :class="`comment-depth-${depth}`">
-        <div class="comment-avatar">
-            <img :src="comment.avatar || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'" :alt="comment.nickname">
-        </div>
-
-        <div class="comment-content">
-            <div class="comment-header">
-                <span class="comment-author">@{{ comment.nickname }}</span>
-                <span class="comment-time">{{ formatCommentDate(comment.created_at) }}</span>
-            </div>
+    <div class="comment-item-wrapper">
+        <div class="yt-comment-container" :class="{ 'reply-style': depth > 0 }">
+            <img :src="comment.avatar || 'https://i.pravatar.cc/150?img=1'" class="avatar"
+                :class="{ small: depth > 0 }" />
 
             <div class="comment-body">
-                <p>{{ comment.content }}</p>
-                <div v-if="comment.images?.length" class="comment-images">
-                    <img v-for="(img, i) in comment.images" :key="i" :src="img" alt="评论图片">
+                <div class="comment-header-line">
+                    <span class="username">@{{ comment.nickname }}</span>
+                    <span class="time">{{ formatRelativeTime(comment.created_at) }}</span>
+                </div>
+
+                <div class="comment-text">
+                    <span v-if="depth > 0 && comment.parent_id" class="reply-tag">
+                    </span>
+                    {{ comment.content }}
+
+                    <div v-if="comment.images?.length" class="comment-images-grid">
+                        <img v-for="(img, i) in comment.images" :key="i" :src="img" />
+                    </div>
+                </div>
+
+                <div class="comment-actions">
+                    <button class="action-btn" :class="{ active: comment.is_liked }" @click="emit('like', comment)">
+                        <span class="icon">👍</span>
+                        <span v-if="comment.like_count">{{ comment.like_count }}</span>
+                    </button>
+
+                    <button class="action-btn" :class="{ active: comment.is_disliked }"
+                        @click="emit('dislike', comment)">
+                        <span class="icon">👎</span>
+                    </button>
+
+                    <button class="action-btn reply-btn" @click="emit('reply', comment)">回复</button>
+
+                    <button v-if="isAdmin || currentUser.username === comment.nickname" class="action-btn delete-btn"
+                        @click="emit('delete', comment.id)">删除</button>
                 </div>
             </div>
+        </div>
 
-            <div class="comment-actions">
-                <button class="action-btn like-btn" :class="{ active: comment.is_liked }" @click="handleLike">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                        <path
-                            d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z" />
-                    </svg>
-                    <span class="count">{{ comment.like_count || 0 }}</span>
-                </button>
-
-                <button class="action-btn reply-btn" @click="handleReply" :disabled="!isLoggedIn">
-                    回复
-                </button>
-
-                <button v-if="isAdmin || currentUser?.username === comment.nickname" class="action-btn delete-btn"
-                    @click="handleDelete">
-                    删除
-                </button>
+        <div v-if="comment.replies && comment.replies.length > 0" class="sub-comments-container">
+            <div class="sub-comments-list" :class="{ 'no-indent': depth >= 3 }">
+                <CommentItem v-for="reply in comment.replies" :key="reply.id" :comment="reply" :depth="depth + 1"
+                    @reply="(c) => emit('reply', c)" @like="(c) => emit('like', c)" @dislike="(c) => emit('dislike', c)"
+                    @delete="(id) => emit('delete', id)" />
             </div>
-        </div>
-
-        <!-- 递归渲染回复 -->
-        <div v-if="comment.replies && comment.replies.length > 0 && !shouldStopRecursion" class="comment-replies">
-            <CommentItem v-for="reply in comment.replies" :key="reply.id" :comment="reply" :depth="depth + 1"
-                :isLoggedIn="isLoggedIn" :currentUser="currentUser" :isAdmin="isAdmin" @reply="emit('reply', $event)"
-                @like="emit('like', $event)" @delete="emit('delete', $event)" />
-        </div>
-
-        <!-- 深度限制提示 -->
-        <div v-if="shouldStopRecursion && comment.replies && comment.replies.length > 0" class="depth-limit-message">
-            还有 {{ comment.replies.length }} 条回复，点击展开...
         </div>
     </div>
 </template>
 
 <style scoped>
-.comment-item {
+/* 评论容器布局 */
+.yt-comment-container {
     display: flex;
-    gap: 12px;
-    margin-bottom: 16px;
-    position: relative;
+    gap: 16px;
+    padding: 8px 0;
 }
 
-.comment-depth-0 {
-    padding: 20px;
-    background: #fff;
-    border-radius: 12px;
-    border: 1px solid #e5e5e5;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
-}
-
-.comment-depth-1,
-.comment-depth-2,
-.comment-depth-3,
-.comment-depth-4 {
-    padding: 16px;
-    background: #f9f9f9;
-    border-radius: 10px;
-    border: 1px solid #eee;
-    margin-left: 52px;
-    position: relative;
-}
-
-.comment-depth-1::before,
-.comment-depth-2::before,
-.comment-depth-3::before,
-.comment-depth-4::before {
-    content: '';
-    position: absolute;
-    top: -8px;
-    left: -26px;
-    width: 20px;
-    height: 2px;
-    background-color: #e5e5e5;
-}
-
-.comment-avatar img {
+.avatar {
     width: 40px;
     height: 40px;
     border-radius: 50%;
+    flex-shrink: 0;
     object-fit: cover;
+    /* 🔥🔥🔥 必须加这一行！🔥🔥🔥 */
+    background-color: #eee;
+    /* 可选：加个底色 */
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    /* 可选：加个微弱边框让浅色头像更明显 */
+}
+
+.avatar.small {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    /* 🔥🔥🔥 这里也要加，保险起见 🔥🔥🔥 */
+}
+
+.comment-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.comment-header-line {
+    margin-bottom: 4px;
+    font-size: 0.85rem;
+    color: #606060;
+}
+
+.username {
+    font-weight: 600;
+    color: #0f0f0f;
+    margin-right: 8px;
+}
+
+.comment-text {
+    font-size: 0.95rem;
+    color: #0f0f0f;
+    line-height: 1.5;
+    margin-bottom: 6px;
 }
 
 .comment-actions {
     display: flex;
-    gap: 12px;
-    margin-top: 8px;
+    gap: 16px;
+    align-items: center;
 }
 
 .action-btn {
-    padding: 4px 8px;
+    background: none;
     border: none;
-    background: transparent;
-    color: #606060;
     cursor: pointer;
-    border-radius: 4px;
+    font-size: 0.8rem;
+    color: #606060;
     display: flex;
     align-items: center;
     gap: 4px;
-    font-size: 0.85rem;
 }
 
 .action-btn:hover {
-    background: #f0f0f0;
+    color: #0f0f0f;
 }
 
-.like-btn.active {
-    color: #ff0000;
+.action-btn.active {
+    color: #065fd4;
 }
 
-.depth-limit-message {
-    margin-top: 8px;
-    padding: 8px;
-    background: #f5f5f5;
-    border-radius: 6px;
-    font-size: 0.85rem;
-    color: #666;
-    cursor: pointer;
-    text-align: center;
+.delete-btn {
+    color: #d32f2f;
 }
 
-.depth-limit-message:hover {
-    background: #e8e8e8;
+/* 🔥 递归缩进样式 🔥 */
+.sub-comments-container {
+    /* 每一级向右缩进 */
+    margin-left: 48px;
+}
+
+/* 移动端或深层级不再缩进，改为平铺 */
+.sub-comments-list.no-indent {
+    padding-left: 0;
+    margin-left: 0;
+    /* 可选：加个左边框区分层级 */
+    border-left: 2px solid #eee;
+    padding-left: 10px;
+}
+
+.comment-images-grid img {
+    max-width: 150px;
+    border-radius: 8px;
+    margin-top: 5px;
 }
 </style>

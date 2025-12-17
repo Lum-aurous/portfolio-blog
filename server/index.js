@@ -231,10 +231,8 @@ const dbPool = mysql.createPool({
   queueLimit: 0,
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
-  // 🔥 修复这里的配置：
-  connectTimeout: 10000, // 连接超时
-  // 移除 acquireTimeout，使用正确的参数：
-  acquireTimeoutMillis: 10000, // 获取连接的超时时间（毫秒）
+  connectTimeout: 10000,
+  // acquireTimeout: 10000, // 👈 建议暂时注释掉这一行，消除黄色警告
   charset: "utf8mb4",
 });
 
@@ -852,7 +850,6 @@ app.get("/api/tags/cloud", async (req, res) => {
 app.get("/api/articles/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    // 🔥 核心修改：使用 LEFT JOIN 关联查询 users 表
     const [results] = await dbPool.query(
       `SELECT 
         a.*, 
@@ -865,6 +862,14 @@ app.get("/api/articles/:id", async (req, res) => {
     );
 
     if (results.length > 0) {
+      console.log(`📸 [后端] 文章 ID=${id} 的封面: ${results[0].cover_image}`);
+      // 🔥 确保这里返回了 cover_image
+      console.log("📸 返回的文章数据:", {
+        id: results[0].id,
+        title: results[0].title,
+        cover_image: results[0].cover_image,
+      });
+
       apiResponse.success(res, "获取成功", results[0]);
     } else {
       apiResponse.error(res, "文章不存在", 404);
@@ -1077,11 +1082,21 @@ app.get("/api/comments/latest", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 10;
 
+    // 🔥 核心修改：
+    // 1. 关联条件改为 c.nickname = u.username (因为现在评论存的是用户名)
+    // 2. 多查一个 u.nickname，用于前端显示（如果用户设置了昵称）
     const [results] = await dbPool.query(
       `
-      SELECT c.id, c.content, c.images, c.nickname, c.created_at, u.avatar 
+      SELECT 
+        c.id, 
+        c.content, 
+        c.images, 
+        c.nickname as comment_username, 
+        c.created_at, 
+        u.avatar, 
+        u.nickname as user_nickname
       FROM comments c
-      LEFT JOIN users u ON c.nickname = u.nickname 
+      LEFT JOIN users u ON c.nickname = u.username
       ORDER BY c.created_at DESC
       LIMIT ?
     `,
@@ -1092,12 +1107,9 @@ app.get("/api/comments/latest", async (req, res) => {
       let images = [];
 
       if (row.images) {
-        // 🔥🔥 核心修复：先判断它是不是已经是数组了
         if (Array.isArray(row.images)) {
-          // 如果数据库驱动已经帮我们解析成了数组，直接用！
           images = row.images;
         } else if (typeof row.images === "string") {
-          // 如果是字符串，才需要手动 parse
           try {
             const parsed = JSON.parse(row.images);
             if (Array.isArray(parsed)) images = parsed;
@@ -1107,7 +1119,6 @@ app.get("/api/comments/latest", async (req, res) => {
         }
       }
 
-      // 如果内容为空但有图片，自动填充提示文本 (双重保险)
       let content = row.content;
       if ((!content || content.trim() === "") && images.length > 0) {
         content = "📷 分享图片";
@@ -1117,7 +1128,8 @@ app.get("/api/comments/latest", async (req, res) => {
         id: row.id,
         content: content,
         images: images,
-        nickname: row.nickname,
+        // 🔥 优先显示用户设置的昵称，没有则显示用户名
+        nickname: row.user_nickname || row.comment_username || "匿名用户",
         avatar: row.avatar || null,
         created_at: row.created_at,
       };
@@ -1698,7 +1710,7 @@ app.post(
       }
 
       const user = userResults[0];
-      const nickname = user.nickname || user.username;
+      const nickname = user.username;
 
       // 验证父评论
       if (parent_id) {
@@ -1860,7 +1872,12 @@ app.get("/api/comments", async (req, res) => {
       return {
         id: row.id,
         parent_id: row.parent_id || null,
-        nickname: row.nickname || "匿名用户",
+
+        // 🔥 核心修复：优先使用 users 表里的 nickname (用户昵称)，如果没有才用 c.nickname (用户名)
+        // 这样前端看到的是 "Big"，但后台关联用的是 "user_7qxtgi"
+        nickname: row.user_nickname || row.nickname || "匿名用户",
+
+        // 现在因为 JOIN 成功了，avatar 就能取到了
         avatar:
           row.avatar || "https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg",
         content: row.content || "",
@@ -1874,55 +1891,58 @@ app.get("/api/comments", async (req, res) => {
       };
     });
 
-    // 4. 构建评论树（避免无限递归）
+    // ==========================================
+    // 4. 构建评论树（移除深度限制，支持无限级）
+    // ==========================================
     const commentMap = {};
     const rootComments = [];
 
-    // 第一步：建立 ID 映射
+    // 第一步：建立 ID 映射，并初始化 replies 数组
     allComments.forEach((c) => {
+      c.replies = []; // 确保每个评论都有 replies 数组
       commentMap[c.id] = c;
     });
 
-    // 第二步：挂载子节点（限制最大深度为5层）
+    // 第二步：挂载子节点
     allComments.forEach((c) => {
       if (c.parent_id && commentMap[c.parent_id]) {
-        // 检查是否形成循环（防止无限递归）
+        // 检查是否形成循环（简单的死循环防止）
         if (commentMap[c.parent_id].parent_id === c.id) {
           console.warn(`⚠️ 检测到评论循环: ${c.id} <-> ${c.parent_id}`);
-          // 如果是循环，则不挂载，直接作为顶级评论
           rootComments.push(c);
         } else {
-          // 限制最大深度
-          if (c.level < 5) {
-            commentMap[c.parent_id].replies.push(c);
-            // 设置子评论的层级
-            c.level = commentMap[c.parent_id].level + 1;
-          } else {
-            console.warn(`⚠️ 评论 ${c.id} 层级过深，已限制为最大5层`);
-            rootComments.push(c);
-          }
+          // 🔥 核心修改：无条件挂载到父节点，不再检查 c.level < 5
+          commentMap[c.parent_id].replies.push(c);
+
+          // 可选：如果你还需要计算层级用于CSS缩进控制，可以保留这行
+          c.level = (commentMap[c.parent_id].level || 0) + 1;
         }
       } else {
-        // 如果没有爸爸，它就是一级评论
+        // 如果没有父级，或者父级找不到（可能被删了），它就是一级评论
         rootComments.push(c);
       }
     });
 
-    // 第三步：对一级评论按时间倒序排列
+    // 第三步：排序
+    // 顶级评论按时间倒序
     rootComments.sort(
       (a, b) => new Date(b.created_at) - new Date(a.created_at)
     );
 
-    // 对每个评论的回复按时间正序排列（对话顺序）
-    Object.values(commentMap).forEach((comment) => {
-      if (comment.replies.length > 0) {
-        comment.replies.sort(
-          (a, b) => new Date(a.created_at) - new Date(b.created_at)
-        );
-      }
-    });
+    // 子评论按时间正序 (楼层越早越在上面)
+    const sortReplies = (comments) => {
+      comments.forEach((c) => {
+        if (c.replies.length > 0) {
+          c.replies.sort(
+            (a, b) => new Date(a.created_at) - new Date(b.created_at)
+          );
+          sortReplies(c.replies); // 递归排序
+        }
+      });
+    };
+    sortReplies(rootComments);
 
-    console.log(`✅ 构建评论树完成: 顶级评论 ${rootComments.length} 条`);
+    console.log(`✅ 构建无限级评论树完成: 顶级评论 ${rootComments.length} 条`);
 
     apiResponse.success(res, "获取成功", rootComments);
   } catch (err) {
@@ -2216,12 +2236,23 @@ app.post(
         [id]
       );
 
+      // 🔥🔥🔥 新增代码开始：生成新 Token 🔥🔥🔥
+      const userForToken = updatedUser[0];
+
+      // 使用之前定义好的 generateToken 函数生成新令牌
+      // 注意：generateToken 需要传入包含 id, username, role 的对象
+      const newToken = generateToken(userForToken);
+
       logger.info(
-        `用户信息更新成功: ID=${id}, 用户名=${
-          updatedUser[0].username || username
-        }`
+        `用户信息更新成功: ID=${id}, 用户名=${userForToken.username}, 已签发新Token`
       );
-      apiResponse.success(res, "个人信息已更新", updatedUser[0]);
+
+      // 将新 Token 合并到返回数据中
+      apiResponse.success(res, "个人信息已更新", {
+        ...userForToken,
+        token: newToken, // <--- 关键：把新 Token 给前端
+      });
+      // 🔥🔥🔥 新增代码结束 🔥🔥🔥
     } catch (err) {
       logger.error("更新用户信息失败:", err);
 

@@ -431,7 +431,6 @@ const handlePublish = async () => {
     }
 
     try {
-        // ✅ 使用封装的 api 方法
         console.log('📡 提交到 /user/update')
         const res = await api.post('/user/update', payload)
 
@@ -441,22 +440,44 @@ const handlePublish = async () => {
         if (responseData.success) {
             message.success('🎉 保存成功! 数据已同步')
 
-            // 更新当前页面数据
-            if (responseData.data) {
-                Object.assign(user.value, responseData.data)
+            // 🔥🔥🔥 核心修复开始 🔥🔥🔥
+            // 1. 获取后端返回的最新完整用户对象
+            const newUserInfo = responseData.data;
+
+            // 如果后端返回了新 Token，立即更新
+            if (newUserInfo.token) {
+                console.log('🔐 收到新 Token，正在更新...');
+                // 1. 更新 Pinia Store 中的 Token
+                userStore.setToken(newUserInfo.token);
+                // 2. 更新 LocalStorage 中的 Token (setToken 方法里其实已经做了，但为了保险可以显式写一下)
+                localStorage.setItem('token', newUserInfo.token);
+
+                // ⚠️ 注意：不要把 token 存进 user 对象里，虽然存了也没大碍，但保持数据纯净比较好
+                // 删除 newUserInfo 里的 token 字段后再更新用户状态
+                delete newUserInfo.token;
             }
 
-            // 更新 Store
-            userStore.updateUser(user.value)
+            // 2. 强制更新本地视图数据
+            Object.assign(user.value, newUserInfo);
 
-            // 如果用户名有修改，更新本地存储
-            if (originalUser.value.username !== user.value.username) {
-                localStorage.setItem('username', user.value.username)
-                message.success(`用户名已修改为: ${user.value.username}`)
+            // 3. 立即更新 Pinia Store (这一步会修复 Navbar 头像消失的问题)
+            userStore.updateUser(newUserInfo);
+            // 补充：确保 store 里的 token 对应的 user 也是新的
+            if (userStore.user) {
+                userStore.user = { ...userStore.user, ...newUserInfo };
             }
 
-            // 更新备份
-            originalUser.value = JSON.parse(JSON.stringify(user.value))
+            // 4. 💀 强制更新 LocalStorage (这一步修复刷新后 404 的问题)
+            // 必须保存完整的 user 对象字符串
+            localStorage.setItem('user', JSON.stringify(newUserInfo));
+            // 必须更新单独的 username 字段
+            localStorage.setItem('username', newUserInfo.username);
+
+            // 5. 更新原始数据备份 (防止"未保存修改"弹窗误报)
+            originalUser.value = JSON.parse(JSON.stringify(newUserInfo));
+
+            console.log(`🔄 本地缓存已强制更新为: ${newUserInfo.username}`);
+            // 🔥🔥🔥 核心修复结束 🔥🔥🔥
 
         } else {
             console.error('❌ 保存失败，服务器返回:', responseData)

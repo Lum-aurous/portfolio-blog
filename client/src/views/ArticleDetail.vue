@@ -6,7 +6,8 @@ import { message } from '@/utils/message.js'
 import { api } from '@/utils/api'
 import MarkdownIt from 'markdown-it'
 import 'github-markdown-css/github-markdown-light.css'
-import html2canvas from 'html2canvas' // ✅ 修正为正确的拼写
+import html2canvas from 'html2canvas'
+import CommentItem from '@/components/CommentItem.vue'
 
 const md = new MarkdownIt({ html: true, linkify: true, breaks: true })
 const route = useRoute()
@@ -144,6 +145,28 @@ const removeImage = (index) => {
     selectedImages.value.splice(index, 1)
 }
 
+// ===========================
+// 🔥 火箭回到顶部逻辑
+// ===========================
+const isLaunching = ref(false)
+let scrollCheckInterval = null
+
+const handleScrollToTop = () => {
+    if (isLaunching.value) return
+    isLaunching.value = true
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+    if (scrollCheckInterval) clearInterval(scrollCheckInterval)
+
+    // 监听滚动，直到顶部才停止动画
+    scrollCheckInterval = setInterval(() => {
+        if (window.scrollY <= 50) {
+            clearInterval(scrollCheckInterval)
+            scrollCheckInterval = null
+            isLaunching.value = false
+        }
+    }, 100)
+}
+
 // 🔥 新增：计算评论总数 (顶级评论 + 所有回复)
 const totalCommentCount = computed(() => {
     return comments.value.reduce((total, comment) => {
@@ -253,6 +276,7 @@ const submitComment = async () => {
             article_id: parseInt(route.params.id),
             content: commentContent.value,
             images: imageUrls,
+            // 直接使用 replyTarget 中的 rootId (其实就是被回复的评论ID)
             parent_id: replyTarget.value ? replyTarget.value.rootId : null
         }
 
@@ -279,19 +303,20 @@ const submitComment = async () => {
     }
 }
 
-// 设置回复对象 (混合逻辑：YouTube列表触发 -> 原生输入框响应)
-const setReplyTarget = (comment, rootCommentId = null) => {
+// 🔥 关键修改：回复逻辑
+// 在无限级评论中，我回复了A，那么我的 parent_id 就是 A.id
+const setReplyTarget = (comment) => {
     if (!isLoggedIn.value) return message.warning('请登录后回复')
-
-    const actualRootId = rootCommentId || comment.id
 
     replyTarget.value = {
         id: comment.id,
         nickname: comment.nickname,
-        rootId: actualRootId
+        // 🔥 这里改了：直接用当前点击的评论ID作为 parent_id
+        // 不需要找 rootId 了，因为后端现在支持直接挂载
+        rootId: comment.id
     }
 
-    // 聚焦到原本的输入框
+    // 聚焦输入框...
     const inputEl = document.getElementById('comment-input')
     if (inputEl) {
         inputEl.focus()
@@ -302,6 +327,11 @@ const setReplyTarget = (comment, rootCommentId = null) => {
 const cancelReply = () => {
     replyTarget.value = null
     commentContent.value = ''
+}
+
+// 增加一个 handleReply 中转函数
+const handleReply = (comment) => {
+    setReplyTarget(comment)
 }
 
 const handleAction = async (comment, action) => {
@@ -422,6 +452,11 @@ const handleShareClick = () => {
         router.push('/login')
         return
     }
+
+    // 🔥 新增：调试日志
+    console.log('📸 当前文章封面:', article.value?.cover_image)
+    console.log('📸 代理后的URL:', getProxyUrl(article.value?.cover_image))
+
     showShareModal.value = true
 }
 
@@ -504,7 +539,7 @@ const handleImageError = (event, fallbackUrl = null) => {
     const defaultImage = fallbackUrl || 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800'
 
     console.warn('图片加载失败，使用降级图片:', img.src)
-    img.src = defaultImage
+    img.src = getProxyUrl(defaultImage) // 🔥 关键：降级图片也要走代理
 }
 
 // 生命周期
@@ -514,6 +549,7 @@ onMounted(() => {
     fetchCopyright() // 获取版权信息
     window.scrollTo(0, 0)
     document.addEventListener('click', closeEmojiPicker)
+    if (scrollCheckInterval) clearInterval(scrollCheckInterval)
 })
 
 onUnmounted(() => {
@@ -615,12 +651,6 @@ onUnmounted(() => {
                                     <span class="remove" @click="removeImage(index)">×</span>
                                 </div>
                             </div>
-                            <Teleport to="body">
-                                <div v-if="showEmojiPicker" class="emoji-panel" @click.stop>
-                                    <span v-for="emoji in emojis" :key="emoji" class="emoji-item"
-                                        @click="insertEmoji(emoji)">{{ emoji }}</span>
-                                </div>
-                            </Teleport>
                         </div>
                         <div class="comment-toolbar">
                             <div class="tool-left">
@@ -630,6 +660,10 @@ onUnmounted(() => {
                                         <path
                                             d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
                                     </svg>
+                                </div>
+                                <div v-if="showEmojiPicker" class="emoji-panel" @click.stop>
+                                    <span v-for="emoji in emojis" :key="emoji" class="emoji-item"
+                                        @click="insertEmoji(emoji)">{{ emoji }}</span>
                                 </div>
                                 <div class="tool-icon-btn image-upload" title="上传图片" @click="handleImageUpload">
                                     <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
@@ -647,6 +681,13 @@ onUnmounted(() => {
                         </div>
                     </div>
                     <div class="comments-list">
+                        <CommentItem v-for="comment in comments" :key="comment.id" :comment="comment" :depth="0"
+                            @reply="handleReply" @like="(c) => handleAction(c, 'like')"
+                            @dislike="(c) => handleAction(c, 'dislike')" @delete="deleteComment" />
+
+                        <div v-if="comments.length === 0" class="empty-state">
+                            暂无评论，快来抢沙发~
+                        </div>
                         <div v-for="comment in comments" :key="comment.id" class="comment-thread">
                             <div class="yt-comment-container top-level">
                                 <img :src="comment.avatar || 'https://i.pravatar.cc/150?img=1'" class="avatar" />
@@ -776,7 +817,21 @@ onUnmounted(() => {
         </main>
 
         <div class="floating-tools">
-            <div class="tool-btn" @click="scrollToTop" title="回到顶部"><span class="icon">🚀</span></div>
+            <div class="tool-btn rocket-btn" :class="{ 'launching': isLaunching }" @click="handleScrollToTop"
+                title="回到顶部">
+                <svg class="rocket-icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"
+                    width="32" height="32">
+                    <path
+                        d="M528 67.5l-16-16.7-15.9 16.7c-7.3 7.7-179.9 190.6-179.9 420.8 0 112 40 210.1 73.5 272.7l6.2 11.6H627l5.9-13c3.1-6.8 75-167.8 75-271.3 0-230.2-172.6-413.1-179.9-420.8z m-16 48.8c19 22.9 51.9 66.1 82.3 122.5H429.8c30.3-56.4 63.3-99.6 82.2-122.5z m86.3 612.2H422.5c-25.7-50.6-62.2-140.1-62.2-240.2 0-75 20.8-145.5 47.7-205.4h208.2c26.8 59.9 47.6 130.3 47.6 205.4-0.1 78.3-48.7 200.4-65.5 240.2z"
+                        fill="#1E59E4"></path>
+                    <path
+                        d="M834.7 623.9H643.3l6.7-27.3c9.1-37 13.7-73.4 13.7-108.2 0-44.8-7.7-92-22.9-140.3l-17-54 49.1 28.3c99.8 57.6 161.8 164.7 161.8 279.5v22z m-135.9-44.2h90.9c-5.7-71-38.8-137.2-91.3-184.6 6.3 31.7 9.4 62.9 9.4 93.2 0.1 29.7-3 60.3-9 91.4zM380.1 623.9H189.3v-22.1c0-114.8 62-221.9 161.8-279.5l49.1-28.3-17 54c-15.2 48.3-22.9 95.5-22.9 140.3 0 34.5 4.5 71 13.4 108.4l6.4 27.2z m-145.8-44.2H325c-5.9-31.3-8.8-61.9-8.8-91.4 0-30.3 3.2-61.5 9.4-93.2-52.5 47.5-85.6 113.6-91.3 184.6zM512 529.5c-45 0-81.6-36.6-81.6-81.6s36.6-81.6 81.6-81.6 81.6 36.6 81.6 81.6-36.6 81.6-81.6 81.6z m0-119c-20.7 0-37.5 16.8-37.5 37.5s16.8 37.5 37.5 37.5 37.5-16.8 37.5-37.5-16.8-37.5-37.5-37.5z"
+                        fill="#1E59E4"></path>
+                    <path
+                        d="M512 999.7l-20.3-20.3c-28.8-28.6-68.3-67.9-68.3-111.6 0-48.9 39.8-88.6 88.6-88.6 48.9 0 88.6 39.8 88.6 88.6 0 43.6-24.4 67.9-64.8 108.2L512 999.7z m0-176.4c-24.5 0-44.5 20-44.5 44.5 0 21.5 23.8 48.4 44.5 69.5 33.6-33.7 44.4-47 44.4-69.5 0.1-24.6-19.9-44.5-44.4-44.5z"
+                        fill="#FF5A06"></path>
+                </svg>
+            </div>
         </div>
 
         <div style="height: 100px;"></div>
@@ -794,15 +849,22 @@ onUnmounted(() => {
                             <div class="share-card" ref="shareCardRef" :style="{ backgroundColor: cardBgColor }">
                                 <div class="card-header">
                                     <img :src="getProxyUrl(article.author_avatar || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg')"
-                                        class="card-avatar" crossorigin="anonymous">
-                                    <div class="card-date">{{ formatDate(article.created_at) }}</div>
+                                        @error="handleImageError($event)" class="card-avatar" crossorigin="anonymous"
+                                        alt="作者头像">
+                                    <div class="card-date">{{ formatDate(new Date()) }}</div>
                                 </div>
 
                                 <div class="card-title">{{ article.title }}</div>
 
                                 <div class="card-cover-wrapper">
-                                    <img :src="getProxyUrl(article.cover_image || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg')"
-                                        class="card-cover" crossorigin="anonymous">
+                                    <!-- 🔥 核心修复：确保使用当前文章的封面 -->
+                                    <img v-if="article.cover_image" :src="getProxyUrl(article.cover_image)"
+                                        @error="handleImageError($event, 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800')"
+                                        class="card-cover" crossorigin="anonymous" alt="文章封面">
+                                    <!-- 如果没有封面，显示占位图 -->
+                                    <img v-else
+                                        :src="getProxyUrl('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800')"
+                                        class="card-cover" crossorigin="anonymous" alt="默认封面">
                                 </div>
 
                                 <div class="card-summary">
@@ -816,7 +878,7 @@ onUnmounted(() => {
                                     <div class="footer-right">
                                         <div class="card-user">@{{ currentUser.nickname || currentUser.username }}</div>
                                         <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://poetize.cn"
-                                            class="qr-code">
+                                            class="qr-code" alt="二维码">
                                     </div>
                                 </div>
                             </div>
@@ -1263,13 +1325,17 @@ textarea:disabled {
     height: 40px;
     border-radius: 50%;
     object-fit: cover;
+    /* ✅ 这里是对的 */
     background: #eee;
     flex-shrink: 0;
 }
 
+/* 检查这一块 */
 .avatar.small {
     width: 24px;
     height: 24px;
+    object-fit: cover;
+    /* 🔥 建议这里也显式加上 */
 }
 
 .comment-body {
@@ -1495,25 +1561,144 @@ textarea:disabled {
     z-index: 99;
 }
 
-.tool-btn {
-    width: 45px;
-    height: 45px;
-    background: #222;
+/* ==================== 🔥 终极版：垂直升空火箭 ==================== */
+
+/* 1. 按钮容器 */
+.tool-btn.rocket-btn {
+    width: 50px;
+    height: 50px;
+    background: #fff;
     border-radius: 50%;
     display: flex;
     justify-content: center;
     align-items: center;
     cursor: pointer;
-    transition: 0.3s;
-    color: #fff;
-    opacity: 0.9;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+    /* 稍微深一点的投影 */
+    position: relative;
+    z-index: 999;
+    perspective: 1000px;
+    /* 开启 3D 透视 */
+    overflow: visible;
+    /* 必须可见，否则尾焰会被切掉 */
 }
 
-.tool-btn:hover {
+/* 2. 火箭包裹层 (用于修正角度) */
+.rocket-wrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    /* 🔥 核心修正：因为原图标是向右上方(45度)的，我们逆时针转45度，让它笔直朝上 */
+    transform: rotate(-45deg);
+    transition: transform 0.4s ease;
+    transform-style: preserve-3d;
+    /* 保留子元素的 3D 效果 */
+}
+
+/* 3. 火箭图标本体 */
+.rocket-icon {
+    width: 28px;
+    height: 28px;
+    filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1));
+    /* 给火箭本体加一点投影，增加悬浮感 */
+}
+
+/* ========== 状态 A: 待机/悬停 ========== */
+
+/* 悬停时：按钮稍微上浮，背景变蓝 */
+.tool-btn.rocket-btn:hover {
     transform: translateY(-5px);
-    background: #000;
-    opacity: 1;
+    box-shadow: 0 12px 30px rgba(30, 89, 228, 0.25);
+    background: #f0f8ff;
+}
+
+/* 悬停时：火箭轻轻上下浮动 (模拟悬停) */
+.tool-btn.rocket-btn:hover .rocket-wrapper {
+    animation: floating-idle 1.5s ease-in-out infinite alternate;
+}
+
+/* ========== 状态 B: 发射中 (点击后) ========== */
+
+/* 1. 按钮本体：变成强烈的能量光环，并不飞走，而是原地高亮 */
+.tool-btn.rocket-btn.launching {
+    background: #e3f2fd;
+    transform: translateY(-15px);
+    /* 明显向上浮起 */
+    box-shadow: 0 20px 50px rgba(30, 89, 228, 0.5);
+    /* 强烈的蓝色光晕 */
+    border: 2px solid #90caf9;
+    /* 增加能量边框 */
+}
+
+/* 2. 火箭动作：高速立体旋转 + 震动 */
+.tool-btn.rocket-btn.launching .rocket-wrapper {
+    /* 保持 -45deg 修正角度的同时，绕 Y 轴 (垂直轴) 旋转 */
+    animation: rocket-drilling 0.6s linear infinite;
+}
+
+/* 3. 尾部火焰 (发射时才出现) */
+.tool-btn.rocket-btn.launching::after {
+    content: '';
+    position: absolute;
+    bottom: -35px;
+    /* 在按钮下方喷出 */
+    left: 50%;
+    transform: translateX(-50%);
+    width: 12px;
+    height: 40px;
+    /* 蓝橙渐变火焰 */
+    background: linear-gradient(to bottom, #ff5722 0%, #ffc107 50%, transparent 100%);
+    border-radius: 50%;
+    filter: blur(3px);
+    opacity: 0.9;
+    z-index: -1;
+    animation: flame-jet 0.1s linear infinite alternate;
+}
+
+/* ========== 动画定义 ========== */
+
+/* 待机浮动 */
+@keyframes floating-idle {
+    0% {
+        transform: rotate(-45deg) translateY(0);
+    }
+
+    100% {
+        transform: rotate(-45deg) translateY(-4px);
+    }
+
+    /* 垂直轻微浮动 */
+}
+
+/* 🔥 发射：垂直旋转直插云霄 (Drill Effect) */
+@keyframes rocket-drilling {
+    0% {
+        /* 起始：修正角度 + 0度旋转 */
+        transform: rotate(-45deg) rotateY(0deg);
+    }
+
+    100% {
+        /* 结束：修正角度 + 360度旋转 (绕着垂直中轴线转) */
+        transform: rotate(-45deg) rotateY(360deg);
+    }
+}
+
+/* 火焰喷射闪烁 */
+@keyframes flame-jet {
+    0% {
+        height: 30px;
+        opacity: 0.7;
+        transform: translateX(-50%) scaleX(0.8);
+    }
+
+    100% {
+        height: 50px;
+        opacity: 1;
+        transform: translateX(-50%) scaleX(1.2);
+    }
 }
 
 .loading-screen {
