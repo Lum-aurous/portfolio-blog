@@ -13,6 +13,7 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   const isLoading = ref(false);
   const userHasCustom = ref(false);
   const isInitialized = ref(false); // 🔥 新增：防止重复初始化
+  let isFetchingUserWallpaper = false;
 
   // 缓存配置
   const wallpaperCache = ref({
@@ -100,7 +101,11 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       if (cached) {
         try {
           const { data, timestamp } = JSON.parse(cached);
-          if (Date.now() - timestamp < 10 * 60 * 1000) {
+          // 🔥 缩短每日壁纸的缓存时间（1小时）
+          const isDailyMode = wallpaperMode.value === "daily";
+          const cacheDuration = isDailyMode ? 60 * 60 * 1000 : 10 * 60 * 1000;
+
+          if (Date.now() - timestamp < cacheDuration) {
             logger.debug("使用缓存的全局配置");
             return data;
           }
@@ -111,9 +116,13 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       const res = await fetch("/api/wallpaper/global");
       if (!res.ok) throw new Error("Network response was not ok");
 
-      // 🔥 修复点：剥离外层包装
       const json = await res.json();
-      const data = json.data; // 获取真正的 data 数据
+      const data = json.data;
+
+      // 🔥 新增：每日壁纸模式下的特殊日志
+      if (wallpaperMode.value === "daily") {
+        logger.info(`📅 获取每日壁纸: ${data.dailyUrl ? "已设置" : "未设置"}`);
+      }
 
       // 缓存配置
       sessionStorage.setItem(
@@ -139,8 +148,13 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   };
 
   // 获取用户壁纸
-  // 获取用户壁纸
   const fetchUserWallpaper = async () => {
+    if (isFetchingUserWallpaper) {
+      console.log("⏸️ 用户壁纸获取已在进行中，跳过");
+      return null;
+    }
+
+    isFetchingUserWallpaper = true;
     const userStore = useUserStore();
     if (!userStore.isLoggedIn) return null;
 
@@ -186,6 +200,8 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
       }
     } catch (err) {
       logger.error("获取用户壁纸失败:", err);
+    } finally {
+      isFetchingUserWallpaper = false;
     }
 
     userHasCustom.value = false;
@@ -467,27 +483,33 @@ export const useWallpaperStore = defineStore("wallpaper", () => {
   };
 
   // 监听用户登录状态
+  // 监听用户登录状态
   watch(
     () => useUserStore().isLoggedIn,
     (isLoggedIn) => {
       if (isLoggedIn) {
+        // 用户登录：获取用户壁纸
         fetchUserWallpaper().then((customUrl) => {
+          // 只有当用户有自定义壁纸且当前模式是 userCustom 时才更新
           if (customUrl && wallpaperMode.value === "userCustom") {
             currentWallpaper.value = customUrl;
           }
         });
       } else {
+        // 用户登出：清除用户自定义壁纸
         userHasCustom.value = false;
         wallpaperCache.value.userCustom = "";
 
+        // 如果当前是用户自定义模式，切换为网站默认
         if (wallpaperMode.value === "userCustom") {
           wallpaperMode.value = "website";
           localStorage.setItem("preferredWallpaperMode", "website");
           resetInitialization(); // 🔥 允许重新初始化
-          initialize();
+          initialize(); // 重新初始化壁纸
         }
       }
-    }
+    },
+    { immediate: false } // 🔥 正确的语法：作为 watch 的第三个参数
   );
 
   return {

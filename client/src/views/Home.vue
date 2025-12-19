@@ -194,7 +194,7 @@ watch(() => wallpaperStore.isInitialized, (initialized) => {
                         </svg>
                     </div>
 
-                    <input type="text" v-model="searchQuery" @keyup.enter="handleSearch" placeholder="你想要的都在这呢"
+                    <input type="text" v-model="searchQuery" @keyup.enter="handleSearch" placeholder="搜点什么呢 ~"
                         class="glass-input">
 
                     <button @click="handleSearch" class="glass-search-btn">
@@ -251,7 +251,6 @@ watch(() => wallpaperStore.isInitialized, (initialized) => {
                         <div class="setting-row">
                             <div class="row-info">
                                 <div class="row-name">壁纸偏好</div>
-                                <div class="row-desc">⚡ 即时切换</div>
                             </div>
                             <div class="segmented-control">
                                 <div class="segment-item"
@@ -860,12 +859,6 @@ watch(() => wallpaperStore.isInitialized, (initialized) => {
 .row-name {
     font-size: 1rem;
     font-weight: 500;
-}
-
-.row-desc {
-    font-size: 0.8rem;
-    opacity: 0.6;
-    margin-top: 2px;
 }
 
 /* 开关组件 */

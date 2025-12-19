@@ -120,12 +120,12 @@ ensureDirectories();
 // 🔥 优化4: 静态资源优化（缓存控制）
 // ==========================================
 app.use(
-  "/uploads",
-  express.static("uploads", {
-    maxAge: "7d", // 🔥 延长缓存时间到7天
+  "/api/uploads",
+  express.static(path.join(__dirname, "uploads"), {
+    maxAge: "7d",
     etag: true,
     lastModified: true,
-    immutable: true, // 🔥 标记为不可变资源
+    immutable: true,
   })
 );
 
@@ -353,7 +353,136 @@ const upload = multer({
 });
 
 // ==========================================
-// 🔥 优化10: 壁纸系统（缓存优化）
+// 🔥 后台壁纸管理接口
+// ==========================================
+
+// 1. 更新全局壁纸配置 (管理员)
+app.put(
+  "/api/admin/wallpaper/global",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { mode, websiteUrl, dailyUrl, randomUrls } = req.body;
+
+      // 验证模式
+      if (!["website", "daily", "random"].includes(mode)) {
+        return apiResponse.error(res, "无效的壁纸模式", 400);
+      }
+
+      // 构建更新数据
+      const updateData = {
+        mode: mode,
+        website_url: websiteUrl || null,
+        daily_url: dailyUrl || null,
+        random_urls: JSON.stringify(randomUrls || []),
+      };
+
+      // 更新数据库 (假设只有一条记录)
+      const [result] = await dbPool.query(
+        `UPDATE global_wallpapers 
+         SET mode = ?, website_url = ?, daily_url = ?, random_urls = ? 
+         WHERE id = 1`,
+        [
+          updateData.mode,
+          updateData.website_url,
+          updateData.daily_url,
+          updateData.random_urls,
+        ]
+      );
+
+      // 清除缓存
+      clearWallpaperCache();
+
+      logger.info(`📸 全局壁纸配置已更新: mode=${mode}`);
+      apiResponse.success(res, "配置更新成功");
+    } catch (err) {
+      logger.error("更新全局壁纸失败:", err);
+      apiResponse.error(res, "更新失败");
+    }
+  }
+);
+
+// 2. 获取所有用户壁纸列表 (管理员)
+app.get(
+  "/api/admin/wallpapers/users",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 20;
+      const offset = (page - 1) * limit;
+
+      // 查询用户壁纸，关联用户信息
+      const [rows] = await dbPool.query(
+        `SELECT 
+          uw.user_id, 
+          uw.wallpaper_url, 
+          uw.updated_at,
+          u.username,
+          u.nickname,
+          u.avatar
+        FROM user_wallpapers uw
+        LEFT JOIN users u ON uw.user_id = u.id
+        ORDER BY uw.updated_at DESC
+        LIMIT ? OFFSET ?`,
+        [limit, offset]
+      );
+
+      // 查询总数
+      const [countResult] = await dbPool.query(
+        "SELECT COUNT(*) as total FROM user_wallpapers"
+      );
+      const total = countResult[0].total;
+
+      apiResponse.success(res, "获取成功", {
+        list: rows,
+        pagination: {
+          current: page,
+          pageSize: limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      });
+    } catch (err) {
+      logger.error("获取用户壁纸列表失败:", err);
+      apiResponse.error(res, "获取失败");
+    }
+  }
+);
+
+// 3. 删除用户壁纸 (管理员)
+app.delete(
+  "/api/admin/wallpapers/users/:userId",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const userId = req.params.userId;
+
+      const [result] = await dbPool.query(
+        "DELETE FROM user_wallpapers WHERE user_id = ?",
+        [userId]
+      );
+
+      if (result.affectedRows === 0) {
+        return apiResponse.error(res, "该用户无自定义壁纸", 404);
+      }
+
+      logger.info(
+        `🗑️ 删除用户壁纸: userId=${userId}, 操作者=${req.user.username}`
+      );
+      apiResponse.success(res, "删除成功");
+    } catch (err) {
+      logger.error("删除用户壁纸失败:", err);
+      apiResponse.error(res, "删除失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 优化10: 随机壁纸洗牌系统
 // ==========================================
 let globalWallpaperCache = null;
 let cacheTime = 0;
@@ -410,13 +539,129 @@ async function shuffleGlobalWallpapers() {
   }
 }
 
-function initializeWallpaperSystem() {
-  logger.info("🚀 初始化壁纸系统...");
-  shuffleGlobalWallpapers().catch((err) =>
-    logger.error("❌ 启动洗牌失败:", err)
-  );
-  scheduleDaily3AMShuffle();
+// ==========================================
+// 🔥 新增：每日壁纸自动更新逻辑
+// ==========================================
+
+// 每日壁纸自动更新函数
+async function updateDailyWallpaper() {
+  logger.info("📅 开始更新每日壁纸...");
+  try {
+    // 获取当前全局配置
+    const [results] = await dbPool.query(
+      "SELECT id, random_urls, daily_url, website_url FROM global_wallpapers LIMIT 1"
+    );
+
+    if (results.length === 0) {
+      logger.warn("ℹ️ 没有找到全局壁纸配置，跳过每日壁纸更新");
+      return;
+    }
+
+    const row = results[0];
+
+    // 如果随机轮播列表为空，使用网站背景作为后备
+    let urls = [];
+    if (row.random_urls) {
+      // 解析随机轮播列表
+      if (Array.isArray(row.random_urls)) {
+        urls = row.random_urls;
+      } else if (typeof row.random_urls === "string") {
+        try {
+          urls = JSON.parse(row.random_urls);
+        } catch (e) {
+          logger.error("解析随机轮播列表失败:", e);
+          urls = [];
+        }
+      }
+    }
+
+    let dailyUrl;
+
+    if (urls.length > 0) {
+      // 策略1：按日期选择（确保每天相同）
+      const today = new Date();
+      const dayOfYear = Math.floor(
+        (today - new Date(today.getFullYear(), 0, 0)) / (1000 * 60 * 60 * 24)
+      );
+      const index = dayOfYear % urls.length;
+
+      // 策略2：随机选择（如果希望每天随机）
+      // const index = Math.floor(Math.random() * urls.length);
+
+      dailyUrl = urls[index];
+    } else {
+      // 如果随机列表为空，使用网站背景
+      dailyUrl = row.website_url || "";
+      logger.warn("⚠️ 随机轮播列表为空，使用网站背景作为每日壁纸");
+    }
+
+    if (!dailyUrl) {
+      logger.warn("ℹ️ 无法确定每日壁纸URL，跳过更新");
+      return;
+    }
+
+    // 检查是否需要更新（避免重复更新相同的图片）
+    if (row.daily_url === dailyUrl) {
+      logger.info("📅 每日壁纸无需更新（与昨日相同）");
+      return;
+    }
+
+    // 更新每日壁纸
+    await dbPool.query(
+      "UPDATE global_wallpapers SET daily_url = ?, updated_at = NOW() WHERE id = ?",
+      [dailyUrl, row.id]
+    );
+
+    clearWallpaperCache();
+    logger.info(`✅ 每日壁纸已更新: ${dailyUrl.substring(0, 100)}...`);
+  } catch (err) {
+    logger.error("❌ 更新每日壁纸失败:", err);
+  }
 }
+
+// ==========================================
+// 🔥 修改：安排每日凌晨0点更新每日壁纸（外部API版）
+// ==========================================
+function scheduleDailyMidnightUpdateAPI() {
+  const now = new Date();
+  const target = new Date();
+
+  // 设置为第二天凌晨0点
+  target.setHours(0, 0, 0, 0);
+  target.setDate(target.getDate() + 1);
+
+  const msUntilMidnight = target.getTime() - now.getTime();
+
+  logger.info(
+    `⏰ 下次每日壁纸（API）更新时间: ${target.toLocaleString("zh-CN")}`
+  );
+
+  setTimeout(() => {
+    // 执行更新
+    updateDailyWallpaperFromAPI();
+
+    // 设置每天重复执行
+    setInterval(updateDailyWallpaperFromAPI, 24 * 60 * 60 * 1000);
+  }, msUntilMidnight);
+}
+
+// ==========================================
+// 🔥 新增：手动更新每日壁纸接口（管理员用）
+// ==========================================
+app.post(
+  "/api/wallpaper/update-daily",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      await updateDailyWallpaper();
+      apiResponse.success(res, "每日壁纸已手动更新");
+    } catch (err) {
+      logger.error("手动更新每日壁纸失败:", err);
+      apiResponse.error(res, "更新失败");
+    }
+  }
+);
 
 function scheduleDaily3AMShuffle() {
   const now = new Date();
@@ -428,10 +673,297 @@ function scheduleDaily3AMShuffle() {
   logger.info(`⏰ 下次自动洗牌时间: ${target.toLocaleString("zh-CN")}`);
 
   setTimeout(() => {
-    shuffleGlobalWallpapers();
-    setInterval(shuffleGlobalWallpapers, 24 * 60 * 60 * 1000);
+    // 洗牌完成后，再更新每日壁纸
+    shuffleGlobalWallpapers().then(() => {
+      logger.info("🔄 洗牌完成，更新每日壁纸");
+      updateDailyWallpaper().catch((err) =>
+        logger.error("洗牌后更新每日壁纸失败:", err)
+      );
+    });
+    // 设置每天重复
+    setInterval(() => {
+      shuffleGlobalWallpapers().then(() => {
+        updateDailyWallpaper().catch((err) =>
+          logger.error("每日洗牌后更新每日壁纸失败:", err)
+        );
+      });
+    }, 24 * 60 * 60 * 1000);
   }, msUntil3AM);
 }
+
+// ==========================================
+// 🔥 新增：外部壁纸API服务
+// ==========================================
+
+// 支持的外部API列表
+const WALLPAPER_APIS = {
+  BING: {
+    url:
+      process.env.WALLPAPER_API_BING ||
+      "https://cn.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=zh-CN",
+    parser: (data) => {
+      // Bing API返回格式（cn.bing.com版本）
+      if (data && data.images && data.images[0]) {
+        const image = data.images[0];
+        const baseUrl = "https://cn.bing.com";
+        return {
+          url: `${baseUrl}${image.url}`,
+          copyright: image.copyright || "",
+          title: image.title || "",
+        };
+      }
+      return null;
+    },
+  },
+  UNSPLASH: {
+    url: process.env.WALLPAPER_API_UNSPLASH || null,
+    parser: (data) => {
+      // Unsplash API返回格式
+      if (data && data.urls && data.urls.full) {
+        return {
+          url: `${data.urls.full}&w=1920&q=80`,
+          copyright: data.user ? `Photo by ${data.user.name}` : "",
+          title: data.description || data.alt_description || "",
+        };
+      }
+      return null;
+    },
+  },
+  PEXELS: {
+    url: process.env.WALLPAPER_API_PEXELS || null,
+    parser: (data) => {
+      if (data && data.photos && data.photos[0]) {
+        const photo = data.photos[0];
+        // 🔧 优化：在URL后添加尺寸参数，确保获取适合壁纸的尺寸
+        return {
+          url: `${photo.src.original}?auto=compress&cs=tinysrgb&w=1920&h=1080&fit=crop`,
+          copyright: photo.photographer ? `Photo by ${photo.photographer}` : "",
+          title: photo.alt || "",
+        };
+      }
+      return null;
+    },
+  },
+};
+// 备用壁纸列表
+const FALLBACK_WALLPAPERS = process.env.FALLBACK_WALLPAPERS
+  ? process.env.FALLBACK_WALLPAPERS.split(",")
+  : [
+      "https://images.unsplash.com/photo-1493246507139-91e8fad9978e?w=1920&q=80",
+      "https://images.unsplash.com/photo-1488590528505-98d2b5aba04b?w=1920&q=80",
+      "https://images.unsplash.com/photo-1488590528505-98d2b5aba04b?w=1920&q=80",
+    ];
+
+/**
+ * 从外部API获取每日壁纸
+ */
+async function fetchWallpaperFromAPI() {
+  logger.info("🌐 尝试从外部API获取每日壁纸...");
+
+  // 从配置读取优先级
+  const priority = (
+    process.env.WALLPAPER_API_PRIORITY || "BING,PEXELS,UNSPLASH"
+  )
+    .split(",")
+    .map((name) => name.trim());
+
+  for (const apiName of priority) {
+    const api = WALLPAPER_APIS[apiName];
+    if (
+      !api ||
+      !api.url ||
+      (apiName === "UNSPLASH" && api.url.includes("YOUR_"))
+    ) {
+      continue; // 跳过未配置的API
+    }
+
+    try {
+      logger.info(`📡 尝试使用 ${apiName} API...`);
+      const headers = {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        Accept: "application/json",
+      };
+      // 为Pexels添加Authorization头
+      if (apiName === "PEXELS" && process.env.PEXELS_API_KEY) {
+        headers["Authorization"] = process.env.PEXELS_API_KEY;
+      }
+
+      const response = await axios.get(api.url, { headers, timeout: 8000 });
+      const wallpaper = api.parser(response.data);
+      if (wallpaper && wallpaper.url) {
+        logger.info(`✅ 从 ${apiName} API 获取壁纸成功`);
+        return wallpaper;
+      }
+    } catch (error) {
+      logger.warn(`⚠️ ${apiName} API 请求失败: ${error.message}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * 获取备用壁纸
+ */
+function getFallbackWallpaper() {
+  // 使用日期作为种子，确保每天使用不同的备用壁纸
+  const today = new Date();
+  const dayOfYear = Math.floor(
+    (today - new Date(today.getFullYear(), 0, 0)) / (1000 * 60 * 60 * 24)
+  );
+  const index = dayOfYear % FALLBACK_WALLPAPERS.length;
+
+  return {
+    url: FALLBACK_WALLPAPERS[index],
+    copyright: "备用壁纸",
+    title: "每日一图",
+  };
+}
+
+/**
+ * 更新每日壁纸（使用外部API）
+ */
+async function updateDailyWallpaperFromAPI() {
+  logger.info("📅 开始更新每日壁纸（外部API）...");
+
+  try {
+    // 1. 尝试从外部API获取
+    let wallpaper = null;
+    if (process.env.WALLPAPER_API_ENABLED === "true") {
+      wallpaper = await fetchWallpaperFromAPI();
+    }
+
+    // 2. 如果API失败，使用备用壁纸
+    if (!wallpaper) {
+      logger.warn("⚠️ 外部API获取失败，使用备用壁纸");
+      wallpaper = getFallbackWallpaper();
+    }
+
+    // 3. 检查是否需要更新（避免重复更新相同的图片）
+    const [currentConfig] = await dbPool.query(
+      "SELECT daily_url FROM global_wallpapers LIMIT 1"
+    );
+
+    if (
+      currentConfig.length > 0 &&
+      currentConfig[0].daily_url === wallpaper.url
+    ) {
+      logger.info("📅 每日壁纸无需更新（与昨日相同）");
+      return wallpaper; // 仍然返回壁纸信息
+    }
+
+    // 4. 更新数据库
+    await dbPool.query(
+      "UPDATE global_wallpapers SET daily_url = ?, updated_at = NOW() WHERE id = 1",
+      [wallpaper.url]
+    );
+
+    // 5. 记录壁纸详情（可选：保存到日志或单独的表）
+    await dbPool.query(
+      `INSERT INTO wallpaper_history (url, source, title, copyright, used_date) 
+       VALUES (?, 'external_api', ?, ?, CURDATE())
+       ON DUPLICATE KEY UPDATE 
+         url = VALUES(url), 
+         title = VALUES(title), 
+         copyright = VALUES(copyright)`,
+      [wallpaper.url, wallpaper.title, wallpaper.copyright]
+    );
+
+    clearWallpaperCache();
+    logger.info(`✅ 每日壁纸已更新: ${wallpaper.title}`);
+    logger.info(`   URL: ${wallpaper.url.substring(0, 80)}...`);
+
+    return wallpaper;
+  } catch (err) {
+    logger.error("❌ 更新每日壁纸失败:", err);
+    return getFallbackWallpaper();
+  }
+}
+
+// ==========================================
+// 🔥 修改：初始化壁纸系统，添加每日壁纸更新
+// ==========================================
+function initializeWallpaperSystem() {
+  logger.info("🚀 初始化壁纸系统...");
+
+  // 1. 启动时更新每日壁纸（使用外部API）
+  updateDailyWallpaperFromAPI().catch((err) =>
+    logger.error("❌ 启动时更新每日壁纸失败:", err)
+  );
+
+  // 2. 洗牌随机轮播（保持原有的随机轮播系统不变）
+  shuffleGlobalWallpapers().catch((err) =>
+    logger.error("❌ 启动洗牌失败:", err)
+  );
+
+  // 3. 安排每日凌晨3点洗牌（仅洗牌随机轮播，不影响每日壁纸）
+  scheduleDaily3AMShuffle();
+
+  // 4. 🔥 新增：安排每日凌晨0点更新每日壁纸（使用外部API）
+  scheduleDailyMidnightUpdateAPI();
+}
+
+// ==========================================
+// 🔥 新增：手动从API更新每日壁纸接口
+// ==========================================
+app.post(
+  "/api/wallpaper/update-daily-api",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const wallpaper = await updateDailyWallpaperFromAPI();
+
+      apiResponse.success(res, "每日壁纸已从API更新", wallpaper);
+    } catch (err) {
+      logger.error("手动更新每日壁纸失败:", err);
+      apiResponse.error(res, "更新失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 新增：获取壁纸历史记录
+// ==========================================
+app.get(
+  "/api/wallpaper/history",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const offset = (page - 1) * limit;
+
+      // 查询历史记录
+      const [rows] = await dbPool.query(
+        `SELECT * FROM wallpaper_history 
+         ORDER BY used_date DESC 
+         LIMIT ? OFFSET ?`,
+        [limit, offset]
+      );
+
+      // 查询总数
+      const [countResult] = await dbPool.query(
+        "SELECT COUNT(*) as total FROM wallpaper_history"
+      );
+      const total = countResult[0].total;
+
+      apiResponse.success(res, "获取成功", {
+        list: rows,
+        pagination: {
+          current: page,
+          pageSize: limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      });
+    } catch (err) {
+      logger.error("获取壁纸历史失败:", err);
+      apiResponse.error(res, "获取失败");
+    }
+  }
+);
 
 // ==========================================
 // 🔥 验证码定时清理（服务器启动时立即启动）
@@ -473,10 +1005,8 @@ const apiResponse = {
 };
 
 // ==========================================
-// 基础接口
-// ==========================================
-
 // 上传接口（需要认证）
+// ==========================================
 
 app.post(
   "/api/upload",
@@ -487,16 +1017,27 @@ app.post(
       return apiResponse.error(res, "请选择图片", 400);
     }
 
-    const thumbName = "thumb_" + req.file.filename;
+    const fileName = req.file.filename;
+    const thumbName = "thumb_" + fileName;
 
     await sharp(req.file.path)
       .resize(200)
       .jpeg({ quality: 80 })
       .toFile(path.join("uploads", thumbName));
 
+    // 🔥🔥🔥 核心修复：确保返回的路径是相对路径，不含 /api/uploads/
+    // 因为前端已经通过代理访问 /uploads 路径
+    const webPath = `/uploads/${fileName}`;
+    const thumbPath = `/uploads/${thumbName}`;
+
+    console.log(`📁 上传文件路径信息:`);
+    console.log(`  物理路径: ${req.file.path}`);
+    console.log(`  网络路径: ${webPath}`);
+    console.log(`  缩略图路径: ${thumbPath}`);
+
     apiResponse.success(res, "上传成功", {
-      url: req.file.path,
-      thumbUrl: `uploads/${thumbName}`,
+      url: webPath, // 返回 /uploads/xxx.jpg
+      thumbUrl: thumbPath, // 返回 /uploads/thumb_xxx.jpg
     });
   }
 );
@@ -624,27 +1165,76 @@ function formatDateTime(dateStr) {
   return `${year}-${month}-${day} ${hours}:${minutes}`;
 }
 
-// 获取文章列表接口 (支持分类筛选)
+// ==========================================
+// 🔥 获取文章列表 (支持分页、搜索、分类筛选)
+// ==========================================
 app.get("/api/articles", async (req, res) => {
   try {
-    const { category } = req.query;
+    // 获取前端传来的参数，设置默认值
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const category = req.query.category || "";
+    const keyword = req.query.keyword || "";
 
-    let sql = "SELECT * FROM articles";
-    let params = [];
+    // 计算偏移量 (跳过多少条)
+    const offset = (page - 1) * limit;
 
-    if (category && category !== "latest") {
-      sql += " WHERE category = ?";
-      params.push(category);
+    // 构建动态 SQL 条件
+    let whereClause = "WHERE 1=1";
+    let queryParams = [];
+
+    // 1. 筛选分类
+    if (category && category !== "latest" && category !== "all") {
+      whereClause += " AND category = ?";
+      queryParams.push(category);
     }
 
-    // 🔥 修改：按最后更新时间倒序排列，这样最新修改的文章会排在最前面
-    sql += " ORDER BY updated_at DESC, created_at DESC";
+    // 2. 关键词搜索 (标题 或 摘要)
+    if (keyword) {
+      whereClause += " AND (title LIKE ? OR summary LIKE ?)";
+      const likeKey = `%${keyword}%`;
+      queryParams.push(likeKey, likeKey);
+    }
 
-    const [results] = await dbPool.query(sql, params);
-    apiResponse.success(res, "获取成功", results);
+    // --- 查询总数 (用于计算总页数) ---
+    // 注意：这里需要单独查一次 count，不带 limit
+    const [countResult] = await dbPool.query(
+      `SELECT COUNT(*) as total FROM articles ${whereClause}`,
+      queryParams
+    );
+    const total = countResult[0].total;
+
+    // --- 查询当前页数据 ---
+    // 排序：按发布时间倒序 (新的在前)
+    // 关联：查出作者名字
+    const sql = `
+      SELECT a.*, u.nickname as author_name, u.avatar as author_avatar
+      FROM articles a
+      LEFT JOIN users u ON a.author_id = u.id
+      ${whereClause}
+      ORDER BY a.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    // 把 limit 和 offset 加到参数数组末尾
+    // 注意：mysql2 的 limit/offset 必须是整数
+    const dataParams = [...queryParams, limit, offset];
+
+    const [rows] = await dbPool.query(sql, dataParams);
+
+    // 返回标准分页结构
+    apiResponse.success(res, "获取文章列表成功", {
+      list: rows,
+      pagination: {
+        current: page,
+        pageSize: limit,
+        total: total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (err) {
-    logger.error("查询文章出错:", err);
-    apiResponse.error(res, "服务器错误");
+    logger.error("查询文章列表出错:", err);
+    apiResponse.error(res, "获取文章列表失败");
   }
 });
 
@@ -684,7 +1274,7 @@ app.get("/api/articles/search", async (req, res) => {
 });
 
 // ==========================================
-// 🔥 新增：获取博客全站统计数据 (侧边栏使用)
+// 🔥 新增：获取博客全站统计数据
 // ==========================================
 app.get("/api/blog/stats", async (req, res) => {
   try {
@@ -846,10 +1436,12 @@ app.get("/api/tags/cloud", async (req, res) => {
   }
 });
 
-// 获取单篇文章详情接口
+// 🔥 后端修复：获取文章详情时实时统计评论总数
 app.get("/api/articles/:id", async (req, res) => {
   try {
     const id = req.params.id;
+
+    // 1. 获取文章基础信息
     const [results] = await dbPool.query(
       `SELECT 
         a.*, 
@@ -862,15 +1454,18 @@ app.get("/api/articles/:id", async (req, res) => {
     );
 
     if (results.length > 0) {
-      console.log(`📸 [后端] 文章 ID=${id} 的封面: ${results[0].cover_image}`);
-      // 🔥 确保这里返回了 cover_image
-      console.log("📸 返回的文章数据:", {
-        id: results[0].id,
-        title: results[0].title,
-        cover_image: results[0].cover_image,
-      });
+      const article = results[0];
 
-      apiResponse.success(res, "获取成功", results[0]);
+      // 🔥 2. 实时统计该文章的所有评论数（包括回复）
+      const [commentCount] = await dbPool.query(
+        "SELECT COUNT(*) as total FROM comments WHERE article_id = ?",
+        [id]
+      );
+
+      // 🔥 3. 用实时统计值覆盖数据库中的旧值
+      article.comments = commentCount[0].total;
+
+      apiResponse.success(res, "获取成功", article);
     } else {
       apiResponse.error(res, "文章不存在", 404);
     }
@@ -1019,6 +1614,9 @@ app.post("/api/articles/:id/view", async (req, res) => {
     if (result.affectedRows === 0) {
       return apiResponse.error(res, "文章不存在", 404);
     }
+
+    // 🔥 核心修改：在增加文章浏览量的同时，增加全站每日访问量
+    recordDailyVisit();
 
     // 3. 获取更新后的浏览量
     const [article] = await dbPool.query(
@@ -1180,6 +1778,167 @@ app.post("/api/articles/:id/update-comments-count", async (req, res) => {
     apiResponse.error(res, "更新失败");
   }
 });
+
+// ==========================================
+// 🔥 升级版：管理员获取评论 (修复图片不显示问题)
+// ==========================================
+app.get(
+  "/api/admin/comments",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const keyword = req.query.keyword || "";
+
+      const offset = (page - 1) * limit;
+
+      let whereClause = "WHERE 1=1";
+      let params = [];
+
+      if (keyword) {
+        whereClause += " AND (c.content LIKE ? OR c.nickname LIKE ?)";
+        const likeKey = `%${keyword}%`;
+        params.push(likeKey, likeKey);
+      }
+
+      // 1. 查询总数
+      const [countResult] = await dbPool.query(
+        `SELECT COUNT(*) as total FROM comments c ${whereClause}`,
+        params
+      );
+      const total = countResult[0].total;
+
+      // 2. 查询数据 (注意：c.* 包含了 images 字段)
+      const sql = `
+      SELECT 
+        c.*,
+        a.title as article_title,
+        u.avatar as user_avatar,
+        u.nickname as user_nickname
+      FROM comments c
+      LEFT JOIN articles a ON c.article_id = a.id
+      LEFT JOIN users u ON c.nickname = u.username
+      ${whereClause}
+      ORDER BY c.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+      const dataParams = [...params, limit, offset];
+      const [rows] = await dbPool.query(sql, dataParams);
+
+      // 3. 数据清洗 & JSON 解析
+      const list = rows.map((row) => {
+        // 🔥 核心：解析图片字段
+        let images = [];
+        try {
+          if (row.images) {
+            // 如果已经是数组就直接用，如果是字符串就解析
+            images =
+              typeof row.images === "string"
+                ? JSON.parse(row.images)
+                : row.images;
+          }
+        } catch (e) {
+          console.error("后台评论图片解析失败:", e);
+        }
+
+        return {
+          id: row.id,
+          content: row.content,
+          images: images, // 🔥 把解析好的图片数组返回给前端
+          created_at: row.created_at,
+          article_id: row.article_id,
+          article_title: row.article_title || "未知文章",
+          nickname: row.user_nickname || row.nickname,
+          avatar: row.user_avatar,
+          parent_id: row.parent_id,
+        };
+      });
+
+      apiResponse.success(res, "获取评论列表成功", {
+        list,
+        pagination: {
+          current: page,
+          pageSize: limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      });
+    } catch (err) {
+      logger.error("管理员获取评论失败:", err);
+      apiResponse.error(res, "获取评论列表失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 获取 Dashboard 7天趋势数据 (真实数据库版)
+// ==========================================
+app.get(
+  "/api/admin/dashboard/trend",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      // 1. 生成过去 7 天的日期数组 (YYYY-MM-DD)
+      const dates = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        dates.push(d.toISOString().split("T")[0]);
+      }
+
+      // 2. 查询 daily_stats 表中的数据
+      // 我们使用 WHERE date IN (...) 查出这几天的记录
+      const [rows] = await dbPool.query(
+        `SELECT date, views FROM daily_stats WHERE date >= ?`,
+        [dates[0]] // 从7天前开始
+      );
+
+      // 3. 查询 comments 表，按天分组统计真实评论数
+      const [commentRows] = await dbPool.query(
+        `SELECT DATE(created_at) as date, COUNT(*) as count 
+       FROM comments 
+       WHERE created_at >= ? 
+       GROUP BY DATE(created_at)`,
+        [`${dates[0]} 00:00:00`]
+      );
+
+      // 4. 数据合并与补零 (关键步骤！)
+      // 数据库可能没有某一天的记录（因为那天没人访问），我们需要补 0
+      const viewData = [];
+      const commentData = [];
+
+      dates.forEach((date) => {
+        // 找访问量
+        const vRecord = rows.find((r) => {
+          // 处理时区导致的日期格式差异，确保匹配 YYYY-MM-DD
+          const dbDate = new Date(r.date).toISOString().split("T")[0];
+          return dbDate === date;
+        });
+        viewData.push(vRecord ? vRecord.views : 0);
+
+        // 找评论数
+        const cRecord = commentRows.find((r) => {
+          const dbDate = new Date(r.date).toISOString().split("T")[0];
+          return dbDate === date;
+        });
+        commentData.push(cRecord ? cRecord.count : 0);
+      });
+
+      apiResponse.success(res, "获取趋势数据成功", {
+        dates, // x轴：['2025-12-11', '2025-12-12'...]
+        viewData, // y轴1：[10, 5, 20...]
+        commentData, // y轴2：[0, 1, 3...]
+      });
+    } catch (err) {
+      logger.error("获取趋势图失败:", err);
+      apiResponse.error(res, "获取数据失败");
+    }
+  }
+);
 
 // ==========================================
 // 🔥 删除文章接口（需要认证和管理员权限）
@@ -1619,6 +2378,133 @@ app.get("/api/current-user", authenticateToken, async (req, res) => {
   } catch (err) {
     logger.error("获取当前用户失败:", err);
     apiResponse.error(res, "服务器错误");
+  }
+});
+
+// ==========================================
+// 🔥 新增：管理员获取用户列表
+// ==========================================
+app.get(
+  "/api/admin/users",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const keyword = req.query.keyword || "";
+      const offset = (page - 1) * limit;
+
+      let whereClause = "WHERE 1=1";
+      let params = [];
+
+      // 搜索用户名或昵称
+      if (keyword) {
+        whereClause += " AND (username LIKE ? OR nickname LIKE ?)";
+        const likeKey = `%${keyword}%`;
+        params.push(likeKey, likeKey);
+      }
+
+      // 1. 总数
+      const [countResult] = await dbPool.query(
+        `SELECT COUNT(*) as total FROM users ${whereClause}`,
+        params
+      );
+      const total = countResult[0].total;
+
+      // 2. 列表 (不查密码!)
+      const sql = `
+      SELECT id, username, nickname, email, phone, role, avatar, created_at 
+      FROM users 
+      ${whereClause} 
+      ORDER BY created_at DESC 
+      LIMIT ? OFFSET ?
+    `;
+      const dataParams = [...params, limit, offset];
+      const [rows] = await dbPool.query(sql, dataParams);
+
+      apiResponse.success(res, "获取用户列表成功", {
+        list: rows,
+        pagination: {
+          current: page,
+          pageSize: limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      });
+    } catch (err) {
+      logger.error("获取用户列表失败:", err);
+      apiResponse.error(res, "获取失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 新增：管理员修改用户角色 (提拔/降级)
+// ==========================================
+app.patch(
+  "/api/admin/users/:id/role",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const userId = req.params.id;
+      const { role } = req.body;
+
+      if (!["admin", "user"].includes(role)) {
+        return apiResponse.error(res, "无效的角色类型", 400);
+      }
+
+      // 防止自己降级自己 (可选保护)
+      if (parseInt(userId) === req.user.id && role === "user") {
+        return apiResponse.error(res, "不能降级自己的管理员权限", 403);
+      }
+
+      await dbPool.query("UPDATE users SET role = ? WHERE id = ?", [
+        role,
+        userId,
+      ]);
+
+      logger.info(
+        `👑 用户权限变更: ID=${userId} -> ${role} (操作者: ${req.user.username})`
+      );
+      apiResponse.success(res, "权限修改成功");
+    } catch (err) {
+      logger.error("修改权限失败:", err);
+      apiResponse.error(res, "修改失败");
+    }
+  }
+);
+
+// 辅助：记录每日访问 (upsert: 有则加1，无则插入)
+const recordDailyVisit = async () => {
+  try {
+    const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+    await dbPool.query(
+      `INSERT INTO daily_stats (date, views) VALUES (?, 1) 
+       ON DUPLICATE KEY UPDATE views = views + 1`,
+      [today]
+    );
+  } catch (err) {
+    console.error("记录访问量失败:", err);
+  }
+};
+
+// ==========================================
+// 🔥 新增：记录全站访问量 (独立接口)
+// ==========================================
+// 不需要 authenticateToken，因为访客也要记录
+app.post("/api/site/visit", async (req, res) => {
+  try {
+    // 调用之前写好的记录函数
+    await recordDailyVisit();
+
+    // 简单响应即可，不需要返回数据
+    res.status(200).json({ success: true, message: "Visit recorded" });
+  } catch (err) {
+    // 即使失败也不要报错给前端，默默记录日志即可
+    logger.error("记录全站访问失败:", err);
+    res.status(200).json({ success: false }); // 保持 200 防止前端报红
   }
 });
 
@@ -2428,7 +3314,7 @@ app.post(
   upload.single("image"),
   async (req, res) => {
     try {
-      logger.info(`🔍 收到上传请求: 用户=${req.user.username}`);
+      logger.info(`🔍 收到用户壁纸上传请求: 用户=${req.user.username}`);
 
       if (!req.file) {
         return apiResponse.error(res, "请选择图片文件", 400);
@@ -2437,10 +3323,14 @@ app.post(
       // 使用 JWT 中的用户 ID
       const actualUserId = req.user.id;
 
-      const filePath = req.file.path.replace(/\\/g, "/");
-      const dbPath = "/" + filePath;
+      const fileName = req.file.filename;
+      // 🔥 核心修复：数据库中存储相对路径，不含 /api
+      const dbPath = `/uploads/${fileName}`;
 
-      logger.info(`📁 文件路径: ${dbPath}`);
+      console.log(`📁 用户壁纸上传信息:`);
+      console.log(`  用户ID: ${actualUserId}`);
+      console.log(`  文件名: ${fileName}`);
+      console.log(`  存储路径: ${dbPath}`);
 
       clearWallpaperCache();
 
@@ -2450,15 +3340,15 @@ app.post(
       );
 
       logger.info(
-        `✅ 壁纸保存成功: 用户ID=${actualUserId}, 影响行数=${result.affectedRows}`
+        `✅ 用户壁纸保存成功: 用户ID=${actualUserId}, 影响行数=${result.affectedRows}`
       );
 
       apiResponse.success(res, "壁纸上传成功", {
-        url: `/${filePath}`,
+        url: dbPath, // 返回 /uploads/xxx.jpg
         userId: actualUserId,
       });
     } catch (err) {
-      logger.error("处理上传时出错:", err);
+      logger.error("处理用户壁纸上传时出错:", err);
       apiResponse.error(res, "服务器错误");
     }
   }
@@ -2481,9 +3371,12 @@ app.get("/api/notices/latest", async (req, res) => {
         content: results[0].content,
       });
     } else {
-      // 如果没有启用公告，返回默认文案
-      apiResponse.success(res, "使用默认公告", {
-        content: "🎉 欢迎访问 Veritas 的个人博客！",
+      // 🔥 修改前：返回默认文案
+      // apiResponse.success(res, "使用默认公告", { content: "🎉 欢迎..." });
+
+      // 🔥 修改后：返回空字符串，明确告知前端“没公告”
+      apiResponse.success(res, "无活动公告", {
+        content: "",
       });
     }
   } catch (err) {
@@ -2617,6 +3510,85 @@ app.delete(
     } catch (err) {
       logger.error("删除公告失败:", err);
       apiResponse.error(res, "删除失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔗 友链管理接口 (Friend Links)
+// ==========================================
+
+// 1. 获取所有友链 (前台/后台通用)
+// 注意：这里没加 authenticateToken，因为前台也要看。
+// 如果你想区分，可以把这个作为公共接口，再写个带权限的 admin 接口，但这里没必要。
+app.get("/api/friend_links", async (req, res) => {
+  try {
+    const [results] = await dbPool.query(
+      "SELECT * FROM friend_links ORDER BY created_at ASC"
+    );
+    apiResponse.success(res, "获取友链成功", results);
+  } catch (err) {
+    logger.error("获取友链失败:", err);
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// 2. 新增友链 (管理员)
+app.post(
+  "/api/admin/friend_links",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { name, link, avatar, description } = req.body;
+      if (!name || !link) return apiResponse.error(res, "名称和链接必填", 400);
+
+      await dbPool.query(
+        "INSERT INTO friend_links (name, link, avatar, description) VALUES (?, ?, ?, ?)",
+        [name, link, avatar, description]
+      );
+      apiResponse.success(res, "添加成功");
+    } catch (err) {
+      logger.error("添加友链失败:", err);
+      apiResponse.error(res, "添加失败");
+    }
+  }
+);
+
+// 3. 删除友链 (管理员)
+app.delete(
+  "/api/admin/friend_links/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      await dbPool.query("DELETE FROM friend_links WHERE id = ?", [
+        req.params.id,
+      ]);
+      apiResponse.success(res, "删除成功");
+    } catch (err) {
+      logger.error("删除友链失败:", err);
+      apiResponse.error(res, "删除失败");
+    }
+  }
+);
+
+// 4. 修改友链 (管理员)
+app.put(
+  "/api/admin/friend_links/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { name, link, avatar, description } = req.body;
+      await dbPool.query(
+        "UPDATE friend_links SET name=?, link=?, avatar=?, description=? WHERE id=?",
+        [name, link, avatar, description, req.params.id]
+      );
+      apiResponse.success(res, "修改成功");
+    } catch (err) {
+      logger.error("修改友链失败:", err);
+      apiResponse.error(res, "修改失败");
     }
   }
 );
@@ -2758,7 +3730,7 @@ app.use((err, req, res, next) => {
 // ==========================================
 // 🔥 优化15: SPA 路由处理（性能优化）
 // ==========================================
-app.get(/^(?!\/api|\/uploads).*/, (req, res) => {
+app.get(/^(?!\/api).*/, (req, res) => {
   const indexPath = path.join(__dirname, "../client/dist/index.html");
   res.sendFile(indexPath, (err) => {
     if (err) {

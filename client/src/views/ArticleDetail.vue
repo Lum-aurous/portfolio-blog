@@ -167,13 +167,20 @@ const handleScrollToTop = () => {
     }, 100)
 }
 
-// 🔥 新增：计算评论总数 (顶级评论 + 所有回复)
+// 🔥 修复：递归统计所有评论（包括无限级嵌套）
+const countAllComments = (commentList) => {
+    let total = 0
+    for (const comment of commentList) {
+        total += 1 // 当前评论本身
+        if (comment.replies && comment.replies.length > 0) {
+            total += countAllComments(comment.replies) // 递归统计子回复
+        }
+    }
+    return total
+}
+
 const totalCommentCount = computed(() => {
-    return comments.value.reduce((total, comment) => {
-        // 总数 = 当前累加值 + 1(顶级评论本身) + 回复的数量(如果有)
-        const replyCount = comment.replies ? comment.replies.length : 0
-        return total + 1 + replyCount
-    }, 0)
+    return countAllComments(comments.value)
 })
 
 
@@ -687,128 +694,6 @@ onUnmounted(() => {
 
                         <div v-if="comments.length === 0" class="empty-state">
                             暂无评论，快来抢沙发~
-                        </div>
-                        <div v-for="comment in comments" :key="comment.id" class="comment-thread">
-                            <div class="yt-comment-container top-level">
-                                <img :src="comment.avatar || 'https://i.pravatar.cc/150?img=1'" class="avatar" />
-                                <div class="comment-body">
-                                    <div class="comment-header-line">
-                                        <span class="username">@{{ comment.nickname }}</span>
-                                        <span class="time">{{ formatRelativeTime(comment.created_at) }}</span>
-                                    </div>
-                                    <div class="comment-text">
-                                        {{ comment.content }}
-                                        <div v-if="comment.images?.length" class="comment-images-grid">
-                                            <img v-for="(img, i) in comment.images" :key="i" :src="img" />
-                                        </div>
-                                    </div>
-                                    <div class="comment-actions">
-                                        <button class="action-btn" :class="{ active: comment.is_liked }"
-                                            @click="handleAction(comment, 'like')">
-                                            <svg v-if="comment.is_liked" viewBox="0 0 24 24" width="16" height="16"
-                                                fill="currentColor">
-                                                <path
-                                                    d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z" />
-                                            </svg>
-                                            <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none"
-                                                stroke="currentColor" stroke-width="2">
-                                                <path
-                                                    d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3">
-                                                </path>
-                                            </svg>
-                                            <span class="count" v-if="comment.like_count > 0">{{
-                                                formatCount(comment.like_count) }}</span>
-                                        </button>
-                                        <button class="action-btn" :class="{ active: comment.is_disliked }"
-                                            @click="handleAction(comment, 'dislike')">
-                                            <svg v-if="comment.is_disliked" viewBox="0 0 24 24" width="16" height="16"
-                                                fill="currentColor">
-                                                <path
-                                                    d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z" />
-                                            </svg>
-                                            <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none"
-                                                stroke="currentColor" stroke-width="2"
-                                                style="transform: rotate(180deg)">
-                                                <path
-                                                    d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3">
-                                                </path>
-                                            </svg>
-                                        </button>
-                                        <button class="action-btn reply-btn"
-                                            @click="setReplyTarget(comment)">回复</button>
-                                        <button v-if="isAdmin || currentUser.username === comment.nickname"
-                                            class="action-btn delete-btn" @click="deleteComment(comment.id)">删除</button>
-                                    </div>
-                                </div>
-                            </div>
-                            <div v-if="comment.replies && comment.replies.length > 0" class="replies-section">
-                                <button class="toggle-replies-btn" @click="toggleReplies(comment.id)">
-                                    <span class="chevron" :class="{ up: isRepliesVisible(comment.id) }">
-                                        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                                            <path d="M7 10l5 5 5-5z" />
-                                        </svg>
-                                    </span>
-                                    {{ comment.replies.length }} 条回复
-                                </button>
-                                <div v-if="isRepliesVisible(comment.id)"
-                                    class="replies-list animate__animated animate__fadeIn">
-                                    <div v-for="reply in comment.replies" :key="reply.id"
-                                        class="yt-comment-container reply-level">
-                                        <img :src="reply.avatar || 'https://i.pravatar.cc/150?img=2'"
-                                            class="avatar small" />
-                                        <div class="comment-body">
-                                            <div class="comment-header-line">
-                                                <span class="username">@{{ reply.nickname }}</span>
-                                                <span class="time">{{ formatRelativeTime(reply.created_at) }}</span>
-                                            </div>
-                                            <div class="comment-text">
-                                                {{ reply.content }}
-                                                <div v-if="reply.images?.length" class="comment-images-grid">
-                                                    <img v-for="(img, i) in reply.images" :key="i" :src="img" />
-                                                </div>
-                                            </div>
-                                            <div class="comment-actions">
-                                                <button class="action-btn" :class="{ active: reply.is_liked }"
-                                                    @click="handleAction(reply, 'like')">
-                                                    <svg v-if="reply.is_liked" viewBox="0 0 24 24" width="16"
-                                                        height="16" fill="currentColor">
-                                                        <path
-                                                            d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z" />
-                                                    </svg>
-                                                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none"
-                                                        stroke="currentColor" stroke-width="2">
-                                                        <path
-                                                            d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3">
-                                                        </path>
-                                                    </svg>
-                                                    <span class="count" v-if="reply.like_count > 0">{{
-                                                        formatCount(reply.like_count) }}</span>
-                                                </button>
-                                                <button class="action-btn" :class="{ active: reply.is_disliked }"
-                                                    @click="handleAction(reply, 'dislike')">
-                                                    <svg v-if="reply.is_disliked" viewBox="0 0 24 24" width="16"
-                                                        height="16" fill="currentColor">
-                                                        <path
-                                                            d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z" />
-                                                    </svg>
-                                                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none"
-                                                        stroke="currentColor" stroke-width="2"
-                                                        style="transform: rotate(180deg)">
-                                                        <path
-                                                            d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3">
-                                                        </path>
-                                                    </svg>
-                                                </button>
-                                                <button class="action-btn reply-btn"
-                                                    @click="setReplyTarget(reply, comment.id)">回复</button>
-                                                <button v-if="isAdmin || currentUser.username === reply.nickname"
-                                                    class="action-btn delete-btn"
-                                                    @click="deleteComment(reply.id)">删除</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
                         </div>
                     </div>
                 </div>

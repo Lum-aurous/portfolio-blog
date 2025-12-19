@@ -6,6 +6,13 @@ import { useRouter } from 'vue-router'
 
 const userStore = useUserStore()
 const router = useRouter()
+const notices = ref([{ content: '' }]) // 防止未定义错误
+// ==================== 文章分页逻辑 ====================
+// 分页状态
+const currentPage = ref(1)
+const pageSize = 9 // 🔥 每次加载 9 篇（配合 2列/3列 布局比较好看）
+const hasMore = ref(true) // 是否还有更多文章
+const isLoadingMore = ref(false) // 按钮loading状态
 
 // ==================== 1. 用户信息逻辑 ====================
 const defaultAvatar = 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'
@@ -330,6 +337,10 @@ const categories = computed(() => {
 
     // 2. 中间动态：来自数据库
     dbCategories.value.forEach(catName => {
+        // 🔥 核心修复：过滤掉重复的分类名
+        // 如果数据库里有 '最新'、'战友'、'友链'，这里直接跳过，防止重复显示
+        if (['最新', '战友', '友链'].includes(catName)) return
+
         list.push({
             id: catName, // 使用分类名作为ID
             name: catName,
@@ -337,8 +348,9 @@ const categories = computed(() => {
         })
     })
 
-    // 3. 尾部固定：战友 (友链)
-    list.push({ id: 'friends', name: '战友', icon: '⭐' })
+    // 3. 尾部固定：友链 (改名)
+    // 🔥 修改：将 '战友' 改为 '友链'
+    list.push({ id: 'friends', name: '友链', icon: '⭐' })
 
     return list
 })
@@ -362,48 +374,89 @@ const fetchCategories = async () => {
 const articles = ref([])
 const isLoadingArticles = ref(false)
 
-// 🔥 关键修改：获取文章列表（包含评论数自动处理）
-const fetchArticles = async (categoryName = 'latest', isSilent = false) => {
-    // isSilent 参数用于静默刷新，不显示 loading
-    if (!isSilent) {
-        console.log(`📝 开始获取文章，分类: ${categoryName}`)
+// 🔥 核心修改：获取文章列表
+// isLoadMore: true 表示点击了"加载更多"，false 表示切换分类或搜索（需要重置）
+const fetchArticles = async (categoryName = 'latest', isLoadMore = false) => {
+    // 1. 确定当前要查第几页
+    const pageToFetch = isLoadMore ? currentPage.value + 1 : 1
+
+    // 2. 设置 Loading 状态
+    if (isLoadMore) {
+        isLoadingMore.value = true
+    } else {
+        // 如果是全新加载，开启全屏骨架屏Loading（或者保留你现有的）
         isLoadingArticles.value = true
+        // 重置状态
+        currentPage.value = 1
+        hasMore.value = true
+        // 注意：如果是切换分类，先不清空 articles，防止页面闪烁，等数据回来再替换
     }
 
     try {
+        // 3. 发送请求
         const res = await axios.get('/api/articles', {
-            params: { category: categoryName }
+            params: {
+                category: categoryName,
+                page: pageToFetch,
+                limit: pageSize,
+                keyword: searchQuery.value // 支持在搜索结果中分页
+            }
         })
 
         if (res.data.success) {
-            // 🔥 这里进行数据增强，确保 comments 和 views 是数字
-            // 如果后端返回的是 comment_count 也能兼容
-            articles.value = res.data.data.map(article => ({
+            const { list, pagination } = res.data.data
+
+            // 数据处理：补全评论数和浏览量（防止后端返回null）
+            const processedList = list.map(article => ({
                 ...article,
-                comments: article.comments || article.comment_count || 0,
-                views: article.views || article.view_count || 0
+                comments: article.comments || 0,
+                views: article.views || 0
             }))
+
+            // 4. 数据更新逻辑
+            if (isLoadMore) {
+                // 追加模式：把新数据拼接到旧数据后面
+                articles.value = [...articles.value, ...processedList]
+                currentPage.value = pageToFetch // 页码+1
+            } else {
+                // 覆盖模式：替换所有数据
+                articles.value = processedList
+            }
+
+            // 5. 判断是否还有更多数据
+            // 如果当前拿到的数量 < pageSize，或者当前页已经是最后一页，说明没数据了
+            if (processedList.length < pageSize || pageToFetch >= pagination.totalPages) {
+                hasMore.value = false
+            } else {
+                hasMore.value = true
+            }
         }
     } catch (error) {
         console.error('❌ 请求出错:', error)
     } finally {
-        if (!isSilent) isLoadingArticles.value = false
+        isLoadingArticles.value = false
+        isLoadingMore.value = false
     }
+}
+
+// 专门用于"加载更多"按钮的点击事件
+const handleLoadMore = () => {
+    if (isLoadingMore.value || !hasMore.value) return
+
+    // 使用当前选中的分类（如果是搜索状态，activeCategory会被清空，这里要注意）
+    // 我们可以复用 fetchArticles 的逻辑
+    const queryCat = isSearching.value ? '' : (activeCategory.value === 'latest' ? 'latest' : activeCategory.value)
+
+    fetchArticles(queryCat, true) // true 表示这是追加加载
 }
 
 // 监听分类变化 (点击菜单时触发)
 watch(activeCategory, (newCategory) => {
-    // 如果是 'latest' 或 'friends'，传参就是 'latest' 或 'friends'
-    // 如果是动态分类（id就是name），直接传 name
-    // 注意：如果是 'friends'，我们只切视图，不查文章接口（或者你以后想做专门的友链接口也可以）
+    if (newCategory === 'friends') return
 
-    if (newCategory === 'friends') {
-        // 友链不需要查文章，直接跳过
-        return
-    }
-
+    // 切换分类时，重置为第一页加载
     const queryCat = newCategory === 'latest' ? 'latest' : newCategory
-    fetchArticles(queryCat)
+    fetchArticles(queryCat, false)
 })
 
 // ==================== 🔥 新增：站点统计逻辑 ====================
@@ -425,30 +478,42 @@ const fetchSiteStats = async () => {
     }
 }
 
-const notices = ref([
-    { id: 1, content: '🎉 欢迎访问 Veritas 的个人博客！' }, // 默认值，接口加载前显示这个
-    { id: 2, content: '💻 网站正在重构优化中，更多功能敬请期待...' }
-])
+// 🔥 新增：控制公告栏是否显示的变量
+const showNotice = ref(false)
 
-// 🔥 新增：获取最新公告
+// 修改获取公告的逻辑
 const fetchLatestNotice = async () => {
     try {
         const res = await axios.get('/api/notices/latest')
-        if (res.data.success) {
-            // 直接覆盖第一条公告的内容
+        // 🔥 只有当 success 为 true 且 content 有内容时，才显示
+        if (res.data.success && res.data.data.content) {
             notices.value[0].content = res.data.data.content
+            showNotice.value = true // 显示
+        } else {
+            showNotice.value = false // 隐藏
         }
     } catch (error) {
-        console.error('❌ 获取公告失败:', error)
-        // 失败了也不用处理，直接显示默认的即可
+        showNotice.value = false // 出错也隐藏
     }
 }
 
-const friendLinks = ref([
-    { id: 1, name: 'Poetize', desc: '一个很棒的博客主题', avatar: 'https://poetize.cn/favicon.ico', link: 'https://poetize.cn' },
-    { id: 2, name: 'Vue.js', desc: '渐进式 JavaScript 框架', avatar: 'https://vuejs.org/images/logo.png', link: 'https://vuejs.org' },
-    { id: 3, name: 'Vite', desc: '下一代前端工具链', avatar: 'https://vitejs.dev/logo.svg', link: 'https://vitejs.dev' }
-])
+// 1. 数据改为空
+const friendLinks = ref([])
+
+// 2. 添加获取函数
+const fetchFriendLinks = async () => {
+    try {
+        // 注意：这里用 axios 或 api 都可以，但因为是前台公开接口，建议用 axios
+        // 如果你的后端接口 '/api/friend_links' 不需要鉴权，直接调就行
+        const res = await axios.get('/api/friend_links')
+        if (res.data.success) {
+            friendLinks.value = res.data.data
+        }
+    } catch (error) {
+        console.error('获取友链失败', error)
+        // 失败了可以给几个默认的，或者就空着
+    }
+}
 
 const searchQuery = ref('')
 const selectedTagId = ref(null)
@@ -644,6 +709,9 @@ const performSearch = async (keyword) => {
     } finally {
         isLoadingArticles.value = false
     }
+    searchQuery.value = keyword
+    // 调用 fetchArticles，它内部会读取 searchQuery.value
+    fetchArticles('', false) // 传空分类，false表示重置
 }
 
 // 搜索框的回车事件
@@ -724,6 +792,7 @@ onMounted(async () => {
     fetchSiteStats()
     fetchLatestComments()
     fetchLatestNotice() // 👈 新增：初次加载公告
+    fetchFriendLinks() // 👈 加上这句
 
     // 4. 🔥 启动数据自动轮询 (每30秒刷新一次数据)
     statsTimer = setInterval(() => {
@@ -813,7 +882,7 @@ onUnmounted(() => {
 
                     <div class="profile-action-btn">
                         <button class="friend-btn-crystal" @click="handleFriendClick">
-                            <span class="icon-star">☆</span> 友站
+                            <span class="icon-star">☆</span> 友链
                         </button>
                     </div>
                 </div>
@@ -916,7 +985,8 @@ onUnmounted(() => {
             </aside>
 
             <section class="content-wrapper animate__animated animate__fadeInUp">
-                <div class="notice-bar">
+                <!-- ✅ 正确的结构 -->
+                <div v-if="showNotice" class="notice-bar">
                     <div class="notice-icon-box">
                         <svg class="notice-svg" viewBox="0 0 1194 1024" width="25" height="25">
                             <path
@@ -926,13 +996,13 @@ onUnmounted(() => {
                                 d="M455.23868 119.287604L257.237325 332.397807H73.145396v262.982943h184.091929l195.176909 213.226276s2.824445-674.017119 2.824446-689.319422z m0 0"
                                 fill="#F5D04C"></path>
                             <path
-                                d="M451.408268 0.080535L230.443785 221.161091h-156.698678A73.783798 73.783798 0 0 0 0 294.906197v294.845008a73.803143 73.803143 0 0 0 73.745107 73.764452h156.698678l220.964483 221.06121a73.706416 73.706416 0 0 0 73.667724-73.745107v-737.064155A73.609688 73.609688 0 0 0 451.408268 0.119226m0 808.236308l-193.455159-213.419731H73.745107V300.052105h184.208002l193.455159-213.419732v721.68447m436.821748-333.74884c7.254568 0 13.193642-14.509137 13.193642-32.345702s-5.803655-32.326357-13.193642-32.326357h-92.181383c-7.254568 0-13.193642 14.509137-13.193642 32.326357s5.803655 32.345703 13.193642 32.345702h92.200729m9.982286-417.766415c6.345329-3.617611 4.120595-19.132715-4.739651-34.551091s-21.280067-25.149171-27.606052-21.473523L786.047001 46.838647c-6.345329 3.617611-4.120595 19.132715 4.739652 34.551092s21.280067 25.149171 27.606051 21.473522l79.819598-46.061673m0 770.957499c6.345329 3.617611 4.120595 19.132715-4.739651 34.551091s-21.280067 25.149171-27.606051 21.473523l-79.819599-46.061673c-6.345329-3.617611-4.120595-19.132715 4.739652-34.551092s21.280067-25.149171 27.606051-21.473522l79.819598 46.061673M576.960666 607.877953c-6.538784-17.720493-4.720306-34.454364 12.903459-40.993148 44.649451-20.661011 66.0069-60.764265 71.44299-111.159334 6.345329-58.732986-21.763705-112.648939-70.224223-134.915628-15.92136-10.175741-22.479489-27.915579-12.20701-43.740211s27.915579-22.460144 43.740211-12.187675c71.849246 41.728278 114.970401 114.273962 105.897354 198.098082-7.254568 67.109595-48.073607 130.601578-110.44355 157.801373-14.605864 8.260535-34.144836 2.921173-41.109221-12.903459"
+                                d="M451.408268 0.080535L230.443785 221.161091h-156.698678A73.783798 73.783798 0 0 0 0 294.906197v294.845008a73.803143 73.803143 0 0 0 73.745107 73.764452h156.698678l220.964483 221.06121a73.706416 73.706416 0 0 0 73.667724-73.745107v-737.064155A73.609688 73.609688 0 0 0 451.408268 0.119226m0 808.236308l-193.455159-213.419731H73.745107V300.052105h184.208002l193.455159-213.419732v721.68447m436.821748-333.74884c7.254568 0 13.193642-14.509137 13.193642-32.345702s-5.803655-32.326357-13.193642-32.326357h-92.181383c-7.254568 0-13.193642 14.509137-13.193642 32.326357s5.803655 32.345703 13.193642 32.345702h92.200729m9.982286-417.766415c6.345329-3.617611 4.120595-19.132715-4.739651-34.551091s-21.280067-25.149171-27.606052-21.473523L786.047001 46.838647c-6.345329 3.617611-4.120595 19.132715 4.739652 34.551092s21.280067 25.149171 27.606051 21.473522l79.819598-46.061673m0 770.957499c6.345329 3.617611 4.120595 19.132715-4.739651 34.551091s-21.280067 25.149171-27.606051 21.473523l-79.819599-46.061673c-6.345329-3.617611-4.120595-19.132715 4.739652-34.551092s21.280067 25.149171 27.606051 21.473522l79.819598 46.061673M576.960666 607.877953c-6.538784-17.720493-4.720306-34.454364 12.903459-40.993148 44.649451-20.661011 66.0069-60.764265 71.44299-111.159334 6.345329-58.732986-21.763705-112.648939-70.224223-134.915628-15.92136-10.175741-22.479489-27.915579-12.20701-43.740211s27.915579-22.460144 43.740211-12.187675c71.849246 41.728278 114.970401 114.273962 105.897354 198.098082-7.254568 67.109595-48.073607 130.601578-110.44355 157.801373-14.605864 8.260535-34.144836 2.921173-41.109221-12.903459"
                                 fill="#ED752A"></path>
                         </svg>
                         <span class="notice-label" style="margin-left:5px">公告</span>
                     </div>
                     <div class="notice-content-wrapper">
-                        <div class="scroll-text">{{ notices[0].content }}</div>
+                        <div class="scroll-text">{{ notices[0]?.content || '暂无公告' }}</div>
                     </div>
                 </div>
 
@@ -958,40 +1028,72 @@ onUnmounted(() => {
                 </div>
 
                 <div v-else class="article-grid">
+
                     <div v-if="isSearching" class="search-result-bar animate__animated animate__fadeIn">
                         <div class="result-info">
                             <span class="search-icon">🔍</span>
                             <span>正在显示 <b>"{{ searchQuery }}"</b> 的搜索结果</span>
                             <span class="result-count">({{ articles.length }}篇)</span>
                         </div>
-                        <button class="clear-search-btn" @click="resetView">
-                            ✕ 清除筛选
-                        </button>
+                        <button class="clear-search-btn" @click="resetView">✕ 清除筛选</button>
                     </div>
 
-                    <div v-for="article in filteredArticles" :key="article.id" class="article-card">
-                        <div class="card-cover"><router-link :to="'/article/' + article.id"><img
-                                    :src="article.cover_image" alt="cover"></router-link><span class="card-tag">{{
-                                        article.category }}</span></div>
-                        <div class="card-info">
-                            <div class="publish-time">📅 {{ formatDate(article.created_at) }}</div>
-                            <h3 class="title"><router-link :to="'/article/' + article.id">{{ article.title
-                            }}</router-link></h3>
-                            <p class="summary">{{ article.summary }}</p>
-                            <div class="card-footer">
-                                <div class="meta"><span>🔥 {{ article.views || 0 }}</span><span>💬 {{ article.comments
-                                    || 0
-                                        }}</span></div><router-link :to="'/article/' + article.id"
-                                    class="read-btn">阅读全文</router-link>
+                    <div v-for="article in filteredArticles" :key="article.id"
+                        class="article-card animate__animated animate__fadeInUp">
+
+                        <div class="card-cover-wrapper" @click="router.push('/article/' + article.id)">
+                            <img :src="article.cover_image" alt="cover" loading="lazy">
+                        </div>
+
+                        <div class="card-body">
+
+                            <div class="meta-row date">
+                                <span class="icon">📅</span>
+                                <span>发布于 {{ formatDateTime(article.created_at) }}</span>
                             </div>
+
+                            <h3 class="card-title" @click="router.push('/article/' + article.id)">
+                                {{ article.title }}
+                            </h3>
+
+                            <div class="meta-row stats">
+                                <div class="stat-item fire">
+                                    <span class="icon">🔥</span> {{ article.views || 0 }} 热度
+                                </div>
+                                <div class="stat-item comment">
+                                    <span class="icon">📝</span> {{ article.comments || 0 }} 评论
+                                </div>
+                            </div>
+
+                            <div class="tags-row">
+                                <div class="tag-pill category">
+                                    <span class="icon">📂</span> {{ article.category || '未分类' }}
+                                </div>
+
+                                <div class="tag-pill tag clickable" @click.stop="router.push('/article/' + article.id)">
+                                    <span class="icon">🏷️</span> 正文
+                                </div>
+                            </div>
+
                         </div>
                     </div>
+
                     <div v-if="articles.length === 0" class="empty-state">
                         📭 没有找到与 "{{ searchQuery }}" 相关的文章...
                         <br>
                         <span class="reset-link" @click="resetView">返回首页</span>
                     </div>
+
+                    <div v-if="articles.length > 0 && activeCategory !== 'friends'"
+                        class="pagination-container animate__animated animate__fadeInUp">
+                        <button v-if="hasMore" class="load-more-btn" @click="handleLoadMore" :disabled="isLoadingMore">
+                            <span v-if="isLoadingMore" class="loading-spinner-small"></span>
+                            <span v-else>✨ 加载更多精彩</span>
+                        </button>
+                        <p v-else class="no-more-text">—— 到底啦，去看看别的分类吧 🪐 ——</p>
+                    </div>
                 </div>
+
             </section>
         </main>
 
@@ -1766,35 +1868,220 @@ onUnmounted(() => {
     color: #888;
 }
 
+/* ==================== 🔥 全新文章卡片样式 ==================== */
+
+/* 1. 网格布局 (保证 3 列) */
 .article-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    /* 最小宽度 280px，保证大屏 3 列，中屏 2 列 */
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 25px;
+    align-items: start;
+    /* 防止卡片高度强制拉伸 */
 }
 
+/* 2. 卡片容器 */
 .article-card {
+    background: #fff;
+    border-radius: 16px;
+    /* 大圆角 */
+    overflow: hidden;
+    /* 裁剪图片圆角 */
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.06);
+    /* 初始柔和阴影 */
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    border: 1px solid #f0f0f0;
     display: flex;
     flex-direction: column;
     height: 100%;
-    position: relative;
-    overflow: hidden;
+    /* 占满网格高度 */
 }
 
-.card-cover {
-    height: 200px;
-    position: relative;
-    overflow: hidden;
+.article-card:hover {
+    transform: translateY(-8px);
+    /* 悬浮上移 */
+    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);
+    /* 阴影加深 */
+    border-color: rgba(72, 203, 182, 0.3);
+    /* 边框泛微绿 */
 }
 
-.card-cover img {
+/* 3. 封面图区域 (纯净版) */
+.card-cover-wrapper {
+    height: 135px;
+    /* 固定高度，紧凑型 */
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.card-cover-wrapper img {
     width: 100%;
     height: 100%;
     object-fit: cover;
+    /* 裁剪填充 */
     transition: transform 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
-.article-card:hover .card-cover img {
+/* 图片悬停放大 */
+.article-card:hover .card-cover-wrapper img {
     transform: scale(1.1);
+}
+
+/* 4. 内容区域 */
+.card-body {
+    padding: 15px 18px 18px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    /* 关键：占满卡片剩余高度 */
+    position: relative;
+    /* 为绝对定位做准备(如果需要) */
+}
+
+/* 日期行 */
+.meta-row.date {
+    font-size: 0.8rem;
+    color: #999;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    /* 固定间距 */
+    flex-shrink: 0;
+    /* 防止被压缩 */
+}
+
+.meta-row.date .icon {
+    opacity: 0.7;
+}
+
+/* 标题 */
+.card-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #333;
+
+    /* 🔥 修改：间距改小 */
+    margin: 0 0 6px 0;
+
+    /* 🔥 修改：行高设为 1.4，两行高度约为 2.8rem -> 3.1rem (视字体而定) */
+    /* 给它一个刚好够放两行的固定高度，这样无论标题长短，下方内容起始位置都一样 */
+    line-height: 1.4;
+    height: 3.1rem;
+
+    cursor: pointer;
+    transition: color 0.2s;
+
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.card-title:hover {
+    color: #48cbb6;
+    /* 悬停变色 */
+}
+
+/* 热度/评论统计行 */
+.meta-row.stats {
+    display: flex;
+    gap: 15px;
+    font-size: 0.75rem;
+    /* 字体改小一点点更精致 */
+    color: #999;
+    /* 颜色淡一点 */
+
+    /* 🔥 关键：删掉 margin-top: auto，改为固定小间距 */
+    /* 这样它就会紧紧贴在标题下面，消灭红框空白 */
+    margin-top: 4px;
+    margin-bottom: 10px;
+}
+
+.stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.stat-item.fire {
+    color: #ff5722;
+}
+
+/* 热度红 */
+.stat-item.comment {
+    color: #795548;
+}
+
+/* 评论褐 */
+
+/* 5. 底部标签行 (胶囊样式) */
+.tags-row {
+    display: flex;
+    gap: 10px;
+
+    /* 🔥 关键：也不要 auto，让它自然跟在 stats 后面 */
+    /* 这样整个内容块就非常紧凑了 */
+    margin-top: 0;
+}
+
+.tag-pill {
+    padding: 3px 8px;
+    /* 🔥 内边距改小 */
+    border-radius: 6px;
+    font-size: 0.7rem;
+    /* 字体改小 */
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+/* 分类标签 (黄色系) */
+.tag-pill.category {
+    background: #fff7e6;
+    color: #fa8c16;
+    border: 1px solid rgba(250, 140, 22, 0.2);
+}
+
+.tag-pill.category:hover {
+    background: #ffe7ba;
+}
+
+/* 普通标签 (紫色系) */
+.tag-pill.tag {
+    background: #f9f0ff;
+    color: #722ed1;
+    border: 1px solid rgba(114, 46, 209, 0.2);
+}
+
+/* 可点击标签样式 */
+.tag-pill.tag.clickable {
+    cursor: pointer;
+}
+
+.tag-pill.tag.clickable:hover {
+    background: #722ed1;
+    color: white;
+    border-color: #722ed1;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(114, 46, 209, 0.3);
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .article-grid {
+        grid-template-columns: 1fr;
+        /* 手机端单列 */
+    }
+
+    .card-cover-wrapper {
+        height: 180px;
+        /* 手机上图片可以高一点 */
+    }
 }
 
 .card-tag {
@@ -2300,5 +2587,73 @@ onUnmounted(() => {
     color: #48cbb6;
     text-decoration: underline;
     cursor: pointer;
+}
+
+/* ==================== 分页加载样式 ==================== */
+.pagination-container {
+    grid-column: 1 / -1;
+    /* 占满网格整行 */
+    display: flex;
+    justify-content: center;
+    margin-top: 30px;
+    margin-bottom: 20px;
+}
+
+.load-more-btn {
+    padding: 12px 40px;
+    border-radius: 50px;
+    border: none;
+    background: white;
+    color: #48cbb6;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 15px rgba(72, 203, 182, 0.2);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    outline: none;
+}
+
+.load-more-btn:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 25px rgba(72, 203, 182, 0.35);
+    background: #f0fdfa;
+    /* 极浅的青色背景 */
+}
+
+.load-more-btn:active {
+    transform: scale(0.98);
+}
+
+.load-more-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.no-more-text {
+    color: #999;
+    font-size: 0.9rem;
+    letter-spacing: 1px;
+    font-family: 'PingFang SC', sans-serif;
+    padding: 10px;
+}
+
+/* 按钮内的小 Loading */
+.loading-spinner-small {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #48cbb6;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 </style>

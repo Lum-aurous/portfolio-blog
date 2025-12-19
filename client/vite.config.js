@@ -14,17 +14,12 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
-      host: "0.0.0.0",
+      host: "localhost",
       proxy: {
         "/api": {
-          // 建议1: 使用 127.0.0.1 避免 DNS 解析问题
           target: env.VITE_API_TARGET || "http://127.0.0.1:3000",
           changeOrigin: true,
           secure: false,
-          // 建议2: 你的后端路由定义里包含了 /api，所以这里不需要 rewrite
-          // 默认情况下 proxy 会把 /api/xxx 原样发给后端，这正是你需要的
-
-          // 保留你的日志配置，非常有价值
           configure: (proxy, options) => {
             proxy.on("error", (err, req, res) => {
               console.log("❌ 代理错误:", err);

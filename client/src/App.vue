@@ -4,11 +4,42 @@ import { useWallpaperStore } from '@/stores/wallpaper'
 import Navbar from '@/components/Navbar.vue'
 import ToastManager from '@/components/ToastManager.vue'
 import { useUserStore } from '@/stores/user.js'
+import { useRoute } from 'vue-router' // 🔥 引入 useRoute
 
+const route = useRoute() // 🔥 获取路由实例
 const userStore = useUserStore()
 const wallpaperStore = useWallpaperStore()
 const isAppReady = ref(false)
 const imageLoaded = ref(false)
+
+// 🔥 新增：判断是否显示前台组件 (Navbar 和 背景)
+const showNavbar = computed(() => {
+  // 如果路径以 /admin 开头，或者是登录/注册页(可选)，就不显示 Navbar
+  if (route.path.startsWith('/admin')) return false
+  return true
+})
+
+// 🔥 新增：记录访问量的函数
+const recordVisit = async () => {
+  // 1. 检查本次会话是否已经记录过
+  const hasVisited = sessionStorage.getItem('site_visited')
+
+  if (!hasVisited) {
+    try {
+      // 2. 如果没记录过，发请求给后端
+      await api.post('/site/visit')
+
+      // 3. 标记为已记录 (关闭浏览器标签页前都有效)
+      sessionStorage.setItem('site_visited', 'true')
+      console.log('🚀 全站访问量 +1')
+    } catch (error) {
+      // 失败了也不用打扰用户
+      console.warn('访问统计失败', error)
+    }
+  } else {
+    console.log('👻 本次会话已统计，跳过')
+  }
+}
 
 // ==================== 1. 动态背景样式计算 ====================
 const backgroundStyle = computed(() => {
@@ -16,15 +47,10 @@ const backgroundStyle = computed(() => {
   const blur = wallpaperStore.wallpaperBlur
   const mask = wallpaperStore.wallpaperMask
 
-  // 🔥 修复：如果没有URL，返回透明背景
   if (!url) {
-    return {
-      backgroundColor: 'transparent',
-      opacity: 0
-    }
+    return { backgroundColor: 'transparent', opacity: 0 }
   }
 
-  // URL 格式化处理
   let formattedUrl = url
   if (url && !url.startsWith('http') && !url.startsWith('/')) {
     formattedUrl = '/' + url
@@ -36,14 +62,10 @@ const backgroundStyle = computed(() => {
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
     backgroundAttachment: 'fixed',
-    // 动态模糊
     filter: `blur(${blur}px)`,
-    // 动态遮罩叠加
     backgroundColor: mask ? 'rgba(0, 0, 0, 0.2)' : 'transparent',
     backgroundBlendMode: mask ? 'overlay' : 'normal',
-    // 样式的变化（如模糊度调整）也要平滑过渡
     transition: 'filter 0.3s ease, background-color 0.3s ease, opacity 0.5s ease',
-    // 确保背景层覆盖整个页面
     position: 'fixed',
     top: 0,
     left: 0,
@@ -56,78 +78,83 @@ const backgroundStyle = computed(() => {
 
 // ==================== 2. 壁纸预加载监听 ====================
 watch(() => wallpaperStore.currentWallpaper, (newUrl) => {
-  console.log('🖼️ App: 壁纸URL变化:', newUrl)
+  // 只有在前台页面才加载壁纸，优化性能
+  if (!showNavbar.value) return
 
-  // 1. URL 变化那一刻，先将加载状态置为 false
+  console.log('🖼️ App: 壁纸URL变化:', newUrl)
   imageLoaded.value = false
 
   if (newUrl) {
-    // 2. 同步更新 CSS 变量 (给其他组件使用)
     document.documentElement.style.setProperty('--wallpaper-bg', `url("${newUrl}")`)
     document.documentElement.style.setProperty('--wallpaper-blur', `${wallpaperStore.wallpaperBlur}px`)
     document.documentElement.style.setProperty('--wallpaper-mask', wallpaperStore.wallpaperMask ? '0.2' : '0')
 
-    // 3. 🚀 创建 Image 对象进行预加载
     const img = new Image()
-
-    // 格式化 URL 供 Image 对象使用
     let formattedUrl = newUrl
     if (!newUrl.startsWith('http') && !newUrl.startsWith('/')) {
       formattedUrl = '/' + newUrl
     }
 
     img.onload = () => {
-      // ✅ 图片下载完毕，浏览器缓存中已存在
       console.log('✅ App: 壁纸预加载成功:', formattedUrl)
       imageLoaded.value = true
     }
-
     img.onerror = (err) => {
       console.error('❌ App: 壁纸加载失败:', err)
-      // 即使失败，也设为 true，至少显示背景色
       imageLoaded.value = true
     }
-
-    // 开始下载
     img.src = formattedUrl
   } else {
-    // 如果 URL 被清空，直接视为"加载完成"（显示纯色背景）
     imageLoaded.value = true
   }
 }, { immediate: true })
 
-// ==================== 3. 生命周期初始化 ====================
-onMounted(async () => {
-  console.log('🚀 App.vue 全局挂载')
+// 每日壁纸检查器
+const checkDailyWallpaperUpdate = () => {
+  // 只在每日壁纸模式下检查更新
+  if (wallpaperStore.wallpaperMode === 'daily') {
+    const today = new Date().toDateString();
+    const lastDailyUpdate = localStorage.getItem('last_daily_update');
 
-  try {
-    // 1. 先检查登录状态（这会自动恢复 localStorage 中的用户状态）
-    userStore.checkLoginStatus()
-    console.log('👤 App: 用户状态检查完成:', userStore.user?.username)
+    if (lastDailyUpdate !== today) {
+      logger.info('📅 检测到新的一天，准备更新每日壁纸');
+      // 清除缓存，触发重新获取
+      wallpaperStore.clearCache();
+      localStorage.setItem('last_daily_update', today);
 
-    // 2. 等待 DOM 更新
-    await nextTick()
-
-    // 3. 🔥 关键修复：确保壁纸系统只初始化一次
-    if (!wallpaperStore.isInitialized) {
-      console.log('🎨 App: 开始初始化壁纸系统...')
-      await wallpaperStore.initialize()
-      console.log('✅ App: 壁纸系统初始化完成')
-    } else {
-      console.log('🔄 App: 壁纸已初始化，跳过重复初始化')
+      // 重新初始化壁纸系统（不阻塞主线程）
+      setTimeout(() => {
+        wallpaperStore.initialize(true); // true表示强制刷新
+      }, 1000);
     }
-
-    console.log('✅ App: 应用初始化完成')
-  } catch (error) {
-    console.error('❌ App: 全局初始化异常:', error)
-  } finally {
-    // 无论成功失败，都要移除加载遮罩，让用户看到界面
-    setTimeout(() => {
-      isAppReady.value = true
-      console.log('✨ App: 应用准备就绪')
-    }, 500)
   }
-})
+};
+
+// ==================== 3. 生命周期 ====================
+onMounted(async () => {
+  console.log('🚀 App.vue 全局挂载');
+  try {
+    // 1. 先同步检查用户状态（从缓存恢复）
+    userStore.checkLoginStatus();
+    console.log('👤 App: 用户状态检查完成');
+
+    await nextTick();
+
+    // 2. 只有在前台页面才初始化壁纸
+    if (showNavbar.value && !wallpaperStore.isInitialized) {
+      console.log('🎨 App: 开始初始化壁纸系统...');
+      // 🔥 等待一个微任务，确保用户状态响应式更新已完成
+      await nextTick();
+      await wallpaperStore.initialize();
+      console.log('✅ App: 壁纸系统初始化完成');
+    }
+  } catch (error) {
+    console.error('❌ App: 全局初始化异常:', error);
+  } finally {
+    isAppReady.value = true;
+  }
+  recordVisit();
+});
 
 // ==================== 4. 监听用户状态变化 ====================
 watch(() => userStore.user, (newUser) => {
@@ -143,11 +170,11 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
   <div class="app-container">
     <ToastManager />
 
-    <!-- 🔥 修复：确保背景层正确渲染 -->
-    <div class="global-background" :style="backgroundStyle" :class="{ 'background-loaded': imageLoaded }">
+    <div v-if="showNavbar" class="global-background" :style="backgroundStyle"
+      :class="{ 'background-loaded': imageLoaded }">
     </div>
 
-    <Navbar />
+    <Navbar v-if="showNavbar" />
 
     <main class="main-content">
       <router-view v-slot="{ Component, route }">

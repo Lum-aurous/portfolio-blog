@@ -10,6 +10,11 @@ export const useUserStore = defineStore("user", () => {
   const isLoadingLocation = ref(false); // 加载状态
 
   const isLoggedIn = computed(() => !!user.value && !!token.value);
+  const userProfileCache = {
+    data: null,
+    timestamp: 0,
+    ttl: 2 * 60 * 1000, // 缓存2分钟
+  };
 
   // 修改：现在接收 token 和 userData
   const login = (userData, userToken) => {
@@ -75,12 +80,18 @@ export const useUserStore = defineStore("user", () => {
   // 刷新用户信息（从后端获取最新）
   const refreshUserInfo = async () => {
     try {
-      const currentUsername =
-        user.value?.username || localStorage.getItem("username");
+      const currentUsername = user.value?.username;
+      if (!currentUsername) return null;
 
-      if (!currentUsername) {
-        console.warn("无法刷新用户信息：没有用户名");
-        return null;
+      // 🔥 检查缓存
+      const now = Date.now();
+      if (
+        userProfileCache.data &&
+        userProfileCache.timestamp + userProfileCache.ttl > now
+      ) {
+        console.log("♻️ 使用缓存的用户信息");
+        user.value = userProfileCache.data;
+        return userProfileCache.data;
       }
 
       const res = await axios.get("/api/user/profile", {
@@ -90,9 +101,9 @@ export const useUserStore = defineStore("user", () => {
       if (res.data.success && res.data.data) {
         const userData = res.data.data;
         user.value = userData;
-        localStorage.setItem("user", JSON.stringify(userData));
-        localStorage.setItem("username", userData.username);
-        console.log("✅ 用户信息刷新成功:", userData.username);
+        // 🔥 更新缓存
+        userProfileCache.data = userData;
+        userProfileCache.timestamp = now;
         return userData;
       }
     } catch (error) {
@@ -107,6 +118,7 @@ export const useUserStore = defineStore("user", () => {
     return null;
   };
 
+  const isRefreshing = ref(false); // 新增：防止重复刷新的标记
   // 检查登录状态（从 localStorage 恢复）
   const checkLoginStatus = async () => {
     // 🔥 1. 改为 async
@@ -116,9 +128,21 @@ export const useUserStore = defineStore("user", () => {
 
     if (loggedIn && storedToken && storedUser) {
       try {
+        // 🔥 新增：如果已经在刷新，则跳过
+        if (isRefreshing.value) {
+          console.log("⏸️ 用户信息刷新已在进行中，跳过");
+          return;
+        }
+
+        isRefreshing.value = true; // 开始刷新
         const parsedUser = JSON.parse(storedUser);
         user.value = parsedUser;
         token.value = storedToken;
+        // 🔥 可选：添加延迟，避免在应用启动高峰时刷新
+        setTimeout(async () => {
+          await refreshUserInfo();
+          isRefreshing.value = false; // 刷新完成
+        }, 1000); // 延迟1秒执行
         console.log("✅ 登录状态已从缓存恢复:", user.value?.username);
 
         // 恢复地理位置
