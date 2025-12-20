@@ -2,92 +2,165 @@
 import { ref, onMounted, watch, computed, nextTick, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user.js'
-import { message } from '@/utils/message.js' // 确保引入 message 工具
+import { message } from '@/utils/message.js'
 import AuthManager from '@/utils/auth.js'
 
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 
-const isDark = ref(false)
+// ==================== 1. 核心响应式状态 ====================
 const showUserMenu = ref(false)
 const activeDropdown = ref(null)
 const navbarHeight = ref(80)
 const prevScrollY = ref(0)
+const scrollY = ref(0) // 记录当前滚动高度
+
+// 控制导航栏物理位置的显隐 (基于滚动方向)
 const isNavbarVisible = ref(true)
+// 鼠标是否在感应区/导航栏内
 const isMouseOnNavbar = ref(false)
-const showBackground = ref(false)
-const closeUserMenu = () => {
-  showUserMenu.value = false
-}
 
-// ==================== 🔥 核心修复：纯粹的响应式用户数据 ====================
-// 1. 是否登录：直接依赖 store 中的 token 和 user 对象
-const isLoggedIn = computed(() => {
-  // 直接返回 store 的 computed 属性
-  return userStore.isLoggedIn
+// ==================== 2. 智能交互计算逻辑 (核心优化) ====================
+
+/**
+ * 逻辑 A: 是否显示毛玻璃背景
+ * 规则：鼠标移入时显示 OR 页面向下滚动超过 10px 时显示
+ */
+const shouldShowBackground = computed(() => {
+  return isMouseOnNavbar.value || scrollY.value > 10
 })
 
-// 2. 是否管理员
+/**
+ * 逻辑 B: 导航栏本体是否显示在视野内
+ * 规则：鼠标停留在感应区时强制显示 (实现隐藏状态下的“主动召唤”)
+ * 否则遵循滚动逻辑 (向上滚动出现，向下滚动避让)
+ */
+const shouldShowNavbar = computed(() => {
+  if (isMouseOnNavbar.value) return true
+  return isNavbarVisible.value
+})
+
+// ==================== 3. 响应式用户数据绑定 ====================
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 const isAdmin = computed(() => userStore.user?.role === 'admin')
+const username = computed(() => userStore.user?.username || 'Guest')
+const userAvatar = computed(() => userStore.user?.avatar || '')
+const nickname = computed(() => userStore.user?.nickname || userStore.user?.username || '用户')
+const avatarText = computed(() => nickname.value ? nickname.value.charAt(0).toUpperCase() : '?')
+const handle = computed(() => userStore.user?.username ? '@' + userStore.user.username.toLowerCase().replace(/\s+/g, '') : '')
 
-// 3. 用户名
-const username = computed(() => {
-  return userStore.user?.username || 'Guest'
-})
-
-// 4. 头像：只从 store 获取，它是响应式的，登录后会自动更新
-const userAvatar = computed(() => {
-  return userStore.user?.avatar || ''
-})
-
-// 5. 邮箱
-const email = computed(() => userStore.user?.email || '')
-
-// 6. 昵称显示逻辑：优先昵称，其次用户名
-const nickname = computed(() => {
-  return userStore.user?.nickname || userStore.user?.username || '用户'
-})
-
-
-// 7. 头像占位文字（取首字母）
-const avatarText = computed(() => {
-  const name = nickname.value
-  return name ? name.charAt(0).toUpperCase() : '?'
-})
-
-
-// 8. 推特风格 Handle (@username)
-const handle = computed(() => {
-  const name = userStore.user?.username
-  return name ? '@' + name.toLowerCase().replace(/\s+/g, '') : ''
-})
-
-// 9. 处理头像加载错误
 const handleAvatarError = (e) => {
   e.target.src = 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'
 }
 
-// ==================== 🔥 修复2：添加调试方法和强制刷新 ====================
-const debugUserState = () => {
-  console.log('🔍 Navbar 当前状态:', {
-    storeUser: userStore.user,
-    storeToken: userStore.token,
-    localStorageToken: localStorage.getItem('token'),
-    localStorageUser: localStorage.getItem('user'),
-    isLoggedIn: userStore.isLoggedIn,
-    computedIsLoggedIn: isLoggedIn.value
+// ==================== 4. 导航显隐交互函数 ====================
+const handleMouseEnter = () => {
+  isMouseOnNavbar.value = true
+  // 鼠标移入时，确保导航栏立即滑入视野
+  isNavbarVisible.value = true
+}
+
+const handleMouseLeave = () => {
+  isMouseOnNavbar.value = false
+  activeDropdown.value = null
+}
+
+const onScroll = () => {
+  if (isMouseOnNavbar.value) return // 鼠标操作期间不触发滚动避让逻辑
+
+  requestAnimationFrame(() => {
+    const currentScrollY = window.scrollY
+    const scrollDelta = currentScrollY - prevScrollY.value
+    scrollY.value = currentScrollY
+
+    // 在最顶部始终显示
+    if (currentScrollY <= navbarHeight.value) {
+      isNavbarVisible.value = true
+    }
+    // 向下滚动且滚出一段距离后隐藏 (避让)
+    else if (scrollDelta > 10 && currentScrollY > navbarHeight.value + 50) {
+      isNavbarVisible.value = false
+    }
+    // 向上滚动时显示
+    else if (scrollDelta < -10) {
+      isNavbarVisible.value = true
+    }
+    prevScrollY.value = currentScrollY
   })
 }
 
-const forceRefreshUser = async () => {
-  console.log('🔄 强制刷新用户状态...')
-  await userStore.checkLoginStatus()
-  debugUserState()
+// ==================== 5. 账号切换与登录逻辑 (无缝切换优化) ====================
+const switchAccount = () => {
+  showUserMenu.value = false
+  // 标记“正在切换”，不清除当前 Token，保持旧账号直到新账号成功登录
+  sessionStorage.setItem('isSwitchingAccount', 'true')
+  router.push('/login')
+  message.info('请登录另一个账号')
 }
 
+const handleUserLogin = (event) => {
+  const isSwitching = sessionStorage.getItem('isSwitchingAccount') === 'true'
 
-// ==================== 1. 导航数据（完整无省略）===================
+  if (event.detail.user && event.detail.token) {
+    // 新账号登录数据覆盖
+    userStore.login(event.detail.user, event.detail.token)
+
+    if (isSwitching) {
+      message.success(`已切换至账号: ${event.detail.user.nickname || event.detail.user.username}`)
+      sessionStorage.removeItem('isSwitchingAccount')
+    }
+  }
+}
+
+// ==================== 6. 其他业务功能 (登出、主题、位置) ====================
+const handleLogout = () => {
+  if (confirm('确定要退出登录吗？')) {
+    AuthManager.logout()
+    userStore.logout()
+    window.dispatchEvent(new CustomEvent('user-logout'))
+    router.push('/login').then(() => window.location.reload())
+  }
+}
+
+// 初始化 isDark
+const isDark = ref(document.documentElement.classList.contains('dark'))
+
+const toggleTheme = () => {
+  isDark.value = !isDark.value
+  const theme = isDark.value ? 'dark' : 'light'
+
+  // 1. 操作 DOM：给 <html> 增加或删除 .dark 类
+  document.documentElement.classList.toggle('dark', isDark.value)
+
+  // 2. 持久化
+  localStorage.setItem('theme', theme)
+
+  // 3. 细节：给 body 增加一个临时 class 处理过渡动画
+  // 这样可以防止在拖动进度条等频繁重绘时性能抖动
+  document.body.classList.add('theme-transitioning')
+  setTimeout(() => {
+    document.body.classList.remove('theme-transitioning')
+  }, 400)
+}
+
+// 供菜单点击调用的组合函数
+const toggleThemeAndCloseMenu = () => {
+  toggleTheme()
+  showUserMenu.value = false
+}
+
+const handleLocationClick = () => {
+  if (!isLoggedIn.value) return message.warning('请先登录')
+  userStore.location ? userStore.refreshLocation() : userStore.getLocation()
+}
+
+// 下拉菜单防抖
+let closeTimer = null
+const handleNavEnter = (name) => { clearTimeout(closeTimer); activeDropdown.value = name }
+const handleNavLeave = () => { closeTimer = setTimeout(() => activeDropdown.value = null, 150) }
+
+// ==================== 1. 导航数据 (此处保持您的 navItems 数组即可) ====================
 const navItems = [
   {
     name: '首页',
@@ -337,274 +410,49 @@ const loginIcon = {
   ]
 }
 
-
-// ==================== 导航交互逻辑 ====================
-const handleMouseEnter = () => {
-  showBackground.value = true
-  isMouseOnNavbar.value = true
-  isNavbarVisible.value = true
-}
-
-const handleMouseLeave = () => {
-  showBackground.value = false
-  isMouseOnNavbar.value = false
-  activeDropdown.value = null
-}
-
-const shouldShowBackground = computed(() => {
-  return showBackground.value || activeDropdown.value || showUserMenu.value
-})
-
-const shouldShowNavbar = computed(() => {
-  return isNavbarVisible.value || isMouseOnNavbar.value
-})
-
-// ==================== 滚动监听 (防抖优化) ====================
-let ticking = false
-const scrollThreshold = 10
-
-const onScroll = () => {
-  if (!ticking) {
-    requestAnimationFrame(() => {
-      const currentScrollY = window.scrollY
-      const scrollDelta = currentScrollY - prevScrollY.value
-
-      const navbar = document.querySelector('.navbar')
-      if (navbar && navbarHeight.value !== navbar.offsetHeight) {
-        navbarHeight.value = navbar.offsetHeight
-      }
-
-      if (Math.abs(scrollDelta) < scrollThreshold) {
-        ticking = false
-        return
-      }
-
-      const isScrollingDown = scrollDelta > 0
-      const isScrollingUp = scrollDelta < 0
-
-      // 顶部始终显示
-      if (currentScrollY <= navbarHeight.value) {
-        isNavbarVisible.value = true
-      }
-      // 向下滚动隐藏
-      else if (isScrollingDown && currentScrollY > navbarHeight.value + 50) {
-        if (!isMouseOnNavbar.value) {
-          isNavbarVisible.value = false
-        }
-      }
-      // 向上滚动显示
-      else if (isScrollingUp) {
-        isNavbarVisible.value = true
-      }
-
-      prevScrollY.value = currentScrollY
-      ticking = false
-    })
-    ticking = true
-  }
-}
-
-// ==================== 主题切换 ====================
-const toggleTheme = () => {
-  isDark.value = !isDark.value
-  if (isDark.value) {
-    document.documentElement.classList.add('dark')
-    localStorage.setItem('theme', 'dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-    localStorage.setItem('theme', 'light')
-  }
-}
-
-const toggleThemeAndCloseMenu = () => {
-  toggleTheme()
+const goToPrivacy = () => {
   showUserMenu.value = false
+  // 跳转到 /account 页面，并带上 tab=privacy 参数
+  router.push({ path: '/account', query: { tab: 'privacy' } })
 }
 
-// ==================== 用户操作 ====================
-const switchAccount = () => {
-  showUserMenu.value = false
-  sessionStorage.setItem('isSwitchingAccount', 'true')
-  sessionStorage.setItem('previousUsername', username.value)
-  router.push('/login')
-}
-
-// ==================== 🔥 修复4：优化登出逻辑 ====================
-const handleLogout = () => {
-  if (confirm('确定要退出登录吗？')) {
-    // 先清除所有存储
-    AuthManager.logout()
-    userStore.logout()
-
-    // 触发全局登出事件
-    window.dispatchEvent(new CustomEvent('user-logout'))
-
-    showUserMenu.value = false
-
-    // 立即跳转并刷新
-    setTimeout(() => {
-      router.push('/login').then(() => {
-        window.location.reload()
-      })
-    }, 100)
-  }
-}
-
-
-const handleLocationClick = () => {
-  if (!isLoggedIn.value) {
-    message.warning('请先登录以获取位置信息')
-    return
-  }
-
-  if (userStore.isLoadingLocation) return
-
-  if (!userStore.location) {
-    userStore.getLocation()
-  } else {
-    userStore.refreshLocation()
-  }
-}
-
-// ==================== 下拉菜单交互 (防抖) ====================
-let closeTimer = null
-
-const handleNavEnter = (itemName) => {
-  if (closeTimer) {
-    clearTimeout(closeTimer)
-    closeTimer = null
-  }
-  activeDropdown.value = itemName
-}
-
-const handleNavLeave = () => {
-  closeTimer = setTimeout(() => {
-    activeDropdown.value = null
-  }, 150)
-}
-
-const handleDropdownEnter = () => {
-  if (closeTimer) {
-    clearTimeout(closeTimer)
-    closeTimer = null
-  }
-}
-
-
-// ==================== 🔥 修复3：监听全局登录事件 ====================
-const handleUserLogin = (event) => {
-  console.log('📢 收到用户登录事件:', event.detail.user?.username)
-  // 直接从事件中更新 store
-  if (event.detail.user && event.detail.token) {
-    userStore.login(event.detail.user, event.detail.token)
-  }
-}
-
-// ==================== 🔥 修复5：添加路由守卫监听 ====================
-watch(() => route.path, async (newPath) => {
-  console.log('📍 路由变化到:', newPath)
+// ==================== 7. 监听与生命周期 ====================
+watch(() => route.path, () => {
   activeDropdown.value = null
   showUserMenu.value = false
-
-  // 每次路由变化时检查一次状态
-  if (localStorage.getItem('token') && !userStore.user) {
-    console.log('🔄 路由变化时恢复用户状态')
-    await userStore.checkLoginStatus()
-  }
+  // 路由跳转时尝试静默恢复状态
+  if (localStorage.getItem('token') && !userStore.user) userStore.checkLoginStatus()
 })
 
-// 监听登录状态，自动获取位置信息
-watch(() => isLoggedIn.value, (loggedIn) => {
-  if (loggedIn && !userStore.location) {
-    setTimeout(() => {
-      userStore.getLocation()
-    }, 1000)
-  }
-}, { immediate: true })
-
-// ==================== 🔥 修复6：添加状态变化监听 ====================
-watch(() => userStore.user, (newUser, oldUser) => {
-  console.log('👤 userStore.user 变化:',
-    oldUser?.username || 'null',
-    '->',
-    newUser?.username || 'null'
-  )
-}, { deep: true })
-
-watch(() => userStore.token, (newToken, oldToken) => {
-  console.log('🔑 userStore.token 变化:',
-    oldToken ? '有' : '无',
-    '->',
-    newToken ? '有' : '无'
-  )
-})
-
-
-// ==================== 生命周期 ====================
 onMounted(async () => {
-  console.log('🚀 Navbar 挂载')
+  // 恢复主题状态
+  isDark.value = localStorage.getItem('theme') === 'dark'
+  if (isDark.value) document.documentElement.classList.add('dark')
 
-  // 1. 恢复主题
-  const savedTheme = localStorage.getItem('theme')
-  if (savedTheme === 'dark') {
-    isDark.value = true
-    document.documentElement.classList.add('dark')
-  }
-
-  // 2. 🔥 关键修复：立即检查登录状态（同步执行，不等待）
+  // 初始化登录状态并静默刷新资料
   const authStatus = AuthManager.checkAuthStatus()
-  console.log('🔐 AuthManager 检查:', authStatus)
-
   if (authStatus.isLoggedIn && authStatus.isTokenValid) {
-    // 1. 先用缓存数据快速渲染，避免留白
-    if (!userStore.user && authStatus.user) {
-      userStore.login(authStatus.user, authStatus.token)
-    }
-
-    // 2. 🔥 新增：然后立即在后台静默刷新最新的用户资料（获取最新头像）
-    // 这样即使用户换了头像，F5刷新后也能马上同步过来
-    userStore.refreshUserInfo().then(newData => {
-      if (newData) console.log('🖼️ 导航栏已同步最新头像')
-    })
-
-  } else if (!userStore.user) {
-    // 如果 AuthManager 没有用户数据但 token 有效，调用 store 的恢复方法
-    console.log('🔄 调用 userStore.checkLoginStatus')
+    if (!userStore.user) userStore.login(authStatus.user, authStatus.token)
+    userStore.refreshUserInfo()
+  } else {
     await userStore.checkLoginStatus()
-  } else if (authStatus.token && !authStatus.isTokenValid) {
-    console.log('⚠️ Token 无效，清除')
-    AuthManager.logout()
-    userStore.logout()
   }
 
-  // 3. 监听用户登录事件
-  window.addEventListener('user-login', handleUserLogin)
-  window.addEventListener('user-state-changed', forceRefreshUser)
-
-  // 4. 获取导航栏高度
-  nextTick(() => {
-    const navbar = document.querySelector('.navbar')
-    if (navbar) {
-      navbarHeight.value = navbar.offsetHeight
-    }
-  })
-
-  // 5. 注册全局事件
-  window.addEventListener('click', closeUserMenu)
+  // 绑定全局事件
   window.addEventListener('scroll', onScroll, { passive: true })
-  onScroll()
+  window.addEventListener('user-login', handleUserLogin)
+  window.addEventListener('click', () => showUserMenu.value = false)
 
-  // 6. 调试输出
-  debugUserState()
+  nextTick(() => {
+    const el = document.querySelector('.navbar')
+    if (el) navbarHeight.value = el.offsetHeight
+  })
 })
 
 onUnmounted(() => {
-  window.removeEventListener('user-login', handleUserLogin)
-  window.removeEventListener('user-state-changed', forceRefreshUser)
-  window.removeEventListener('click', closeUserMenu)
   window.removeEventListener('scroll', onScroll)
+  window.removeEventListener('user-login', handleUserLogin)
 })
-
 </script>
 
 <template>
@@ -676,12 +524,22 @@ onUnmounted(() => {
 
               <!-- 账号相关 -->
               <div class="dropdown-items">
+                <router-link :to="`/profile/${userStore.user?.username}`" class="dropdown-item"
+                  @click="showUserMenu = false">
+                  <svg viewBox="0 0 24 24" class="menu-icon">
+                    <path
+                      d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"
+                      fill="currentColor" />
+                  </svg>
+                  我的主页
+                </router-link>
+
                 <router-link to="/account" class="dropdown-item" @click="showUserMenu = false">
                   <svg viewBox="0 0 24 24" class="menu-icon">
                     <path
                       d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
                   </svg>
-                  个人账号中心
+                  个人中心
                 </router-link>
 
                 <!-- 👇 新增：管理员才能看到"后台管理" -->
@@ -722,7 +580,7 @@ onUnmounted(() => {
 
               <!-- 设置相关 -->
               <div class="dropdown-items">
-                <div class="dropdown-item">
+                <div class="dropdown-item" @click="goToPrivacy">
                   <svg viewBox="0 0 24 24" class="menu-icon">
                     <path
                       d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.05-.24-.24-.41-.47-.41h-3.84c-.24 0-1.24-.17-.47-.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.07-.47 0-.59.22L2.74 10.45c-.12.21-.07.48.12.61l2.03 1.58c-.05.3-.09.63-.09.94 0 .31.04.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.47.41h3.84c.24 0 .43-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.07.47 0 .59-.22l1.92-3.32c.12-.22.07-.48-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
@@ -788,27 +646,43 @@ onUnmounted(() => {
   top: 0;
   left: 0;
   width: 100%;
-  z-index: 100;
-  transition:
-    transform 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-    background 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-    backdrop-filter 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-    border-bottom 0.35s;
-  transform: translateY(0);
+  height: 80px;
+  z-index: 2000;
+  /* 确保层级足够高 */
+
+  /* 初始状态：透明背景，位于顶端 */
   background: transparent;
-  backdrop-filter: none;
-  box-shadow: none;
   border-bottom: 1px solid transparent;
+  transform: translateY(0);
+
+  /* 🔥 极其关键的丝滑过渡曲线 */
+  transition:
+    transform 0.4s cubic-bezier(0.165, 0.84, 0.44, 1),
+    background 0.3s ease,
+    backdrop-filter 0.3s ease,
+    border-bottom 0.3s ease;
+}
+
+.navbar::before {
+  content: '';
+  position: absolute;
+  bottom: -20px;
+  /* 在导航栏下方延伸20px的隐形感应区 */
+  left: 0;
+  width: 100%;
+  height: 20px;
 }
 
 .navbar-active {
   background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+  /* 前景半透 */
+  backdrop-filter: blur(15px) saturate(180%);
+  -webkit-backdrop-filter: blur(15px) saturate(180%);
   border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05);
 }
 
+/* 深色模式适配 */
 :global(html.dark) .navbar-active {
   background: rgba(0, 0, 0, 0.25);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -988,8 +862,7 @@ onUnmounted(() => {
 }
 
 .dropdown-item {
-  padding: 11px 24px;
-  color: #333;
+  padding: 11px 24px 11px 56px !important;
   font-size: 0.94rem;
   display: flex;
   align-items: center;
@@ -1001,6 +874,46 @@ onUnmounted(() => {
   transition: all 0.2s;
   text-decoration: none;
   margin-bottom: 2px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  /* 移除 a 标签可能自带的下划线和颜色 */
+  text-decoration: none !important;
+  color: inherit;
+  border: 1px solid transparent;
+  /* 预留边框位置，防止 hover 抖动 */
+}
+
+/* 2. 统一悬停效果：实现你想要的绿色光影 */
+.dropdown-item:hover {
+    /* 背景微绿 */
+    background: rgba(66, 184, 131, 0.08) !important;
+    /* 文字变绿 */
+    color: #42b883 !important;
+    /* 关键：统一添加绿色外发光 (box-shadow) */
+    box-shadow: 0 0 15px rgba(66, 184, 131, 0.2);
+    /* 也可以使用 filter 实现更有质感的光晕 */
+    filter: drop-shadow(0 0 2px rgba(66, 184, 131, 0.3));
+    /* 向右微动，增加灵动感 */
+    transform: translateX(5px);
+    /* 如果想要那种边框发光感 */
+    border-color: rgba(66, 184, 131, 0.2);
+}
+
+/* 3. 特殊处理：退出登录项使用红色光影 */
+.dropdown-item.sign-out:hover {
+    background: rgba(255, 95, 86, 0.08) !important;
+    color: #ff5f56 !important;
+    box-shadow: 0 0 15px rgba(255, 95, 86, 0.2);
+    filter: drop-shadow(0 0 2px rgba(255, 95, 86, 0.3));
+    border-color: rgba(255, 95, 86, 0.2);
+}
+
+/* 4. 确保图标也跟着变色 */
+.dropdown-item:hover .menu-icon {
+    opacity: 1;
+    color: inherit;
+    /* 让图标也带一点点光晕 */
+    filter: drop-shadow(0 0 3px currentColor);
 }
 
 
@@ -1014,12 +927,6 @@ onUnmounted(() => {
 
 :global(html.dark) .dropdown-item .arrow {
   color: #9aa0a6;
-}
-
-.dropdown-item:hover {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6 !important;
-  transform: translateX(3px);
 }
 
 /* 下拉菜单图标样式 */
@@ -1267,11 +1174,6 @@ onUnmounted(() => {
   padding: 4px 0;
 }
 
-.dropdown-item {
-  padding: 11px 24px 11px 56px !important;
-  /* 图标左对齐 */
-}
-
 .divider {
   margin: 8px 0;
   background: rgba(0, 0, 0, 0.08);
@@ -1320,10 +1222,6 @@ onUnmounted(() => {
 
 :global(html.dark) .dropdown-item {
   color: #e8eaed;
-}
-
-.dropdown-item:hover {
-  background: #f8f9fa;
 }
 
 :global(html.dark) .dropdown-item:hover {

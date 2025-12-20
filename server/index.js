@@ -315,6 +315,54 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+/**
+ * 核心工具：根据 IP 更新用户属地信息
+ * @param {number} userId 用户ID
+ * @param {string} ip 客户端IP
+ */
+/**
+ * 精细化版：根据 IP 自动更新用户属地
+ */
+async function updateRegionByIP(userId, ip) {
+  // 1. 本地开发环境特殊处理：模拟一个公网 IP 进行测试
+  let realIp = ip;
+  if (ip === "::1" || ip === "127.0.0.1") {
+    // 如果是在本地测试，我们模拟一个 IP（比如香港），确保功能能跑通
+    realIp = "1.1.1.1";
+    logger.info(`🏠 检测到本地环境，正在使用模拟 IP (${realIp}) 测试功能...`);
+  } else {
+    realIp = ip.split(",")[0].trim();
+  }
+
+  try {
+    const response = await axios.get(
+      `http://ip-api.com/json/${realIp}?lang=zh-CN`,
+      { timeout: 5000 }
+    );
+
+    if (response.data.status === "success") {
+      const { country, regionName, city } = response.data;
+      const regionStr = city
+        ? `${country} - ${regionName} - ${city}`
+        : `${country} - ${regionName}`;
+
+      await dbPool.query("UPDATE users SET region = ? WHERE id = ?", [
+        regionStr,
+        userId,
+      ]);
+      logger.info(`📍 用户 ID=${userId} 属地已更新: ${regionStr}`);
+    } else {
+      // 如果 API 解析失败，给个保底值，不要让它一直是 NULL
+      await dbPool.query(
+        "UPDATE users SET region = ? WHERE id = ? AND region IS NULL",
+        ["来自星辰大海", userId]
+      );
+    }
+  } catch (err) {
+    logger.error(`❌ IP 解析异常: ${err.message}`);
+  }
+}
+
 // ==========================================
 // 🔥 优化9: Multer 配置（增加安全检查）
 // ==========================================
@@ -1153,6 +1201,403 @@ app.get("/api/articles/hot", async (req, res) => {
   }
 });
 
+// 1. 获取互动状态 (点赞、收藏)
+app.get(
+  "/api/articles/:id/interaction-status",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const articleId = req.params.id;
+      const userId = req.user.id;
+
+      // 使用 try-catch 包裹查询，如果表不存在则返回 false 而不是崩溃
+      let liked = false;
+      let favorited = false;
+
+      try {
+        const [likes] = await dbPool.query(
+          "SELECT id FROM article_likes WHERE user_id = ? AND article_id = ?",
+          [userId, articleId]
+        );
+        liked = likes.length > 0;
+        const [favs] = await dbPool.query(
+          "SELECT id FROM article_favorites WHERE user_id = ? AND article_id = ?",
+          [userId, articleId]
+        );
+        favorited = favs.length > 0;
+      } catch (dbErr) {
+        logger.error("数据库查询失败（可能表未创建）:", dbErr.message);
+      }
+
+      apiResponse.success(res, "获取成功", {
+        isLiked: liked,
+        isFavorited: favorited,
+      });
+    } catch (err) {
+      apiResponse.error(res, "服务器错误");
+    }
+  }
+);
+
+// ==========================================
+// 1. 获取当前用户拥有的专栏列表 (用于下拉选择)
+// ==========================================
+app.get("/api/user/columns/simple", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    // 只查询 ID 和名称，效率最高
+    const [rows] = await dbPool.query(
+      "SELECT id, name FROM columns WHERE user_id = ? ORDER BY created_at DESC",
+      [userId]
+    );
+    apiResponse.success(res, "获取成功", rows);
+  } catch (err) {
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
+// 2. 将文章加入专栏 (核心操作)
+// ==========================================
+app.post(
+  "/api/columns/:columnId/articles",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { columnId } = req.params;
+      const { articleId } = req.body;
+      const userId = req.user.id;
+
+      // 安全检查：确保该专栏确实属于当前用户
+      const [col] = await dbPool.query(
+        "SELECT id FROM columns WHERE id = ? AND user_id = ?",
+        [columnId, userId]
+      );
+      if (col.length === 0)
+        return apiResponse.error(res, "专栏不存在或无权操作", 403);
+
+      // 插入关联表 (使用 IGNORE 或 ON DUPLICATE 防止重复添加)
+      await dbPool.query(
+        "INSERT IGNORE INTO column_articles (column_id, article_id) VALUES (?, ?)",
+        [columnId, articleId]
+      );
+
+      apiResponse.success(res, "已成功归类到专栏");
+    } catch (err) {
+      logger.error("归类失败:", err);
+      apiResponse.error(res, "操作失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 新增：文章互动操作接口 (点赞/收藏/加入专栏)
+// ==========================================
+
+// 1. 点赞/取消点赞
+app.post("/api/articles/:id/like", authenticateToken, async (req, res) => {
+  try {
+    const articleId = req.params.id;
+    const userId = req.user.id;
+
+    // 检查是否已点赞
+    const [existing] = await dbPool.query(
+      "SELECT id FROM article_likes WHERE user_id = ? AND article_id = ?",
+      [userId, articleId]
+    );
+
+    if (existing.length > 0) {
+      // 已点赞 -> 取消
+      await dbPool.query("DELETE FROM article_likes WHERE id = ?", [
+        existing[0].id,
+      ]);
+      return apiResponse.success(res, "已取消点赞", { status: "unliked" });
+    } else {
+      // 未点赞 -> 添加
+      await dbPool.query(
+        "INSERT INTO article_likes (user_id, article_id) VALUES (?, ?)",
+        [userId, articleId]
+      );
+      return apiResponse.success(res, "点赞成功", { status: "liked" });
+    }
+  } catch (err) {
+    logger.error("点赞失败:", err);
+    apiResponse.error(res, "操作失败");
+  }
+});
+
+// 2. 收藏/取消收藏
+app.post("/api/articles/:id/favorite", authenticateToken, async (req, res) => {
+  try {
+    const articleId = req.params.id;
+    const userId = req.user.id;
+
+    const [existing] = await dbPool.query(
+      "SELECT id FROM article_favorites WHERE user_id = ? AND article_id = ?",
+      [userId, articleId]
+    );
+
+    if (existing.length > 0) {
+      await dbPool.query("DELETE FROM article_favorites WHERE id = ?", [
+        existing[0].id,
+      ]);
+      return apiResponse.success(res, "已取消收藏", { status: "unfavorited" });
+    } else {
+      await dbPool.query(
+        "INSERT INTO article_favorites (user_id, article_id) VALUES (?, ?)",
+        [userId, articleId]
+      );
+      return apiResponse.success(res, "收藏成功", { status: "favorited" });
+    }
+  } catch (err) {
+    logger.error("收藏失败:", err);
+    apiResponse.error(res, "操作失败");
+  }
+});
+
+// 3. 将文章添加到指定专栏
+app.post(
+  "/api/columns/:columnId/articles",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { columnId } = req.params;
+      const { articleId } = req.body;
+
+      // 检查该文章是否已在专栏中 (假设你有 column_articles 关联表)
+      // 如果你还没建关联表，建议建一个：column_id, article_id
+      await dbPool.query(
+        "INSERT INTO column_articles (column_id, article_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE article_id=article_id",
+        [columnId, articleId]
+      );
+      apiResponse.success(res, "已添加到专栏");
+    } catch (err) {
+      apiResponse.error(res, "添加失败");
+    }
+  }
+);
+
+// 🔥 新增：获取用户收藏的文章列表
+app.get("/api/user/favorites", async (req, res) => {
+  try {
+    const { username } = req.query;
+    if (!username) return apiResponse.error(res, "缺少用户名", 400);
+
+    // 1. 先根据用户名查出用户 ID
+    const [userRows] = await dbPool.query(
+      "SELECT id FROM users WHERE username = ?",
+      [username]
+    );
+    if (userRows.length === 0) return apiResponse.error(res, "用户不存在", 404);
+    const userId = userRows[0].id;
+
+    // 2. 关联查询：查出该用户收藏的所有文章详情
+    const [favorites] = await dbPool.query(
+      `SELECT 
+        a.id, a.title, a.summary, a.cover_image, a.category, a.views, a.created_at,
+        u.nickname as author_name, u.avatar as author_avatar
+      FROM articles a
+      JOIN article_favorites f ON a.id = f.article_id
+      JOIN users u ON a.author_id = u.id
+      WHERE f.user_id = ?
+      ORDER BY f.created_at DESC`,
+      [userId]
+    );
+
+    apiResponse.success(res, "获取收藏列表成功", favorites);
+  } catch (err) {
+    logger.error("获取收藏列表失败:", err);
+    apiResponse.error(res, "服务器错误");
+  }
+});
+
+// ==========================================
+// 🔥 补全：获取指定用户的专栏列表 (Profile 页面使用)
+// ==========================================
+app.get("/api/columns", async (req, res) => {
+  try {
+    const { author } = req.query; // 接收前端传来的用户名
+    if (!author) return apiResponse.error(res, "缺少作者参数", 400);
+
+    // 1. 先根据用户名查出该用户的 ID
+    const [userRows] = await dbPool.query(
+      "SELECT id FROM users WHERE username = ?",
+      [author]
+    );
+    if (userRows.length === 0) return apiResponse.error(res, "用户不存在", 404);
+    const userId = userRows[0].id;
+
+    // 2. 查询专栏，并关联统计该专栏下的文章总数
+    const [columns] = await dbPool.query(
+      `
+      SELECT 
+        c.id, 
+        c.name, 
+        c.description, 
+        c.cover, 
+        c.created_at,
+        (SELECT COUNT(*) FROM column_articles WHERE column_id = c.id) as articleCount
+      FROM columns c
+      WHERE c.user_id = ?
+      ORDER BY c.created_at DESC
+    `,
+      [userId]
+    );
+
+    apiResponse.success(res, "获取专栏列表成功", columns);
+  } catch (err) {
+    logger.error("获取专栏列表失败:", err);
+    apiResponse.error(res, "服务器内部错误");
+  }
+});
+
+// ==========================================
+// 🔥 新增：创建专栏 (像创建文件夹一样)
+// ==========================================
+app.post("/api/columns", authenticateToken, async (req, res) => {
+  try {
+    const { name, description, cover } = req.body;
+    const userId = req.user.id;
+
+    if (!name) return apiResponse.error(res, "专栏名称不能为空", 400);
+
+    const [result] = await dbPool.query(
+      "INSERT INTO columns (user_id, name, description, cover) VALUES (?, ?, ?, ?)",
+      [userId, name, description || "", cover || ""]
+    );
+
+    logger.info(`📁 用户 ID=${userId} 创建了新专栏: ${name}`);
+    apiResponse.success(res, "专栏创建成功", { id: result.insertId }, 201);
+  } catch (err) {
+    logger.error("创建专栏失败:", err);
+    logger.error("创建专栏失败:", err);
+    // 🔥 修改这里：把 err.message 返回给前端，这样你就不用看终端也能知道错哪了
+    apiResponse.error(res, "创建失败: " + err.message);
+  }
+});
+
+// ==========================================
+// 🔥 新增：删除专栏
+// ==========================================
+app.delete("/api/columns/:id", authenticateToken, async (req, res) => {
+  try {
+    const columnId = req.params.id;
+    const userId = req.user.id;
+
+    // 1. 权限检查：只能删除自己的专栏
+    const [existing] = await dbPool.query(
+      "SELECT id FROM columns WHERE id = ? AND user_id = ?",
+      [columnId, userId]
+    );
+    if (existing.length === 0)
+      return apiResponse.error(res, "专栏不存在或无权操作", 403);
+
+    // 2. 开启事务：删除专栏本身，并解除所有文章关联
+    const connection = await dbPool.getConnection();
+    await connection.beginTransaction();
+    try {
+      await connection.query(
+        "DELETE FROM column_articles WHERE column_id = ?",
+        [columnId]
+      );
+      await connection.query("DELETE FROM columns WHERE id = ?", [columnId]);
+      await connection.commit();
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+
+    apiResponse.success(res, "专栏已删除");
+  } catch (err) {
+    logger.error("删除专栏失败:", err);
+    apiResponse.error(res, "删除失败");
+  }
+});
+
+// ==========================================
+// 🔥 获取专栏详情及其包含的文章列表
+// ==========================================
+app.get("/api/columns/:id", async (req, res) => {
+  try {
+    const columnId = req.params.id;
+
+    // 1. 修改这里：在 SELECT 中增加 u.avatar
+    const [columnRows] = await dbPool.query(
+      `SELECT c.*, u.username, u.nickname, u.avatar 
+       FROM columns c 
+       JOIN users u ON c.user_id = u.id 
+       WHERE c.id = ?`,
+      [columnId]
+    );
+
+    if (columnRows.length === 0) {
+      return apiResponse.error(res, "该专栏不存在", 404);
+    }
+
+    // 2. 查询文章列表（之前我们已经写了关联 author_avatar，确保它存在即可）
+    const [articles] = await dbPool.query(
+      `SELECT 
+          a.id, a.title, a.summary, a.cover_image, a.category, a.views, a.created_at,
+          u.nickname as author_name, u.avatar as author_avatar, u.username as author_username
+       FROM articles a
+       JOIN column_articles ca ON a.id = ca.article_id
+       JOIN users u ON a.author_id = u.id
+       WHERE ca.column_id = ?
+       ORDER BY ca.added_at DESC`,
+      [columnId]
+    );
+
+    apiResponse.success(res, "获取成功", {
+      info: columnRows[0],
+      articles: articles,
+    });
+  } catch (err) {
+    logger.error("获取专栏详情失败:", err);
+    apiResponse.error(res, "服务器内部错误");
+  }
+});
+
+// ==========================================
+// 🔥 从专栏中移除文章 (仅解除关联，不删文章)
+// ==========================================
+app.delete(
+  "/api/columns/:columnId/articles/:articleId",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const { columnId, articleId } = req.params;
+      const userId = req.user.id;
+
+      // 1. 安全检查：确保该专栏属于当前登录用户
+      const [col] = await dbPool.query(
+        "SELECT id FROM columns WHERE id = ? AND user_id = ?",
+        [columnId, userId]
+      );
+
+      if (col.length === 0) {
+        return apiResponse.error(res, "无权操作此专栏或专栏不存在", 403);
+      }
+
+      // 2. 删除关联表中的记录
+      const [result] = await dbPool.query(
+        "DELETE FROM column_articles WHERE column_id = ? AND article_id = ?",
+        [columnId, articleId]
+      );
+
+      if (result.affectedRows > 0) {
+        apiResponse.success(res, "已从专栏中移除");
+      } else {
+        apiResponse.error(res, "该文章不在专栏中", 404);
+      }
+    } catch (err) {
+      logger.error("移除专栏文章失败:", err);
+      apiResponse.error(res, "移除操作失败");
+    }
+  }
+);
+
 // 添加日期格式化辅助函数
 function formatDateTime(dateStr) {
   if (!dateStr) return "";
@@ -1166,65 +1611,74 @@ function formatDateTime(dateStr) {
 }
 
 // ==========================================
-// 🔥 获取文章列表 (支持分页、搜索、分类筛选)
+// ✅ 完美修正版：获取文章列表 (支持分页、分类、关键词、作者筛选)
 // ==========================================
 app.get("/api/articles", async (req, res) => {
   try {
-    // 获取前端传来的参数，设置默认值
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const category = req.query.category || "";
     const keyword = req.query.keyword || "";
+    const author = req.query.author || ""; // 🔥 接收前端传来的用户名
 
-    // 计算偏移量 (跳过多少条)
     const offset = (page - 1) * limit;
 
-    // 构建动态 SQL 条件
+    // 1. 构建基础的 WHERE 条件
     let whereClause = "WHERE 1=1";
     let queryParams = [];
 
-    // 1. 筛选分类
+    // 分类筛选
     if (category && category !== "latest" && category !== "all") {
-      whereClause += " AND category = ?";
+      whereClause += " AND a.category = ?";
       queryParams.push(category);
     }
 
-    // 2. 关键词搜索 (标题 或 摘要)
+    // 关键词搜索
     if (keyword) {
-      whereClause += " AND (title LIKE ? OR summary LIKE ?)";
+      whereClause += " AND (a.title LIKE ? OR a.summary LIKE ?)";
       const likeKey = `%${keyword}%`;
       queryParams.push(likeKey, likeKey);
     }
 
-    // --- 查询总数 (用于计算总页数) ---
-    // 注意：这里需要单独查一次 count，不带 limit
-    const [countResult] = await dbPool.query(
-      `SELECT COUNT(*) as total FROM articles ${whereClause}`,
-      queryParams
-    );
-    const total = countResult[0].total;
+    // 🔥 核心修正：正确拼接作者筛选条件
+    if (author) {
+      whereClause += " AND u.username = ?"; // 使用 AND 连接，变量名对应 queryParams
+      queryParams.push(author);
+    }
 
-    // --- 查询当前页数据 ---
-    // 排序：按发布时间倒序 (新的在前)
-    // 关联：查出作者名字
-    const sql = `
-      SELECT a.*, u.nickname as author_name, u.avatar as author_avatar
+    // --- 2. 查询总数 ---
+    const countSql = `
+      SELECT COUNT(*) as total 
       FROM articles a
       LEFT JOIN users u ON a.author_id = u.id
       ${whereClause}
-      ORDER BY a.created_at DESC
-      LIMIT ? OFFSET ?
     `;
+    const [countResult] = await dbPool.query(countSql, queryParams);
+    const total = countResult[0].total;
 
-    // 把 limit 和 offset 加到参数数组末尾
-    // 注意：mysql2 的 limit/offset 必须是整数
-    const dataParams = [...queryParams, limit, offset];
+    // --- 3. 查询当前页数据 ---
+    const sql = `
+          SELECT 
+            a.*, 
+            u.nickname as author_name, 
+            u.avatar as author_avatar,
+            u.username as author_username,
+            (SELECT COUNT(*) FROM article_likes WHERE article_id = a.id) as likes,
+            (SELECT COUNT(*) FROM comments WHERE article_id = a.id) as comments,
+            (SELECT COUNT(*) FROM article_favorites WHERE article_id = a.id) as favorites
+          FROM articles a
+          LEFT JOIN users u ON a.author_id = u.id
+          ${whereClause}
+          ORDER BY a.created_at DESC
+          LIMIT ? OFFSET ?
+        `;
 
-    const [rows] = await dbPool.query(sql, dataParams);
+    // 组合所有参数执行查询
+    const [rows] = await dbPool.query(sql, [...queryParams, limit, offset]);
 
-    // 返回标准分页结构
+    // 4. 返回结果
     apiResponse.success(res, "获取文章列表成功", {
-      list: rows,
+      list: rows, // 🔥 前端通过 res.data.data.list 获取
       pagination: {
         current: page,
         pageSize: limit,
@@ -1234,7 +1688,7 @@ app.get("/api/articles", async (req, res) => {
     });
   } catch (err) {
     logger.error("查询文章列表出错:", err);
-    apiResponse.error(res, "获取文章列表失败");
+    apiResponse.error(res, "获取文章列表失败: " + err.message);
   }
 });
 
@@ -1436,25 +1890,48 @@ app.get("/api/tags/cloud", async (req, res) => {
   }
 });
 
-// 🔥 后端修复：获取文章详情时实时统计评论总数
+// 🔥 获取文章详情时实时统计评论总数
 app.get("/api/articles/:id", async (req, res) => {
   try {
-    const id = req.params.id;
-
-    // 1. 获取文章基础信息
+    const { id } = req.params;
     const [results] = await dbPool.query(
       `SELECT 
-        a.*, 
-        u.nickname AS author_name, 
-        u.avatar AS author_avatar 
-      FROM articles a 
-      LEFT JOIN users u ON a.author_id = u.id 
-      WHERE a.id = ?`,
+                a.*, 
+                u.nickname AS author_name, 
+                u.avatar AS author_avatar,
+                u.username AS author_username,
+                -- 🔥 子查询：实时统计点赞总数
+                (SELECT COUNT(*) FROM article_likes WHERE article_id = a.id) as likes,
+                -- 🔥 子查询：实时统计收藏总数
+                (SELECT COUNT(*) FROM article_favorites WHERE article_id = a.id) as favorites
+            FROM articles a 
+            LEFT JOIN users u ON a.author_id = u.id 
+            WHERE a.id = ?`,
       [id]
     );
 
     if (results.length > 0) {
       const article = results[0];
+
+      // 🔥 新增：自动记录浏览历史
+      // 尝试获取 Token
+      const authHeader = req.headers["authorization"];
+      if (authHeader) {
+        const token = authHeader.split(" ")[1];
+        jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+          if (!err && decoded) {
+            // 登录用户访问，记录或更新历史时间
+            await dbPool
+              .query(
+                "INSERT INTO user_browsing_history (user_id, article_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE viewed_at = NOW()",
+                [decoded.id, id]
+              )
+              .catch((e) => logger.error("记录历史失败:", e));
+          } else {
+            console.log("🚫 未记录历史：Token 验证失败或未登录");
+          }
+        });
+      }
 
       // 🔥 2. 实时统计该文章的所有评论数（包括回复）
       const [commentCount] = await dbPool.query(
@@ -2097,6 +2574,11 @@ app.post(
         [autoUsername, hash, email, phone, autoUsername] // 初始昵称和用户名相同
       );
 
+      // 🔥 这一步至关重要：
+      const clientIp =
+        req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+      updateRegionByIP(result.insertId, clientIp); // 使用新生成的 ID 触发更新
+
       logger.info(
         `新用户注册成功: ID=${result.insertId}, 账号=${account}, 初始用户名=${autoUsername}`
       );
@@ -2322,7 +2804,21 @@ app.post(
         return apiResponse.error(res, "密码错误", 401);
       }
 
-      // 🔥 生成 JWT Token
+      // 🔥 增强版 IP 获取：考虑了多种可能的请求头
+      const clientIp =
+        req.headers["x-forwarded-for"]?.split(",")[0] ||
+        req.headers["x-real-ip"] ||
+        req.socket.remoteAddress ||
+        req.ip;
+
+      console.log(
+        `[Login] 用户 ${user.username} 尝试登录，识别到 IP: ${clientIp}`
+      );
+
+      // 异步触发更新
+      updateRegionByIP(user.id, clientIp);
+
+      // 生成 Token 并返回
       const token = generateToken(user);
 
       logger.info(`用户登录成功: ID=${user.id}, 用户名=${user.username}`);
@@ -2353,7 +2849,7 @@ app.get("/api/current-user", authenticateToken, async (req, res) => {
     const userId = req.user.id;
 
     const [results] = await dbPool.query(
-      `SELECT id, username, role, avatar, nickname, email, phone 
+      `SELECT id, username, role, avatar, banner, nickname, email, phone, created_at 
        FROM users 
        WHERE id = ?`,
       [userId]
@@ -2489,6 +2985,37 @@ const recordDailyVisit = async () => {
     console.error("记录访问量失败:", err);
   }
 };
+
+// ==========================================
+// 🔥 新增：用户个人主页背景图上传接口
+// ==========================================
+app.post(
+  "/api/user/update-banner",
+  authenticateToken,
+  upload.single("banner"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return apiResponse.error(res, "请选择背景图片", 400);
+      }
+      const userId = req.user.id;
+      const fileName = req.file.filename;
+      const dbPath = `/uploads/${fileName}`;
+
+      const [result] = await dbPool.query(
+        "UPDATE users SET banner = ? WHERE id = ?",
+        [dbPath, userId]
+      );
+
+      apiResponse.success(res, "背景图更新成功", dbPath);
+    } catch (err) {
+      // 🔥 关键：在这里打印错误到控制台
+      console.error("❌ 后端报错详情:", err);
+      // 🔥 关键：把报错信息发给前端（测试完记得改回来，为了安全不建议在生产环境暴露报错）
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  }
+);
 
 // ==========================================
 // 🔥 新增：记录全站访问量 (独立接口)
@@ -2901,31 +3428,220 @@ app.post("/api/comments/:id/action", authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 用户信息相关接口
+// 🔥 终极修正：个人主页全量数据实时统计接口
 // ==========================================
-
-// 获取用户详细信息
 app.get("/api/user/profile", async (req, res) => {
   try {
     const { username } = req.query;
+    if (!username) return apiResponse.error(res, "缺少用户名参数", 400);
 
-    if (!username) {
-      return apiResponse.error(res, "缺少用户名参数", 400);
-    }
-
-    const [results] = await dbPool.query(
-      "SELECT id, username, nickname, email, avatar, phone, gender, birthday, region, bio, social_link, role FROM users WHERE username = ?",
+    // 1. 获取用户基础资料 (加上 banner 字段 👈)
+    const [userResults] = await dbPool.query(
+      `SELECT id, username, nickname, avatar, banner, region, bio, social_link, role, created_at 
+       FROM users WHERE username = ?`,
       [username]
     );
 
-    if (results.length === 0) {
+    if (userResults.length === 0)
       return apiResponse.error(res, "用户不存在", 404);
+    const user = userResults[0];
+    const userId = user.id;
+
+    // 2. 实时聚合统计 (核心修改：从 likes 和 favorites 表中统计该作者获得的总数)
+    const [
+      [articleStats], // 原创数、总阅读、总评论 (来自 articles 表)
+      [followerResult], // 粉丝数
+      [followingResult], // 关注数
+      [totalLikesRes], // 🔥 累计获赞数 (跨表统计)
+      [totalFavsRes], // 🔥 累计被收藏数 (跨表统计)
+      [settingResult], // 导航配置
+    ] = await Promise.all([
+      dbPool.query(
+        "SELECT COUNT(*) as originalCount, SUM(views) as totalViews, SUM(comments) as totalComments FROM articles WHERE author_id = ?",
+        [userId]
+      ),
+      dbPool.query(
+        "SELECT COUNT(*) as total FROM follows WHERE following_id = ?",
+        [userId]
+      ),
+      dbPool.query(
+        "SELECT COUNT(*) as total FROM follows WHERE follower_id = ?",
+        [userId]
+      ),
+      // 统计所有属于该作者的文章在 article_likes 表中的总行数
+      dbPool.query(
+        "SELECT COUNT(*) as total FROM article_likes WHERE article_id IN (SELECT id FROM articles WHERE author_id = ?)",
+        [userId]
+      ),
+      // 统计所有属于该作者的文章在 article_favorites 表中的总行数
+      dbPool.query(
+        "SELECT COUNT(*) as total FROM article_favorites WHERE article_id IN (SELECT id FROM articles WHERE author_id = ?)",
+        [userId]
+      ),
+      dbPool.query("SELECT nav_config FROM user_settings WHERE user_id = ?", [
+        userId,
+      ]),
+    ]);
+
+    // 3. 组装并返回
+    const finalProfile = {
+      ...user,
+      stats: {
+        originalCount: articleStats[0].originalCount || 0,
+        fansCount: followerResult[0].total || 0,
+        followingCount: followingResult[0].total || 0,
+        totalViews: articleStats[0].totalViews || 0,
+        totalComments: articleStats[0].totalComments || 0,
+        totalLikes: totalLikesRes[0].total || 0, // 🔥 现在的数字是真实的了
+        totalFavorites: totalFavsRes[0].total || 0, // 🔥 现在的数字是真实的了
+      },
+      navConfig: settingResult.length > 0 ? settingResult[0].nav_config : null,
+    };
+
+    apiResponse.success(res, "获取资料成功", finalProfile);
+  } catch (err) {
+    logger.error("聚合资料获取失败:", err);
+    apiResponse.error(res, "服务器错误");
+  }
+});
+// ==========================================
+// 🔥 新增：修改密码接口 (需要认证)
+// ==========================================
+app.post(
+  "/api/user/update-password",
+  authenticateToken,
+  [
+    body("oldPassword").notEmpty().withMessage("请输入原密码"),
+    body("newPassword")
+      .isLength({ min: 6, max: 50 })
+      .withMessage("新密码长度需在6-50位之间"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return apiResponse.error(res, errors.array()[0].msg, 400);
     }
 
-    apiResponse.success(res, "获取成功", results[0]);
+    try {
+      const userId = req.user.id;
+      const { oldPassword, newPassword } = req.body;
+
+      // 1. 获取用户当前加密的密码
+      const [users] = await dbPool.query(
+        "SELECT password FROM users WHERE id = ?",
+        [userId]
+      );
+      if (users.length === 0) return apiResponse.error(res, "用户不存在", 404);
+
+      const user = users[0];
+
+      // 2. 验证原密码是否正确
+      const isMatch = await bcrypt.compare(oldPassword, user.password);
+      if (!isMatch) {
+        return apiResponse.error(res, "原密码输入错误", 401);
+      }
+
+      // 3. 对新密码进行加密
+      const salt = await bcrypt.genSalt(10);
+      const newHash = await bcrypt.hash(newPassword, salt);
+
+      // 4. 更新数据库
+      await dbPool.query("UPDATE users SET password = ? WHERE id = ?", [
+        newHash,
+        userId,
+      ]);
+
+      logger.info(`🔐 用户 ID=${userId} 成功修改了密码`);
+
+      // 建议：密码修改成功后，可以返回一个消息告知前端，或者强制让前端清除Token重登
+      apiResponse.success(res, "密码修改成功，请牢记新密码");
+    } catch (err) {
+      logger.error("修改密码失败:", err);
+      apiResponse.error(res, "服务器内部错误");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 新增：导出个人数据接口
+// ==========================================
+app.get("/api/user/export-data", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. 获取基本信息
+    const [userRows] = await dbPool.query(
+      "SELECT id, username, nickname, email, phone, gender, birthday, region, bio, social_link, created_at FROM users WHERE id = ?",
+      [userId]
+    );
+
+    // 2. 获取该用户的评论记录
+    const [commentRows] = await dbPool.query(
+      "SELECT content, created_at, article_id FROM comments WHERE nickname = ?",
+      [req.user.username]
+    );
+
+    const exportData = {
+      profile: userRows[0],
+      comments: commentRows,
+      export_at: new Date().toISOString(),
+      source: "Veritas Blog",
+    };
+
+    // 设置响应头，告诉浏览器这是一个下载文件
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=my_data_${req.user.username}.json`
+    );
+    res.send(JSON.stringify(exportData, null, 2));
+
+    logger.info(`📥 用户 ID=${userId} 导出了其个人数据`);
   } catch (err) {
-    logger.error("获取用户信息失败:", err);
-    apiResponse.error(res, "数据库错误");
+    logger.error("导出数据失败:", err);
+    apiResponse.error(res, "导出失败，请稍后重试");
+  }
+});
+
+// ==========================================
+// 🔥 新增：彻底注销账户接口
+// ==========================================
+app.delete("/api/user/account", authenticateToken, async (req, res) => {
+  const connection = await dbPool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const userId = req.user.id;
+    const username = req.user.username;
+
+    // 1. 删除用户壁纸
+    await connection.query("DELETE FROM user_wallpapers WHERE user_id = ?", [
+      userId,
+    ]);
+
+    // 2. 将评论设置为“已注销用户”或直接删除（这里选择保留内容但去标识化）
+    await connection.query(
+      "UPDATE comments SET nickname = '已注销用户' WHERE nickname = ?",
+      [username]
+    );
+
+    // 3. 删除用户记录
+    const [result] = await connection.query("DELETE FROM users WHERE id = ?", [
+      userId,
+    ]);
+
+    if (result.affectedRows === 0) {
+      throw new Error("用户不存在");
+    }
+
+    await connection.commit();
+    logger.warn(`⚠️ 账号注销成功: 用户名=${username}, ID=${userId}`);
+    apiResponse.success(res, "账号已注销，所有数据已清理");
+  } catch (err) {
+    await connection.rollback();
+    logger.error("注销账号失败:", err);
+    apiResponse.error(res, "操作失败，请联系管理员");
+  } finally {
+    connection.release();
   }
 });
 
@@ -3355,6 +4071,76 @@ app.post(
 );
 
 // ==========================================
+// 🔥 新增：站点配置获取接口 (用于版权声明等)
+// ==========================================
+
+/**
+ * 获取指定键名的配置内容
+ * GET /api/configs/:key
+ */
+app.get("/api/configs/:key", async (req, res) => {
+  try {
+    const { key } = req.params;
+
+    // 🔥 检查这里的白名单是否包含 'copyright_detail'
+    const allowedKeys = [
+      "copyright_detail",
+      "site_announcement",
+      "footer_info",
+    ];
+
+    if (!allowedKeys.includes(key)) {
+      // 这里的错误就是你刚才看到的“无效配置项”
+      return apiResponse.error(res, "无效的配置项", 400);
+    }
+
+    const [results] = await dbPool.query(
+      "SELECT config_value FROM site_configs WHERE config_key = ?",
+      [key]
+    );
+
+    if (results.length > 0) {
+      apiResponse.success(res, "获取配置成功", results[0].config_value);
+    } else {
+      apiResponse.success(res, "无内容", "");
+    }
+  } catch (err) {
+    logger.error(`获取配置 [${req.params.key}] 失败:`, err);
+    apiResponse.error(res, "服务器内部错误");
+  }
+});
+
+// ==========================================
+// 🔥 新增：保存站点配置接口 (仅管理员)
+// ==========================================
+app.post(
+  "/api/admin/configs/:key",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const { key } = req.params;
+      const { value } = req.body;
+
+      if (!value) return apiResponse.error(res, "配置内容不能为空", 400);
+
+      // 使用 INSERT ... ON DUPLICATE KEY UPDATE 确保存在即更新，不存在即插入
+      await dbPool.query(
+        `INSERT INTO site_configs (config_key, config_value) VALUES (?, ?) 
+             ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)`,
+        [key, value]
+      );
+
+      logger.info(`⚙️ 管理员 ${req.user.username} 更新了配置项: ${key}`);
+      apiResponse.success(res, "配置保存成功");
+    } catch (err) {
+      logger.error(`保存配置 [${req.params.key}] 失败:`, err);
+      apiResponse.error(res, "保存失败，服务器内部错误");
+    }
+  }
+);
+
+// ==========================================
 // 🔥 公告系统接口 (Notices)
 // ==========================================
 
@@ -3594,6 +4380,157 @@ app.put(
 );
 
 // ==========================================
+// 🔥 新增：用户导航偏好管理
+// ==========================================
+
+// 1. 获取导航配置
+app.get("/api/user/nav-settings", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [rows] = await dbPool.query(
+      "SELECT nav_config FROM user_settings WHERE user_id = ?",
+      [userId]
+    );
+
+    // 如果没有配置，返回 null，前端使用默认值
+    const config = rows.length > 0 ? rows[0].nav_config : null;
+    apiResponse.success(res, "获取配置成功", config);
+  } catch (err) {
+    logger.error("获取导航配置失败:", err);
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// 2. 更新导航配置
+app.post("/api/user/nav-settings", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { navConfig } = req.body; // 前端传来的数组
+
+    // 使用 REPLACE INTO 或 ON DUPLICATE KEY UPDATE 确保唯一性
+    await dbPool.query(
+      `INSERT INTO user_settings (user_id, nav_config) VALUES (?, ?) 
+             ON DUPLICATE KEY UPDATE nav_config = VALUES(nav_config)`,
+      [userId, JSON.stringify(navConfig)]
+    );
+
+    apiResponse.success(res, "设置已保存至云端");
+  } catch (err) {
+    logger.error("保存导航配置失败:", err);
+    apiResponse.error(res, "保存失败");
+  }
+});
+
+// ==========================================
+// 🔥 修正版：获取当前用户的浏览历史
+// ==========================================
+app.get("/api/user/history", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [rows] = await dbPool.query(
+      `
+      SELECT 
+        h.viewed_at, 
+        a.id, a.title, a.summary, a.cover_image, a.category, a.views,
+        u.nickname as author_name, 
+        u.avatar as author_avatar,
+        u.username as author_username
+      FROM user_browsing_history h
+      JOIN articles a ON h.article_id = a.id
+      JOIN users u ON a.author_id = u.id  -- 💡 关键：关联查询文章的作者信息
+      WHERE h.user_id = ?
+      ORDER BY h.viewed_at DESC
+      LIMIT 15
+      `,
+      [userId]
+    );
+
+    apiResponse.success(res, "获取历史成功", rows);
+  } catch (err) {
+    logger.error("获取历史记录失败:", err);
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// 2. 获取当前用户的浏览历史（给个人中心“最近访问”Tab用）
+// index.js 中的获取历史接口
+app.get("/api/user/history", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const [rows] = await dbPool.query(
+      `SELECT h.viewed_at, a.id, a.title, a.summary, a.cover_image, a.category
+       FROM user_browsing_history h
+       INNER JOIN articles a ON h.article_id = a.id  -- 💡 确保这里 JOIN 成功
+       WHERE h.user_id = ?
+       ORDER BY h.viewed_at DESC
+       LIMIT 10`,
+      [userId]
+    );
+    // 在这里打印一下 rows，看后端到底查出来没
+    console.log(`查到用户 ${userId} 的历史记录共 ${rows.length} 条`);
+    apiResponse.success(res, "获取成功", rows);
+  } catch (err) {
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
+// 🔥 新增：社交关系管理 (关注/粉丝)
+// ==========================================
+
+app.post("/api/user/follow", authenticateToken, async (req, res) => {
+  try {
+    const followerId = req.user.id; // 当前登录者
+    const { targetUserId } = req.body; // 想要关注的博主 ID
+
+    if (followerId === parseInt(targetUserId)) {
+      return apiResponse.error(res, "不能关注你自己哦", 400);
+    }
+
+    // 1. 检查是否已经关注过
+    const [existing] = await dbPool.query(
+      "SELECT id FROM follows WHERE follower_id = ? AND following_id = ?",
+      [followerId, targetUserId]
+    );
+
+    if (existing.length > 0) {
+      // 如果已关注，则执行“取消关注”
+      await dbPool.query(
+        "DELETE FROM follows WHERE follower_id = ? AND following_id = ?",
+        [followerId, targetUserId]
+      );
+      return apiResponse.success(res, "已取消关注", { status: "unfollowed" });
+    } else {
+      // 如果未关注，则执行“关注”
+      await dbPool.query(
+        "INSERT INTO follows (follower_id, following_id) VALUES (?, ?)",
+        [followerId, targetUserId]
+      );
+      return apiResponse.success(res, "关注成功", { status: "followed" });
+    }
+  } catch (err) {
+    logger.error("关注操作失败:", err);
+    apiResponse.error(res, "操作失败");
+  }
+});
+
+app.get("/api/user/follow-status", authenticateToken, async (req, res) => {
+  try {
+    const followerId = req.user.id;
+    const { targetUserId } = req.query;
+
+    const [rows] = await dbPool.query(
+      "SELECT id FROM follows WHERE follower_id = ? AND following_id = ?",
+      [followerId, targetUserId]
+    );
+
+    apiResponse.success(res, "获取成功", { isFollowing: rows.length > 0 });
+  } catch (err) {
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
 // 🔥 优化13: 图片代理接口（增强版）
 // ==========================================
 // 🔥 添加内存缓存（减少重复请求）
@@ -3705,6 +4642,7 @@ app.use(express.static(path.join(__dirname, "../client/dist")));
 // 🔥 优化14: 全局错误处理（增强）
 // ==========================================
 app.use((err, req, res, next) => {
+  console.error("❌ 捕捉到全局错误:", err);
   logger.error("全局错误:", {
     message: err.message,
     stack: process.env.NODE_ENV === "production" ? undefined : err.stack,
@@ -3720,11 +4658,8 @@ app.use((err, req, res, next) => {
     return apiResponse.error(res, `文件上传错误: ${err.message}`, 400);
   }
 
-  apiResponse.error(
-    res,
-    process.env.NODE_ENV === "development" ? err.message : "服务器错误",
-    500
-  );
+  // 🔥 关键修改：把 err.message 传给前端，这样你就不用猜了
+  apiResponse.error(res, `服务器内部错误: ${err.message}`, 500);
 });
 
 // ==========================================

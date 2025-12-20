@@ -3,7 +3,12 @@ import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import axios from 'axios'
 import { useUserStore } from '@/stores/user.js'
 import { useRouter } from 'vue-router'
+import { useWallpaperStore } from '@/stores/wallpaper' // 引入全局壁纸仓
 
+const isHeroReady = ref(false)
+// 🔥 必须添加这一行，否则后续所有代码都会崩溃！
+const isSidebarReady = ref(false)
+const wallpaperStore = useWallpaperStore()
 const userStore = useUserStore()
 const router = useRouter()
 const notices = ref([{ content: '' }]) // 防止未定义错误
@@ -18,11 +23,15 @@ const isLoadingMore = ref(false) // 按钮loading状态
 const defaultAvatar = 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'
 
 const getFullAvatarUrl = (path) => {
-    if (!path) return defaultAvatar
-    if (path.startsWith('data:image') || path.startsWith('http')) return path
-    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000'
-    return `${apiBase}${path}`
-}
+    if (!path) return defaultAvatar;
+
+    // 🔥 简化：如果已经是完整URL，直接返回
+    if (path.startsWith('http') || path.startsWith('data:image')) return path;
+
+    // 🔥 简化：前端通过Vite代理访问 /uploads，所以只需要相对路径
+    // 后端上传返回的是 /uploads/xxx.jpg，Vite代理会转发到后端
+    return path;
+};
 
 // 修改前的 profile 逻辑是完全依赖 userStore，现在我们将数据源改为 siteStats
 const profile = computed(() => {
@@ -59,7 +68,7 @@ const profile = computed(() => {
 
 const handleAvatarClick = () => {
     if (profile.value.isLogin) {
-        router.push('/account')
+        router.push(`/profile/${userStore.user.username}`)
     } else {
         router.push('/login')
     }
@@ -84,6 +93,11 @@ const preloadImage = (url) => new Promise((resolve, reject) => {
 })
 
 const initWallpapers = async () => {
+    // --- 核心优化 A：先抢用全局现成的壁纸 ---
+    if (wallpaperStore.currentWallpaper) {
+        heroBgUrl.value = wallpaperStore.currentWallpaper
+        isHeroReady.value = true // 有现成的，直接亮相！
+    }
     try {
         const res = await axios.get('/api/wallpaper/global')
         const list = res.data.data?.randomUrls || res.data.randomUrls
@@ -92,8 +106,12 @@ const initWallpapers = async () => {
         } else {
             wallpaperList.value = fallbackList
         }
+        await preloadImage(list[0])
+        heroBgUrl.value = list[0]
+        isHeroReady.value = true // 确保图片完全加载后再显示
     } catch (error) {
         wallpaperList.value = fallbackList
+        isHeroReady.value = true
     }
     startCarousel()
 }
@@ -119,7 +137,7 @@ const startCarousel = async () => {
     }, 6000)
 }
 
-// ==================== 3. 3D 标签云逻辑 (动态化) ====================
+// ==================== 3. 3D 标签云逻辑 ====================
 const tags = ref([]) // 存储最终的标签对象
 let animationFrameId = null
 
@@ -131,50 +149,38 @@ let currentSpeed = 0
 let angleX = 0
 let angleY = 0
 
-// 预设好看的颜色池 (Material Design Colors)
-const colorPalette = [
-    '#F44336', '#E91E63', '#9C27B0', '#673AB7', '#3F51B5',
-    '#2196F3', '#03A9F4', '#00BCD4', '#009688', '#4CAF50',
-    '#8BC34A', '#CDDC39', '#FFC107', '#FF9800', '#FF5722'
-]
-
 // 获取标签数据
 const fetchTags = async () => {
     try {
-        const res = await axios.get('/api/tags/cloud')
+        const res = await axios.get('/api/tags/cloud');
         if (res.data.success) {
-            const rawData = res.data.data
+            const rawData = res.data.data;
+            const len = rawData.length;
 
-            // 初始化 3D 坐标
-            const len = rawData.length
+            // 🔥 简化：后端已经提供了 color 字段，直接使用
             tags.value = rawData.map((tag, i) => {
-                const phi = Math.acos(-1 + (2 * i) / len)
-                const theta = Math.sqrt(len * Math.PI) * phi
-
-                // 如果后端没给颜色，前端随机分配一个
-                const color = tag.color || colorPalette[Math.floor(Math.random() * colorPalette.length)]
+                const phi = Math.acos(-1 + (2 * i) / len);
+                const theta = Math.sqrt(len * Math.PI) * phi;
 
                 return {
                     id: tag.id || i,
-                    name: tag.name, // 或者是 tag.title
-                    color: color,
+                    name: tag.name,
+                    color: tag.color, // 🔥 使用后端返回的颜色
                     x: RADIUS * Math.cos(theta) * Math.sin(phi),
                     y: RADIUS * Math.sin(theta) * Math.sin(phi),
                     z: RADIUS * Math.cos(phi),
                     style: {}
-                }
-            })
+                };
+            });
 
-            // 数据准备好后，开始动画
             nextTick(() => {
-                animate()
-            })
+                animate();
+            });
         }
     } catch (error) {
-        console.error('❌ 获取标签云失败:', error)
-        // 失败时不显示或使用空数组，避免报错
+        console.error('❌ 获取标签云失败:', error);
     }
-}
+};
 
 const animate = () => {
     if (currentSpeed < BASE_SPEED) currentSpeed += ACCELERATION
@@ -223,9 +229,43 @@ const handleTagClick = (tag) => {
     scrollToContent()
 }
 
+// ==================== 9. 图片全屏预览逻辑 ====================
+const isPreviewVisible = ref(false); // 控制预览显示
+const previewUrl = ref('');          // 当前预览图片的地址
 
+// 在 openPreview 中增加：
+const openPreview = (url) => {
+    if (!url) return;
+    previewUrl.value = url;
+    isPreviewVisible.value = true;
+    document.body.style.overflow = 'hidden';
+    // 🔥 新增：监听 Esc 键
+    window.addEventListener('keydown', handleEsc);
+};
 
-// ==================== 6. 🔥 弹幕数据 (升级版：带缩略图) ====================
+// 在 closePreview 中增加：
+const closePreview = () => {
+    isPreviewVisible.value = false;
+    document.body.style.overflow = '';
+    // 🔥 新增：移除监听
+    window.removeEventListener('keydown', handleEsc);
+};
+
+// 🔥 新增：处理函数
+const handleEsc = (e) => {
+    if (e.key === 'Escape') closePreview();
+};
+
+// 🔥 新增：格式化数字显示（如 1500 -> 1.5K），保持气泡简洁
+const formatCount = (count) => {
+    if (!count || count === 0) return '0';
+    if (count >= 1000) {
+        return (count / 1000).toFixed(1) + 'K';
+    }
+    return count;
+};
+
+// ==================== 6. 🔥 弹幕数据 ====================
 // 默认数据也可以稍微带点图，模拟真实效果
 const defaultBarrage = [
     { id: 'd1', avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?q=80&w=100', content: '沙发是我的！', image: null },
@@ -238,79 +278,68 @@ const barrageList = ref([...defaultBarrage])
 // 🔥 修复版：获取最新评论 (带详细调试)
 const fetchLatestComments = async () => {
     try {
-        const res = await axios.get('/api/comments/latest', {
-            params: { limit: 15 }
-        })
-
-        // console.log('📦 最新弹幕原始数据:', res.data) // 减少控制台噪音
-
+        const res = await axios.get('/api/comments/latest', { params: { limit: 15 } });
         if (res.data.success && res.data.data.length > 0) {
             const realComments = res.data.data.map(item => {
-                const avatar = getFullAvatarUrl(item.avatar)
+                // 🚫 删除这里的所有 console.log ！！！
+                const avatar = getFullAvatarUrl(item.avatar);
+                let thumbImage = null;
+                let displayContent = item.content || '';
 
-                let displayContent = item.content || ''
-                let thumbImage = null
-
-                // 🔥 1. 优先提取图片
-                // 确保 images 是数组且有长度
+                // 2. 图片处理逻辑
                 if (Array.isArray(item.images) && item.images.length > 0) {
-                    let imgPath = item.images[0]
-
-                    // 🔥 修复逻辑：确保 imgPath 是指向后端的完整 URL
+                    let imgPath = item.images[0];
                     if (imgPath && typeof imgPath === 'string') {
-
-                        // 如果已经是 http 开头的完整链接（比如图床），直接用
+                        // 🔥 修正：处理相对路径和绝对路径
                         if (imgPath.startsWith('http')) {
-                            thumbImage = imgPath
+                            // 完整URL直接使用
+                            thumbImage = imgPath;
+                        } else if (imgPath.startsWith('/')) {
+                            // 相对路径（如 /uploads/xxx.jpg）直接使用
+                            // Vite代理会自动转发到后端
+                            thumbImage = imgPath;
                         } else {
-
-                            const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'
-
-                            const host = apiBase.replace(/\/api\/?$/, '')
-
-                            // 确保 imgPath 以 / 开头
-                            const cleanPath = imgPath.startsWith('/') ? imgPath : '/' + imgPath
-
-                            // 拼接最终地址
-                            thumbImage = `${host}${cleanPath}`
+                            // 如果路径没有以 / 开头，确保加上 /
+                            thumbImage = '/' + imgPath;
                         }
                     }
                 }
-                // 🔥 2. 智能文案处理
-                // 情况A: 有图无字 -> 显示“分享图片”
+
+                // 3. 智能文案处理
+                // 情况A: 有图无字 -> 显示"分享图片"
                 if (!displayContent.trim() && thumbImage) {
-                    displayContent = '分享图片'
+                    displayContent = '分享图片';
                 }
                 // 情况B: 无图无字 -> 显示默认文案
                 else if (!displayContent.trim() && !thumbImage) {
-                    displayContent = '收到一条新留言'
+                    displayContent = '收到一条新留言';
                 }
 
-                // 3. 截断过长文字
-                const maxLen = thumbImage ? 8 : 12
+                // 4. 截断过长文字
+                const maxLen = thumbImage ? 8 : 12;
                 if (displayContent.length > maxLen) {
-                    displayContent = displayContent.substring(0, maxLen) + '...'
+                    displayContent = displayContent.substring(0, maxLen) + '...';
                 }
 
                 return {
                     id: item.id,
                     avatar: avatar,
                     content: displayContent,
-                    image: thumbImage // 👈 确保这里有值
-                }
-            })
+                    image: thumbImage
+                };
+            });
 
-            barrageList.value = realComments
+            barrageList.value = realComments;
 
             // 数据太少时补充默认数据
             if (realComments.length < 5) {
-                barrageList.value = [...realComments, ...defaultBarrage]
+                barrageList.value = [...realComments, ...defaultBarrage];
             }
         }
     } catch (error) {
-        console.error('❌ 获取最新弹幕失败:', error)
+        console.error('❌ 获取最新弹幕失败:', error);
     }
-}
+};
 
 // ==================== 4. 文章与分类逻辑 (动态化改造) ====================
 // 4.1 图标映射表 (配置特定分类的图标，未配置的将使用默认图标)
@@ -321,7 +350,7 @@ const categoryIconMap = {
     '学习人生': '📚',
     '海外趣事': '🌍',
     '爱心资源': '❤️',
-    '技术分享': '💻', // 预埋一些可能用到的
+    '技术分享': '💻',
     '心情随笔': '📝'
 }
 
@@ -330,31 +359,20 @@ const dbCategories = ref([]) // 存放从后端拿到的分类名列表
 
 // 4.3 计算最终显示的分类菜单
 const categories = computed(() => {
-    // 1. 头部固定：最新
-    const list = [
-        { id: 'latest', name: '最新', icon: '🔥' }
-    ]
+    const list = [{ id: 'latest', name: '最新', icon: '🔥' }]
 
-    // 2. 中间动态：来自数据库
     dbCategories.value.forEach(catName => {
-        // 🔥 核心修复：过滤掉重复的分类名
-        // 如果数据库里有 '最新'、'战友'、'友链'，这里直接跳过，防止重复显示
-        if (['最新', '战友', '友链'].includes(catName)) return
+        if (['最新', '友链'].includes(catName)) return
 
         list.push({
-            id: catName, // 使用分类名作为ID
+            id: catName,
             name: catName,
-            icon: categoryIconMap[catName] || '📂' // 如果没配置图标，默认用文件夹图标
+            icon: categoryIconMap[catName] || '📂'
         })
     })
-
-    // 3. 尾部固定：友链 (改名)
-    // 🔥 修改：将 '战友' 改为 '友链'
     list.push({ id: 'friends', name: '友链', icon: '⭐' })
-
     return list
 })
-
 const activeCategory = ref('latest')
 
 // 🔥 获取所有分类
@@ -363,7 +381,6 @@ const fetchCategories = async () => {
         const res = await axios.get('/api/categories')
         if (res.data.success) {
             dbCategories.value = res.data.data
-            // console.log('📦 动态分类加载完成:', dbCategories.value)
         }
     } catch (error) {
         console.error('❌ 获取分类列表失败:', error)
@@ -375,61 +392,54 @@ const articles = ref([])
 const isLoadingArticles = ref(false)
 
 // 🔥 核心修改：获取文章列表
-// isLoadMore: true 表示点击了"加载更多"，false 表示切换分类或搜索（需要重置）
-const fetchArticles = async (categoryName = 'latest', isLoadMore = false) => {
-    // 1. 确定当前要查第几页
+// Blog.vue <script setup> 内部
+
+// 修改参数：增加 isSilent 默认值为 false
+const fetchArticles = async (categoryName = 'latest', isLoadMore = false, isSilent = false) => {
+    // 1. 确定要抓取的页码
+    // 如果是静默刷新或全新加载，抓取第 1 页；如果是加载更多，抓取下一页
     const pageToFetch = isLoadMore ? currentPage.value + 1 : 1
 
     // 2. 设置 Loading 状态
     if (isLoadMore) {
         isLoadingMore.value = true
-    } else {
-        // 如果是全新加载，开启全屏骨架屏Loading（或者保留你现有的）
+    } else if (!isSilent) {
+        // 🔥 只有在【非静默】且【非加载更多】的情况下才显示全屏加载
         isLoadingArticles.value = true
-        // 重置状态
         currentPage.value = 1
         hasMore.value = true
-        // 注意：如果是切换分类，先不清空 articles，防止页面闪烁，等数据回来再替换
     }
 
     try {
-        // 3. 发送请求
         const res = await axios.get('/api/articles', {
             params: {
                 category: categoryName,
                 page: pageToFetch,
                 limit: pageSize,
-                keyword: searchQuery.value // 支持在搜索结果中分页
+                keyword: searchQuery.value
             }
         })
 
         if (res.data.success) {
             const { list, pagination } = res.data.data
-
-            // 数据处理：补全评论数和浏览量（防止后端返回null）
             const processedList = list.map(article => ({
                 ...article,
                 comments: article.comments || 0,
                 views: article.views || 0
             }))
 
-            // 4. 数据更新逻辑
+            // 3. 数据更新策略
             if (isLoadMore) {
-                // 追加模式：把新数据拼接到旧数据后面
+                // 追加模式：用于“加载更多”
                 articles.value = [...articles.value, ...processedList]
-                currentPage.value = pageToFetch // 页码+1
+                currentPage.value = pageToFetch
             } else {
-                // 覆盖模式：替换所有数据
+                // 替换模式：用于“全新切换”或“静默刷新”
                 articles.value = processedList
             }
 
-            // 5. 判断是否还有更多数据
-            // 如果当前拿到的数量 < pageSize，或者当前页已经是最后一页，说明没数据了
-            if (processedList.length < pageSize || pageToFetch >= pagination.totalPages) {
-                hasMore.value = false
-            } else {
-                hasMore.value = true
-            }
+            // 4. 分页器状态更新
+            hasMore.value = !(processedList.length < pageSize || pageToFetch >= pagination.totalPages)
         }
     } catch (error) {
         console.error('❌ 请求出错:', error)
@@ -503,8 +513,6 @@ const friendLinks = ref([])
 // 2. 添加获取函数
 const fetchFriendLinks = async () => {
     try {
-        // 注意：这里用 axios 或 api 都可以，但因为是前台公开接口，建议用 axios
-        // 如果你的后端接口 '/api/friend_links' 不需要鉴权，直接调就行
         const res = await axios.get('/api/friend_links')
         if (res.data.success) {
             friendLinks.value = res.data.data
@@ -530,13 +538,6 @@ const handleFriendClick = () => {
     scrollToContent()
 }
 
-// 添加日期格式化函数
-const formatDate = (dateStr) => {
-    if (!dateStr) return ''
-    const date = new Date(dateStr)
-    return `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}-${date.getDate().toString().padStart(2, '0')}`
-}
-
 // 格式化日期时间
 const formatDateTime = (dateStr) => {
     if (!dateStr) return ''
@@ -553,43 +554,37 @@ const formatDateTime = (dateStr) => {
 const recommendedArticles = ref([])
 const isLoadingHotArticles = ref(false)
 
-// 🔥 修复后的获取热门文章函数
+// ✅ 修改 fetchHotArticles 中的封面处理
 const fetchHotArticles = async () => {
-    // console.log('🔥 开始获取热门文章...')
-    isLoadingHotArticles.value = true
+    isLoadingHotArticles.value = true;
 
     try {
-        // ✅ 使用相对路径，与其他接口保持一致
         const res = await axios.get('/api/articles/hot', {
             params: { limit: 3 },
             timeout: 10000
-        })
+        });
 
         if (res.data.success) {
             if (!res.data.data || res.data.data.length === 0) {
-                // console.log('⚠️ 热门文章列表为空')
-                recommendedArticles.value = getDefaultRecommendations()
-                return
+                recommendedArticles.value = getDefaultRecommendations();
+                return;
             }
 
-            const hotArticles = res.data.data
-            // console.log(`✅ 获取到 ${hotArticles.length} 篇热门文章`)
+            const hotArticles = res.data.data;
 
-            // 转换格式
+            // 🔥 简化：直接使用后端返回的封面图，如果没有则使用统一默认
             recommendedArticles.value = hotArticles.map(article => {
-                let coverImage = article.cover_image
-                if (!coverImage) {
-                    coverImage = getDefaultCoverByCategory(article.category)
-                }
+                // 使用后端返回的 cover_image，如果为空则用统一默认封面
+                let coverImage = article.cover_image ||
+                    'https://images.unsplash.com/photo-1518709268805-4e9042af2176?q=80&w=200&auto=format&fit=crop';
 
                 return {
                     id: article.id,
                     title: article.title,
-                    date: article.has_been_updated
-                        ? `📝 ${formatDateTime(article.updated_at)}`
-                        : `📅 ${formatDateTime(article.created_at)}`,
+                    date: article.display_date ||
+                        (article.has_been_updated ? `📝 ${article.updated_at_formatted}` : `📅 ${article.created_at_formatted}`),
                     isUpdated: article.has_been_updated || false,
-                    cover: coverImage,
+                    cover: coverImage, // 🔥 直接使用处理后的封面
                     views: article.views || 0,
                     comments: article.comments || 0,
                     category: article.category || '',
@@ -598,47 +593,28 @@ const fetchHotArticles = async () => {
                             ? article.summary.substring(0, 50) + '...'
                             : article.summary)
                         : ''
-                }
-            })
-
-            // console.log('✅ 热门文章处理完成:', recommendedArticles.value)
-        } else {
-            console.error('❌ API返回失败:', res.data)
-            recommendedArticles.value = getDefaultRecommendations()
+                };
+            });
         }
     } catch (error) {
-        console.error('❌ 获取热门文章失败') // 简化日志
-        recommendedArticles.value = getDefaultRecommendations()
+        recommendedArticles.value = getDefaultRecommendations();
     } finally {
-        isLoadingHotArticles.value = false
+        isLoadingHotArticles.value = false;
     }
-}
-
-// 根据分类获取默认封面图
-const getDefaultCoverByCategory = (category) => {
-    const categoryCovers = {
-        'Veritas': 'https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?q=80&w=200&auto=format&fit=crop',
-        '生活倒影': 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?q=80&w=200&auto=format&fit=crop',
-        '视听盛宴': 'https://images.unsplash.com/photo-1496307667243-6b5d2447d8ef?q=80&w=200&auto=format&fit=crop',
-        '学习人生': 'https://images.unsplash.com/photo-1501504905252-473c47e087f8?q=80&w=200&auto=format&fit=crop',
-        '海外趣事': 'https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?q=80&w=200&auto=format&fit=crop',
-        '爱心资源': 'https://images.unsplash.com/photo-1513475382585-d06e58bcb0e0?q=80&w=200&auto=format&fit=crop',
-        '战友': 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=200&auto=format&fit=crop'
-    }
-    return categoryCovers[category] || 'https://images.unsplash.com/photo-1518709268805-4e9042af2176?q=80&w=200&auto=format&fit=crop'
-}
+};
 
 // 默认推荐文章（API失败时的后备方案）
 const getDefaultRecommendations = () => {
-    // console.log('⚠️ 使用默认推荐数据')
-    const currentDate = new Date()
-    const formattedDate = formatDateTime(currentDate)
-
+    const currentDate = new Date();
+    const formattedDate = formatDateTime(currentDate);
+    // 🔥 统一默认封面
+    const defaultCover = 'https://images.unsplash.com/photo-1518709268805-4e9042af2176?q=80&w=200&auto=format&fit=crop';
     return [
         {
             id: 101,
             title: 'POETIZE - 文档导航与网站美化',
             date: `📅 ${formattedDate}`,
+            cover: defaultCover, // 🔥 统一使用默认封面
             cover: 'https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?q=80&w=200&auto=format&fit=crop',
             isUpdated: false,
             views: 150,
@@ -650,6 +626,7 @@ const getDefaultRecommendations = () => {
             id: 102,
             title: 'Vue 3 + Vite 实战教程',
             date: `📝 ${formattedDate}`,
+            cover: defaultCover, // 🔥 统一使用默认封面
             cover: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?q=80&w=200&auto=format&fit=crop',
             isUpdated: true,
             views: 280,
@@ -661,6 +638,7 @@ const getDefaultRecommendations = () => {
             id: 103,
             title: 'Node.js 后端开发指南',
             date: `📅 ${formattedDate}`,
+            cover: defaultCover, // 🔥 统一使用默认封面
             cover: 'https://images.unsplash.com/photo-1496307667243-6b5d2447d8ef?q=80&w=200&auto=format&fit=crop',
             isUpdated: false,
             views: 95,
@@ -763,16 +741,15 @@ const scrollToContent = () => {
 
 // 🔥🔥 核心：数据自动刷新逻辑 🔥🔥
 const refreshAllData = async () => {
-    // 只有在不是搜索状态下才刷新列表，避免打断用户的搜索结果
-    if (!isSearching.value && activeCategory.value !== 'friends') {
-        const queryCat = activeCategory.value === 'latest' ? 'latest' : activeCategory.value
-        await fetchArticles(queryCat, true) // true 表示静默刷新
-    }
-    // 始终刷新全站统计、弹幕和公告
-    fetchSiteStats()
-    fetchLatestComments()
-    fetchLatestNotice() // 👈 新增：自动刷新公告
-}
+    // 增加守卫，防止重复加载
+    if (isLoadingArticles.value || isLoadingHotArticles.value) return;
+
+    // 静默刷新数据
+    fetchSiteStats();
+    fetchLatestComments();
+    fetchLatestNotice();
+    // 建议：除非必要，不要每30秒刷新文章列表，这开销太大
+};
 
 onMounted(async () => {
     // 1. 检查登录状态
@@ -780,21 +757,26 @@ onMounted(async () => {
         await userStore.checkLoginStatus()
     }
 
-    // 2. 初始化视觉效果
+    // 2. 初始化视觉
     initWallpapers()
-    startTyping()
-    fetchTags()
-
-    // 3. 🔥 获取数据 (初次加载)
-    await fetchCategories()
-    fetchArticles()
-    fetchHotArticles()
     fetchSiteStats()
-    fetchLatestComments()
-    fetchLatestNotice() // 👈 新增：初次加载公告
-    fetchFriendLinks() // 👈 加上这句
 
-    // 4. 🔥 启动数据自动轮询 (每30秒刷新一次数据)
+    // 3. 异步获取业务数据
+    fetchHotArticles()   // 🔥 必须补上这一句，推荐文章才会有内容！
+    fetchCategories()
+    fetchArticles()
+    fetchLatestComments()
+    fetchLatestNotice()
+    fetchTags()
+    fetchFriendLinks()
+    startTyping()
+
+    // 4. 侧边栏入场动画
+    setTimeout(() => {
+        isSidebarReady.value = true
+    }, 400)
+
+    // 5. 自动轮询
     statsTimer = setInterval(() => {
         refreshAllData()
     }, 30000)
@@ -803,14 +785,21 @@ onMounted(async () => {
 onUnmounted(() => {
     if (carouselTimer) clearInterval(carouselTimer)
     if (typeTimer) clearInterval(typeTimer)
-    if (statsTimer) clearInterval(statsTimer) // 销毁定时器
     if (animationFrameId) cancelAnimationFrame(animationFrameId)
+
+    // 🔥 彻底销毁自动刷新定时器
+    if (statsTimer) {
+        clearInterval(statsTimer)
+        statsTimer = null
+        console.log('🧹 自动刷新定时器已清理')
+    }
 })
 </script>
 
 <template>
     <div class="blog-page">
-        <header class="hero-section" :style="{ backgroundImage: `url(${heroBgUrl})` }">
+        <header class="hero-section" :class="{ 'is-ready': isHeroReady }"
+            :style="{ backgroundImage: heroBgUrl ? `url(${heroBgUrl})` : 'none' }">
             <div class="hero-overlay"></div>
             <div class="hero-content animate__animated animate__fadeInDown">
                 <h1 class="main-title">看见真理</h1>
@@ -846,12 +835,14 @@ onUnmounted(() => {
         <main class="main-container">
             <aside class="sidebar-wrapper animate__animated animate__fadeInLeft">
 
-                <div class="sidebar-card profile-card-crystal">
+                <div class="sidebar-card profile-card-crystal staggered-animation"
+                    :class="{ 'is-visible': isSidebarReady }" style="--delay: 1">
                     <div class="profile-bg-illustration">
                         <img src="https://w.wallhaven.cc/full/5g/wallhaven-5gjgj8.jpg" class="illus-img" alt="bg">
                     </div>
 
-                    <div class="profile-avatar-wrapper" @click="handleAvatarClick">
+                    <div class="profile-avatar-wrapper" @click="handleAvatarClick"
+                        :title="profile.isLogin ? '查看我的个人主页' : '点击登录'">
                         <img :src="profile.avatar" alt="Avatar" class="avatar-img">
                     </div>
 
@@ -887,7 +878,8 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <div class="sidebar-card search-card-crystal">
+                <div class="sidebar-card search-card-crystal staggered-animation"
+                    :class="{ 'is-visible': isSidebarReady }" style="--delay: 2">
                     <div class="card-header-row">
                         <div class="header-title"><span class="icon-search">🔍</span><span>搜索</span></div>
                         <div class="mac-dots"><span class="dot red"></span><span class="dot yellow"></span><span
@@ -905,7 +897,8 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <div class="sidebar-card recommend-card-crystal">
+                <div class="sidebar-card recommend-card-crystal staggered-animation"
+                    :class="{ 'is-visible': isSidebarReady }" style="--delay: 3">
                     <div class="card-header-row">
                         <div class="header-title"><span class="icon-thumb">👍</span><span>推荐文章</span></div>
                         <div class="mac-dots"><span class="dot red"></span><span class="dot yellow"></span><span
@@ -935,7 +928,8 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <div class="sidebar-card tag-card-crystal">
+                <div class="sidebar-card tag-card-crystal staggered-animation" :class="{ 'is-visible': isSidebarReady }"
+                    style="--delay: 4">
                     <div class="card-header-row">
                         <div class="header-title"><span class="icon-tag">🏷️</span><span>标签</span></div>
                         <div class="mac-dots"><span class="dot red"></span><span class="dot yellow"></span><span
@@ -951,9 +945,10 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <div class="sidebar-card barrage-card-crystal">
+                <div class="sidebar-card barrage-card-crystal staggered-animation"
+                    :class="{ 'is-visible': isSidebarReady }" style="--delay: 5">
                     <div class="barrage-header">
-                        <div class="header-title-white">
+                        <div class="eader-title">
                             <span class="icon-barrage">✾</span>
                             <span>最新弹幕</span>
                         </div>
@@ -975,7 +970,8 @@ onUnmounted(() => {
                                     <span class="barrage-text">{{ item.content }}</span>
 
                                     <div v-if="item.image" class="barrage-thumb">
-                                        <img :src="item.image" alt="图" loading="lazy">
+                                        <img :src="item.image" alt="图" loading="lazy"
+                                            @click.stop="openPreview(item.image)">
                                     </div>
                                 </div>
                             </div>
@@ -1038,43 +1034,54 @@ onUnmounted(() => {
                         <button class="clear-search-btn" @click="resetView">✕ 清除筛选</button>
                     </div>
 
-                    <div v-for="article in filteredArticles" :key="article.id"
-                        class="article-card animate__animated animate__fadeInUp">
+                    <div v-for="(article, index) in filteredArticles" :key="article.id"
+                        class="article-card staggered-animation" :style="{ '--delay': index }">
 
                         <div class="card-cover-wrapper" @click="router.push('/article/' + article.id)">
                             <img :src="article.cover_image" alt="cover" loading="lazy">
+                            <div class="card-category-tag">{{ article.category || '未分类' }}</div>
                         </div>
 
-                        <div class="card-body">
+                        <div class="card-body-refined">
 
-                            <div class="meta-row date">
-                                <span class="icon">📅</span>
+                            <div class="row-1-header">
+                                <img :src="getFullAvatarUrl(article.author_avatar)" class="author-avatar-big"
+                                    @click.stop="router.push('/profile/' + (article.author_username || article.author_name))">
+                                <h3 class="article-title-v3" @click="router.push('/article/' + article.id)">
+                                    {{ article.title }}
+                                </h3>
+                            </div>
+
+                            <div class="row-2-date">
                                 <span>发布于 {{ formatDateTime(article.created_at) }}</span>
                             </div>
 
-                            <h3 class="card-title" @click="router.push('/article/' + article.id)">
-                                {{ article.title }}
-                            </h3>
-
-                            <div class="meta-row stats">
-                                <div class="stat-item fire">
-                                    <span class="icon">🔥</span> {{ article.views || 0 }} 热度
+                            <div class="row-3-stats">
+                                <div class="icon-badge-group" title="热度">
+                                    <span class="main-icon">🔥</span>
+                                    <span class="badge-num">{{ formatCount(article.views) }}</span>
                                 </div>
-                                <div class="stat-item comment">
-                                    <span class="icon">📝</span> {{ article.comments || 0 }} 评论
+                                <div class="icon-badge-group" title="点赞">
+                                    <span class="main-icon">❤️</span>
+                                    <span class="badge-num">{{ formatCount(article.likes) }}</span>
+                                </div>
+                                <div class="icon-badge-group" title="评论">
+                                    <span class="main-icon">📝</span>
+                                    <span class="badge-num">{{ formatCount(article.comments) }}</span>
+                                </div>
+                                <div class="icon-badge-group" title="收藏">
+                                    <span class="main-icon">⭐</span>
+                                    <span class="badge-num">{{ formatCount(article.favorites) }}</span>
                                 </div>
                             </div>
 
-                            <div class="tags-row">
+                            <div class="row-4-footer">
                                 <div class="tag-pill category">
                                     <span class="icon">📂</span> {{ article.category || '未分类' }}
                                 </div>
-
-                                <div class="tag-pill tag clickable" @click.stop="router.push('/article/' + article.id)">
-                                    <span class="icon">🏷️</span> 正文
-                                </div>
+                                <button class="btn-goto-article"
+                                    @click="router.push('/article/' + article.id)">正文</button>
                             </div>
-
                         </div>
                     </div>
 
@@ -1102,30 +1109,53 @@ onUnmounted(() => {
             <p>© 2025 Veritas Blog. All Rights Reserved.</p>
         </footer>
     </div>
+    <Transition name="zoom">
+        <div v-if="isPreviewVisible" class="preview-overlay" @click="closePreview">
+            <div class="preview-wrapper" @click.stop>
+                <img :src="previewUrl" class="preview-image-main" alt="预览">
+                <div class="preview-close-btn" @click="closePreview">✕</div>
+            </div>
+        </div>
+    </Transition>
 </template>
 
 <style scoped>
-/* ==================== 0. 核心：晶体/玻璃质感混合 ==================== */
-/* 所有侧边栏卡片的通用玻璃晶体基底 */
+/* 统一侧边栏卡片的晶体质感 */
 .sidebar-card,
 .profile-card-crystal,
 .search-card-crystal,
 .recommend-card-crystal,
 .tag-card-crystal {
-    /* 大师要求：底部向上 浅绿色到更浅的渐变 */
     background: linear-gradient(0deg, #d9f4f0 0%, #f6fcfb 100%);
-
-    /* 晶体质感：半透明 + 模糊 + 边框高光 */
     border-radius: 16px;
     box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.05);
-    /* 柔和投影 */
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.8);
-    /* 晶体白边 */
     margin-bottom: 25px;
     overflow: hidden;
     transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+
+.staggered-animation {
+    opacity: 0;
+    transform: translateY(30px);
+    /* 通过 --delay 变量控制每个卡片的出场时机 */
+    animation: slideInUp 0.6s cubic-bezier(0.23, 1, 0.32, 1) forwards;
+    animation-delay: calc(var(--delay) * 0.08s);
+}
+
+@keyframes slideInUp {
+    from {
+        opacity: 0;
+        transform: translateY(40px) scale(0.98);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
 }
 
 .sidebar-card:hover,
@@ -1134,6 +1164,21 @@ onUnmounted(() => {
     box-shadow: 0 15px 40px rgba(72, 203, 182, 0.15);
     /* 悬浮时带一点点绿色光晕 */
     border-color: #fff;
+}
+
+/* 1. 初始隐藏状态：向左偏移 20px */
+.sidebar-card.staggered-animation {
+    opacity: 0;
+    transform: translateX(-20px);
+    transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
+    /* 利用 style 绑定的 --delay 产生交错感 */
+    transition-delay: calc(var(--delay) * 0.1s);
+}
+
+/* 2. 激活显示状态：回到原位 */
+.sidebar-card.staggered-animation.is-visible {
+    opacity: 1;
+    transform: translateX(0);
 }
 
 /* ==================== 1. 个人资料卡片 (重构为图片样式) ==================== */
@@ -1291,15 +1336,24 @@ onUnmounted(() => {
     background-size: cover;
     background-position: center;
     background-attachment: fixed;
-    background-color: #333;
-    transition: background-image 1s ease-in-out;
+    background-color: transparent;
+    /* 改为透明 */
+    opacity: 0;
+
+    /* 3. 增加丝滑过渡 */
+    transition: opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 4. 当图片准备好（isHeroReady 为 true）时，触发淡入 */
+.hero-section.is-ready {
+    opacity: 1;
 }
 
 .hero-overlay {
     position: absolute;
     inset: 0;
-    background: rgba(0, 0, 0, 0.35);
     z-index: 0;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.4));
 }
 
 .hero-content {
@@ -1868,59 +1922,147 @@ onUnmounted(() => {
     color: #888;
 }
 
-/* ==================== 🔥 全新文章卡片样式 ==================== */
-
-/* 1. 网格布局 (保证 3 列) */
+/* ==================== 2. 文章卡片：核心设计 (Refined) ==================== */
 .article-grid {
     display: grid;
-    /* 最小宽度 280px，保证大屏 3 列，中屏 2 列 */
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 25px;
     align-items: start;
-    /* 防止卡片高度强制拉伸 */
 }
 
-/* 2. 卡片容器 */
 .article-card {
-    background: #fff;
+    background: rgba(255, 255, 255, 0.85) !important;
+    /* 晶体半透 */
     border-radius: 16px;
-    /* 大圆角 */
     overflow: hidden;
-    /* 裁剪图片圆角 */
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.06);
-    /* 初始柔和阴影 */
-    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-    border: 1px solid #f0f0f0;
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.05);
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid rgba(255, 255, 255, 0.6);
     display: flex;
     flex-direction: column;
     height: 100%;
-    /* 占满网格高度 */
+    position: relative;
+}
+
+/* ✨ 修复版：钻石切面流光 (Diamond Flash) */
+.article-card::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -150%;
+    width: 80%;
+    /* 覆盖面广但渐变细 */
+    height: 100%;
+    background: linear-gradient(120deg,
+            rgba(255, 255, 255, 0) 30%,
+            rgba(255, 255, 255, 0.3) 50%,
+            rgba(255, 255, 255, 0) 70%);
+    transform: skewX(-25deg);
+    pointer-events: none;
+    z-index: 5;
 }
 
 .article-card:hover {
-    transform: translateY(-8px);
-    /* 悬浮上移 */
-    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);
-    /* 阴影加深 */
-    border-color: rgba(72, 203, 182, 0.3);
-    /* 边框泛微绿 */
+    transform: translateY(-10px) scale(1.01);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
+    border-color: #48cbb6;
 }
 
-/* 3. 封面图区域 (纯净版) */
+/* 鼠标悬停时触发“一线微光”扫过 */
+.article-card:hover::after {
+    left: 150%;
+    transition: all 0.8s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+/* ==================== 3. 封面图与内容排版 ==================== */
 .card-cover-wrapper {
     height: 135px;
-    /* 固定高度，紧凑型 */
     position: relative;
     overflow: hidden;
-    cursor: pointer;
 }
 
 .card-cover-wrapper img {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    /* 裁剪填充 */
     transition: transform 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.article-card:hover .card-cover-wrapper img {
+    transform: scale(1.1);
+}
+
+.card-category-tag {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 2px 10px;
+    background: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(5px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 20px;
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.card-body-refined {
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+}
+
+.row-1-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.author-avatar-big {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid #fff;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s;
+}
+
+.author-avatar-big:hover {
+    transform: scale(1.1);
+}
+
+/* 封面上的精致标签 */
+.category-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(8px);
+    color: white;
+    font-size: 0.7rem;
+    padding: 2px 10px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    z-index: 10;
+}
+
+/* 强制让标题在悬停时也带上主题联动感 */
+.article-card:hover .article-title-v3 {
+    color: #48cbb6;
+}
+
+/* 底部按钮的“呼吸”感 */
+.btn-goto-article {
+    position: relative;
+    overflow: hidden;
+}
+
+.btn-goto-article:hover {
+    box-shadow: 0 0 15px rgba(106, 90, 205, 0.4);
 }
 
 /* 图片悬停放大 */
@@ -1988,42 +2130,75 @@ onUnmounted(() => {
 /* 热度/评论统计行 */
 .meta-row.stats {
     display: flex;
-    gap: 15px;
-    font-size: 0.75rem;
-    /* 字体改小一点点更精致 */
-    color: #999;
-    /* 颜色淡一点 */
-
-    /* 🔥 关键：删掉 margin-top: auto，改为固定小间距 */
-    /* 这样它就会紧紧贴在标题下面，消灭红框空白 */
-    margin-top: 4px;
-    margin-bottom: 10px;
+    align-items: center;
+    /* 垂直居中对齐 */
+    gap: 12px;
+    /* 适当收紧间距 */
+    margin-top: 8px;
+    margin-bottom: 12px;
 }
 
+/* 作者微缩头像 */
+.author-entry {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    transition: transform 0.2s;
+}
+
+.author-entry:hover {
+    transform: scale(1.15);
+    /* 悬停轻微放大 */
+}
+
+.author-mini-avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1.5px solid #fff;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    background: #eee;
+}
+
+/* 统计项通用样式 */
 .stat-item {
     display: flex;
     align-items: center;
     gap: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+/* 隐藏部分文字（在移动端或窄屏下保持整洁） */
+@media (max-width: 400px) {
+    .stat-label {
+        display: none;
+    }
 }
 
 .stat-item.fire {
     color: #ff5722;
 }
 
-/* 热度红 */
 .stat-item.comment {
     color: #795548;
+    /* 评论褐 */
 }
 
-/* 评论褐 */
+.stat-item.like {
+    color: #ff5f7e;
+}
+
+.stat-item .icon {
+    font-size: 0.85rem;
+}
+
 
 /* 5. 底部标签行 (胶囊样式) */
 .tags-row {
     display: flex;
     gap: 10px;
-
-    /* 🔥 关键：也不要 auto，让它自然跟在 stats 后面 */
-    /* 这样整个内容块就非常紧凑了 */
     margin-top: 0;
 }
 
@@ -2215,43 +2390,82 @@ onUnmounted(() => {
     }
 }
 
-/* ==================== 🔥 8. 新增：弹幕侧边栏样式 (核心实现) ==================== */
+/* ==================== 🔥 8. 简约高级版：纯净弹幕样式 ==================== */
 .barrage-card-crystal {
-    background-image: url('https://w.wallhaven.cc/full/g7/wallhaven-g7x767.jpg');
-    background-size: cover;
-    background-position: center bottom;
-    /* 确保山峰在底部 */
+    background-image: url('https://4kwallpapers.com/images/wallpapers/rei-ayanami-anime-2048x2048-15720.jpg') !important;
+    background-position: center !important;
+    background-size: cover !important;
+    background-repeat: no-repeat !important;
     position: relative;
     height: 400px;
-    /* 固定高度 */
     display: flex;
     flex-direction: column;
     padding: 0 !important;
-    /* 覆盖默认padding */
     border: none;
+    border-radius: 16px;
+    overflow: hidden;
+    z-index: 1;
 }
 
-/* 顶部标题区 */
+/* 🔥 关键修改：遮罩层逻辑优化 */
+.barrage-card-crystal::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+}
+
 .barrage-header {
-    background: rgba(255, 255, 255, 0.3);
     padding: 15px 20px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid rgb(216, 254, 250);
+    border-bottom: 1px solid rgba(105, 227, 176, 0.5);
     z-index: 2;
 }
 
-.header-title-white {
-    font-size: 1.1rem;
-    font-weight: 400;
-    color: rgb(0, 0, 0);
-    display: flex;
-    align-items: center;
-    gap: 8px;
+/* 弹幕容器 */
+.barrage-container {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    background: transparent !important;
+}
+
+.barrage-header,
+.barrage-container {
+    position: relative;
+    z-index: 2;
+}
+
+/* 鼠标悬停时暂停滚动 */
+.barrage-container:hover .barrage-list-wrapper {
+    animation-play-state: paused;
+}
+
+.barrage-list-wrapper {
+    /* 核心动画：无限向上滚动 */
+    animation: scroll-up 3s linear infinite;
+    padding: 10px;
+}
+
+@keyframes scroll-up {
+    0% {
+        transform: translateY(0);
+    }
+
+    100% {
+        transform: translateY(-50%);
+    }
+}
+
+.barrage-card-crystal:hover::before {
+    backdrop-filter: blur(1.5px);
 }
 
 .icon-barrage {
+    margin: auto 10px;
     font-size: 1.3rem;
     color: rgb(81, 213, 154);
     animation: spin 4s linear infinite;
@@ -2268,66 +2482,24 @@ onUnmounted(() => {
     }
 }
 
-/* 弹幕内容容器 */
-.barrage-container {
-    flex: 1;
-    overflow: hidden;
-    /* 隐藏溢出内容 */
-    position: relative;
-    /* 加上一层淡白色遮罩，让文字更清晰，同时保留背景图 */
-    background: rgba(255, 255, 255, 0.3);
-}
-
-.barrage-list-wrapper {
-    /* 核心动画：无限向上滚动 */
-    animation: scroll-up 3s linear infinite;
-    padding: 10px;
-}
-
-/* 鼠标悬停时暂停滚动 */
-.barrage-container:hover .barrage-list-wrapper {
-    animation-play-state: paused;
-}
-
-@keyframes scroll-up {
-    0% {
-        transform: translateY(0);
-    }
-
-    100% {
-        transform: translateY(-50%);
-    }
-
-    /* 向上移动一半高度（配合双份数据） */
-}
-
-/* 单条弹幕 */
 .barrage-item {
-    color: #000;
-    flex-shrink: 0;
-    padding-right: 12px;
-    /* 右侧留点空隙给图片 */
+    background: transparent !important;
+    backdrop-filter: none !important;
+    box-shadow: none !important;
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-    padding: 4px 10px 4px 4px;
-    border-radius: 50px;
-    background: rgba(255, 255, 255, 0.6);
-    backdrop-filter: blur(4px);
-    transition: transform 0.2s, background 0.2s;
-    width: fit-content;
-    max-width: 98%;
-    /* 稍微放宽一点 */
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
-
-    /* 🔥 关键：防止 flex 子元素被压缩 */
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 4px 10px;
+    transition: all 0.3s ease;
+    width: 100%;
 }
 
 .barrage-item:hover {
-    transform: scale(1.02) translateX(5px);
-    background: rgba(255, 255, 255, 0.9);
-    z-index: 10;
+    transform: translateX(5px);
+    /* 悬停时加一个极淡的白色光晕底 */
+    background: rgba(255, 255, 255, 0.1) !important;
+    border-radius: 8px;
 }
 
 .barrage-avatar img {
@@ -2335,57 +2507,46 @@ onUnmounted(() => {
     height: 32px;
     border-radius: 50%;
     object-fit: cover;
-    border: 1px solid #fff;
 }
-
-/* ==================== 🔥 弹幕图片显示修复 ==================== */
 
 .barrage-content-box {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
-    /* 关键：允许Flex子项收缩 */
-    flex: 1;
 }
 
 .barrage-text {
-    display: block;
+    color: #ffffff;
+    /* 🔥 改回白色 */
+    font-size: 0.95rem;
+    font-weight: 500;
+    /* 🔥 加回细腻的文字投影，在深色遮罩上更清晰 */
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+    /* 稍微加深阴影的扩散范围 */
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 140px;
-    /* 给图片留出位置 */
-    color: #333;
-    font-size: 0.9rem;
+    max-width: 160px;
+    letter-spacing: 0.5px;
 }
 
-/* 🔥 图片容器核心修复 */
-/* 修改 Blog.vue 中的 .barrage-thumb */
+/* 缩略图保持精致的小框 */
 .barrage-thumb {
-    display: flex;
-    align-items: center;
-    justify-content: center;
     flex-shrink: 0;
-    width: 26px;
-    height: 26px;
-    margin-left: 4px;
-    background-color: #f0f0f0;
-    /* 🔥 加个底色调试 */
+    width: 28px;
+    height: 28px;
     border-radius: 4px;
     overflow: hidden;
-    /* 防止图片溢出 */
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
 }
 
 .barrage-thumb img {
     width: 100%;
     height: 100%;
-    border-radius: 4px;
     object-fit: cover;
-    border: 1px solid rgba(255, 255, 255, 0.8);
-    background-color: #fff;
     cursor: zoom-in;
-    display: block;
 }
 
 /* 悬停放大效果 */
@@ -2396,34 +2557,6 @@ onUnmounted(() => {
     border-radius: 4px;
     position: relative;
     /* 确保层级生效 */
-}
-
-/* 🔥 新增：加载状态样式 */
-.loading-state {
-    grid-column: 1 / -1;
-    text-align: center;
-    padding: 60px 20px;
-    color: #666;
-}
-
-.loading-spinner {
-    width: 40px;
-    height: 40px;
-    border: 3px solid #f3f3f3;
-    border-top: 3px solid #42b883;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-    margin: 0 auto 15px;
-}
-
-@keyframes spin {
-    0% {
-        transform: rotate(0deg);
-    }
-
-    100% {
-        transform: rotate(360deg);
-    }
 }
 
 /* 🔥 推荐文章的额外样式 */
@@ -2655,5 +2788,291 @@ onUnmounted(() => {
     to {
         transform: rotate(360deg);
     }
+}
+
+/* ==================== 9. 晶体灯箱预览样式 ==================== */
+.preview-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(20px);
+    /* 深度模糊背景 */
+    -webkit-backdrop-filter: blur(20px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: zoom-out;
+}
+
+.preview-wrapper {
+    position: relative;
+    max-width: 90%;
+    max-height: 90vh;
+    border-radius: 20px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    cursor: default;
+}
+
+.preview-image-main {
+    max-width: 100%;
+    max-height: 80vh;
+    display: block;
+    border-radius: 12px;
+    object-fit: contain;
+}
+
+/* 右上角关闭按钮 */
+.preview-close-btn {
+    position: absolute;
+    top: -40px;
+    right: 0;
+    width: 32px;
+    height: 32px;
+    background: rgba(255, 255, 255, 0.5);
+    backdrop-filter: blur(5px);
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: #333;
+    font-size: 18px;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.preview-close-btn:hover {
+    background: #ff5f56;
+    color: white;
+    transform: rotate(90deg);
+}
+
+/* 进出动画：像缩放效果一样弹出 */
+.zoom-enter-active,
+.zoom-leave-active {
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.zoom-enter-from,
+.zoom-leave-to {
+    opacity: 0;
+    transform: scale(0.8);
+}
+
+/* Blog.vue 样式更新 */
+.card-body-v3 {
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- 第一行：头像与标题 --- */
+.line-1-header {
+    display: flex;
+    align-items: center;
+    /* 垂直居中 */
+    gap: 12px;
+    margin-bottom: 4px;
+    /* 第一行与第二行的小间距 */
+}
+
+.author-avatar-v3 {
+    width: 42px;
+    /* 稍微调大，形成视觉支点 */
+    height: 42px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid #fff;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+    cursor: pointer;
+    transition: transform 0.3s;
+    flex-shrink: 0;
+}
+
+.author-avatar-v3:hover {
+    transform: rotate(15deg) scale(1.1);
+}
+
+.card-title-v3 {
+    font-size: 1.05rem;
+    /* 字体不宜过大 */
+    font-weight: 700;
+    color: #333;
+    margin: 0;
+    line-height: 1.3;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    /* 标题建议一行，保持整齐 */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+/* --- 第二行：日期 --- */
+.line-2-date {
+    margin-left: 54px;
+    /* 刚好对齐第一行标题的起始位置 (42px头像 + 12px间距) */
+    font-size: 0.75rem;
+    color: #bbb;
+    /* 灰色小字 */
+}
+
+/* --- 第三行：统计数据 --- */
+.line-3-stats {
+    /* 核心要求：间距大于两倍的第一二行间距 */
+    margin-top: 18px;
+    margin-bottom: 15px;
+    display: flex;
+    gap: 12px;
+    font-size: 0.75rem;
+    color: #888;
+}
+
+.stat-unit {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.stat-unit small {
+    font-size: 0.7rem;
+    opacity: 0.7;
+    margin-left: 1px;
+}
+
+/* --- 第四行：页脚 --- */
+.line-4-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: auto;
+    /* 保证在底部 */
+}
+
+.btn-main-text {
+    background: #f9f0ff;
+    color: #722ed1;
+    border: 1px solid rgba(114, 46, 209, 0.2);
+    padding: 3px 12px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.btn-main-text:hover {
+    background: #722ed1;
+    color: #fff;
+    transform: translateY(-2px);
+}
+
+/* --- 第一行：头像 + 标题 --- */
+.row-1-header {
+    display: flex;
+    align-items: center;
+    /* 垂直居中 */
+    gap: 14px;
+}
+
+.article-title-v3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #333;
+    line-height: 1.4;
+    margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    transition: color 0.3s;
+}
+
+.row-2-date {
+    margin-left: 62px;
+    margin-top: -4px;
+    font-size: 0.75rem;
+    color: #a0a0a0;
+}
+
+.row-3-stats {
+    display: flex;
+    gap: 28px;
+    margin-top: 25px;
+    margin-bottom: 20px;
+    padding-left: 10px;
+}
+
+.icon-badge-group {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.badge-num {
+    position: absolute;
+    top: -8px;
+    left: 18px;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 10px;
+    border: 1.5px solid #fff;
+}
+
+.main-icon {
+    font-size: 1.2rem;
+}
+
+/* 颜色分级 */
+.icon-badge-group:nth-child(1) .badge-num {
+    background: #ff5722;
+}
+
+/* 热度 */
+.icon-badge-group:nth-child(2) .badge-num {
+    background: #ff5f7e;
+}
+
+/* 点赞 */
+.icon-badge-group:nth-child(3) .badge-num {
+    background: #795548;
+}
+
+/* 评论 */
+.icon-badge-group:nth-child(4) .badge-num {
+    background: #fbc02d;
+}
+
+/* 收藏 */
+
+.row-4-footer {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-top: auto;
+}
+
+.btn-goto-article {
+    background: #f3f0ff;
+    color: #6a5acd;
+    border: 1px solid rgba(106, 90, 205, 0.2);
+    padding: 3px 15px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.btn-goto-article:hover {
+    background: #6a5acd;
+    color: white;
+    transform: scale(1.05);
 }
 </style>

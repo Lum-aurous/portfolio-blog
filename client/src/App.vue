@@ -5,12 +5,15 @@ import Navbar from '@/components/Navbar.vue'
 import ToastManager from '@/components/ToastManager.vue'
 import { useUserStore } from '@/stores/user.js'
 import { useRoute } from 'vue-router' // 🔥 引入 useRoute
+import { api } from '@/utils/api'
 
 const route = useRoute() // 🔥 获取路由实例
 const userStore = useUserStore()
 const wallpaperStore = useWallpaperStore()
 const isAppReady = ref(false)
 const imageLoaded = ref(false)
+// 定义响应式变量感知全局 class
+const isSystemDark = ref(document.documentElement.classList.contains('dark'))
 
 // 🔥 新增：判断是否显示前台组件 (Navbar 和 背景)
 const showNavbar = computed(() => {
@@ -132,6 +135,10 @@ const checkDailyWallpaperUpdate = () => {
 
 // ==================== 3. 生命周期 ====================
 onMounted(async () => {
+  const observer = new MutationObserver(() => {
+    isSystemDark.value = document.documentElement.classList.contains('dark')
+  })
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
   console.log('🚀 App.vue 全局挂载');
   try {
     // 1. 先同步检查用户状态（从缓存恢复）
@@ -154,6 +161,7 @@ onMounted(async () => {
     isAppReady.value = true;
   }
   recordVisit();
+  checkDailyWallpaperUpdate();
 });
 
 // ==================== 4. 监听用户状态变化 ====================
@@ -185,7 +193,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
     </main>
 
     <transition name="fade">
-      <div v-if="!isAppReady" class="loading-overlay">
+      <div v-if="!isAppReady" class="loading-overlay" :class="{ 'dark-loading': isSystemDark }">
         <div class="loading-spinner"></div>
         <p class="loading-text">正在唤醒世界...</p>
       </div>
@@ -233,9 +241,11 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
 
 /* ==================== Loading 遮罩 ==================== */
 .loading-overlay {
+  transition: background-color 0.5s ease;
+  background: #ffffff;
+  /* 浅色模式背景 */
   position: fixed;
   inset: 0;
-  background: #000000;
   /* 纯黑背景遮盖一切 */
   display: flex;
   flex-direction: column;
@@ -243,6 +253,16 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
   align-items: center;
   z-index: 9999;
   /* 最高层级 */
+}
+
+.loading-overlay.dark-loading {
+  background: #0f172a;
+  /* 深色模式背景 */
+}
+
+.loading-overlay.dark-loading .loading-text {
+  color: #42b883;
+  /* 深色模式文字保持 Vue 绿，但在深色背景下对比度更高 */
 }
 
 .loading-spinner {

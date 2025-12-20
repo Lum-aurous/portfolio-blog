@@ -1,6 +1,6 @@
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
-import { useRouter, useRoute } from 'vue-router' // 引入 useRoute
+import { ref, reactive, onMounted, computed, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { api } from '@/utils/api'
 import { message } from '@/utils/message'
 
@@ -89,7 +89,9 @@ const fetchArticleDetails = async (id) => {
 
 // 提交文章 (自动判断 新增 还是 更新)
 const submitArticle = async () => {
+    // 1. 前端基础校验
     if (!form.title.trim()) return message.warning('标题不能为空')
+    if (!form.summary.trim()) return message.warning('摘要简介不能为空') // 🔥 新增这一行
     if (!form.content.trim()) return message.warning('正文内容不能为空')
     if (!form.category) return message.warning('请选择文章分类')
 
@@ -98,21 +100,22 @@ const submitArticle = async () => {
     try {
         let res;
         if (isEditMode.value) {
-            // 🔥 编辑模式：调用 PUT 接口
             res = await api.put(`/articles/${route.query.id}`, form)
         } else {
-            // 🔥 新增模式：调用 POST 接口
             res = await api.post('/articles', form)
         }
 
         if (res.data.success) {
             message.success(isEditMode.value ? '🎉 文章更新成功！' : '🎉 文章发布成功！')
-            // 成功后跳转回列表页，或者去详情页
             router.push('/admin/articles')
         }
     } catch (error) {
-        console.error(error)
-        message.error('操作失败: ' + (error.response?.data?.message || '服务器错误'))
+        // 🔥 优化：显示后端返回的具体错误信息
+        const errorMsg = error.response?.data?.errors?.[0]?.msg ||
+            error.response?.data?.message ||
+            '服务器错误';
+        message.error('操作失败: ' + errorMsg)
+        console.error('详细错误:', error.response?.data)
     } finally {
         isSubmitting.value = false
     }
@@ -132,6 +135,13 @@ const getPreviewUrl = (path) => {
 onMounted(() => {
     if (isEditMode.value) {
         fetchArticleDetails(route.query.id)
+    }
+})
+
+watch(() => form.content, (newContent) => {
+    // 如果摘要为空，则自动从正文中提取（去掉 Markdown 标签后截取）
+    if (!form.summary && newContent.length > 10) {
+        form.summary = newContent.replace(/[#*`>]/g, '').substring(0, 150) + '...';
     }
 })
 </script>

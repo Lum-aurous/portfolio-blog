@@ -1,275 +1,172 @@
 /* client/src/style.css */
 
-/* 1. 引入字体 */
+/* 1. 引入字体与核心库 */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
 @import 'animate.css';
 
-/* 2. 定义变量 */
+/* 2. 定义高级全局变量 */
 :root {
-  /* 🔥 壁纸CSS变量 */
+  /* 🔥 壁纸与遮罩系统 */
   --wallpaper-bg: none;
   --wallpaper-blur: 0px;
   --wallpaper-mask: 0.2;
 
-  /* 颜色系统 */
-  --bg-color: #f4f7f6;
-  --card-bg: #ffffff;
-  --text-color: #2c3e50;
-  --text-secondary: #666;
-  --border-color: rgba(0, 0, 0, 0.1);
+  /* 🎨 浅色模式调色盘 - 优雅清爽 */
+  --bg-color: #f8fafc;
+  --text-color: #1e293b;
+  --text-secondary: #64748b;
   --primary-color: #42b883;
   --primary-hover: #33a06f;
-  --accent-color: #647eff;
 
-  /* 阴影系统 */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.12);
+  /* 💎 晶体/玻璃效果变量 */
+  --glass-bg: rgba(255, 255, 255, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --glass-shadow: rgba(31, 38, 135, 0.07);
+  --card-shadow: 0 8px 32px 0 var(--glass-shadow);
 
-  /* 圆角系统 */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
+  /* 其它基础变量 */
+  --border-color: rgba(0, 0, 0, 0.08);
+  --radius-lg: 20px;
+  --radius-md: 12px;
 
-  /* 过渡动画 */
-  --transition-fast: 0.15s ease;
-  --transition-normal: 0.3s ease;
-  --transition-slow: 0.5s ease;
+  /* ⏱️ 动画引擎曲线 */
+  --ease-out-expo: cubic-bezier(0.19, 1, 0.22, 1);
+  --transition-theme: 0.5s var(--ease-out-expo);
 }
 
+/* 🌑 深色模式调色盘 - 深邃高级 */
 html.dark {
-  --bg-color: #1a1a1a;
-  --card-bg: #252525;
-  --text-color: #e0e0e0;
-  --text-secondary: #a0a0a0;
+  --bg-color: #0f172a;
+  --text-color: #f1f5f9;
+  --text-secondary: #94a3b8;
+
+  /* 💎 深色模式下的晶体质感 */
+  --glass-bg: rgba(15, 23, 42, 0.6);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-shadow: rgba(0, 0, 0, 0.3);
   --border-color: rgba(255, 255, 255, 0.1);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.3);
 }
 
-/* 3. 全局重置 */
+/* 3. 全局重置与平滑化 */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-/* 🔥 核心修复区域开始 */
+/* 4. 极致透明引擎 - 确保壁纸透出 */
 html {
-  /* 确保 html 标签也是透明的，否则会挡住壁纸 */
   background-color: transparent !important;
+  /* 禁止系统默认的弹性滚动条背景色 */
+  overflow-x: hidden;
 }
 
 body {
-  margin: 0;
-  padding: 0;
-  /* 确保 body 也是透明的 */
   background-color: transparent !important;
+  color: var(--text-color);
+  font-family: 'Inter', 'Noto Sans SC', -apple-system, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.6;
   min-height: 100vh;
+
+  /* 🔥 核心：主题切换时的平滑过渡 */
+  transition: color var(--transition-theme);
+}
+
+/* 核心修复：防止切换主题时所有元素“乱闪” */
+.theme-transitioning,
+.theme-transitioning * {
+  transition: all 0.4s var(--ease-out-expo) !important;
 }
 
 #app {
-  /* 确保 Vue 根节点也是透明的 */
   background-color: transparent !important;
-  width: 100%;
-  height: 100%;
 }
 
-/* 🔥 核心修复区域结束 */
-
-html,
-body {
-  margin: 0;
-  padding: 0;
-  min-height: 100vh;
-  width: 100%;
-  height: 100%;
-  font-family: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-
-  /* ❌ 删除这一行：background-color: var(--bg-color); */
-  /* 我们不需要给全局加背景色，因为我们有壁纸了 */
-
-  color: var(--text-color);
-  font-size: 16px;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  /* 移除 background-color 的过渡，因为它是透明的 */
-  transition: color var(--transition-normal);
-}
-
-/* 4. 滚动条样式 */
+/* 5. 艺术级滚动条 - 晶体风格 */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
-  /* 稍微透明一点，适应壁纸 */
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-color);
-  border-radius: 4px;
+  background: rgba(var(--primary-color), 0.2);
+  backdrop-filter: blur(5px);
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-secondary);
+  background: var(--primary-color);
 }
 
-/* 5. 链接样式 */
+/* 6. 通用晶体卡片组件基类 */
+.crystal-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--card-shadow);
+  border-radius: var(--radius-lg);
+  transition: transform 0.3s var(--ease-out-expo), box-shadow 0.3s ease;
+}
+
+/* 7. 链接与交互优化 */
 a {
   color: var(--primary-color);
   text-decoration: none;
-  transition: color var(--transition-fast);
+  transition: all 0.3s ease;
 }
 
 a:hover {
   color: var(--primary-hover);
+  filter: drop-shadow(0 0 5px var(--primary-color));
 }
 
-/* 6. 按钮样式 */
 button {
   font-family: inherit;
-  cursor: pointer;
-  transition: all var(--transition-fast);
+  border: none;
+  outline: none;
+  background: none;
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* 🔥 7. 全局背景层样式（这是CSS备用方案，主要逻辑已移至App.vue） */
-/* 保留这些类以防其他组件引用，但实际渲染由 App.vue 的 style 绑定控制 */
-.global-background {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
-  z-index: -999;
-  /* 这里的 opacity 和 transition 交给 App.vue 控制 */
-}
-
-/* 8. 移动端优化 */
+/* 8. 移动端适配补丁 */
 @media (max-width: 768px) {
+  html {
+    font-size: 14px;
+  }
+
   .global-background {
-    background-attachment: scroll;
+    background-attachment: scroll !important;
+    /* 移动端滚动背景性能更佳 */
   }
 }
 
-/* 9. 高性能模式 */
-@media (prefers-reduced-motion: reduce) {
-
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-/* 10. 实用工具类 */
-.text-center {
-  text-align: center;
-}
-
-.mt-1 {
-  margin-top: 0.5rem;
-}
-
-.mt-2 {
-  margin-top: 1rem;
-}
-
-.mt-3 {
-  margin-top: 1.5rem;
-}
-
-.mb-1 {
-  margin-bottom: 0.5rem;
-}
-
-.mb-2 {
-  margin-bottom: 1rem;
-}
-
-.mb-3 {
-  margin-bottom: 1.5rem;
-}
-
-.flex {
-  display: flex;
-}
-
+/* 9. 功能辅助类 */
 .flex-center {
   display: flex;
-  justify-content: center;
   align-items: center;
+  justify-content: center;
 }
 
 .hidden {
   display: none !important;
 }
 
-/* 禁止滚动的状态 */
-html.no-scroll,
-body.no-scroll {
+/* 禁用滚动的特殊状态 (用于弹窗展示时) */
+html.no-scroll {
   overflow: hidden !important;
-  height: 100vh !important;
-  position: fixed !important;
-  width: 100% !important;
+  padding-right: 6px;
+  /* 补偿消失的滚动条宽度，防止抖动 */
 }
 
-/* 确保App容器正确处理滚动 */
-.app-container {
-  min-height: 100vh;
-  position: relative;
-}
-
-/* 主内容区域默认允许滚动 */
-.main-content {
-  position: relative;
-  z-index: 1;
-  min-height: calc(100vh - 70px);
-  overflow-x: hidden;
-}
-
-/* 首页的特殊滚动处理 */
-.home-container {
-  height: 100vh;
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 0 20px;
-  box-sizing: border-box;
-  position: relative;
-  overflow: hidden !important;
-}
-
-/* 其他页面（如Account）的滚动容器 */
-.page-container {
-  min-height: 100vh;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* 移动端优化 */
-@media (max-width: 768px) {
-  .main-content {
-    min-height: calc(100vh - 60px);
-  }
-
-  .home-container {
-    padding: 0 15px;
-  }
+/* 10. 文本高级渲染 */
+::selection {
+  background: var(--primary-color);
+  color: #fff;
 }

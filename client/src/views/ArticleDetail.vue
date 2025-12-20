@@ -13,56 +13,198 @@ const md = new MarkdownIt({ html: true, linkify: true, breaks: true })
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
-
 const article = ref(null)
 const comments = ref([])
 const commentContent = ref('')
-const isSubmitting = ref(false)
 const loading = ref(true)
 
 const isLoggedIn = computed(() => !!userStore.token)
 const currentUser = computed(() => userStore.user || {})
-const isAdmin = computed(() => userStore.user?.role === 'admin')
 
 // ===== Emoji & 图片 =====
 const showEmojiPicker = ref(false)
 const selectedImages = ref([])
 const imageInputRef = ref(null)
-
-// 🔥 YouTube 风格折叠逻辑
 const expandedReplies = ref(new Set())
+// 🔥 互动功能状态
+const isLiked = ref(false)
+const isFavorited = ref(false)
+const likeCount = ref(0)
+const favoriteCount = ref(0)
+const showColumnModal = ref(false)
+const userColumns = ref([])
+const isCreatingInModal = ref(false) // 🔥 新增：是否处于"创建模式"
+const newColumnData = ref({ name: '', description: '' }) // 🔥 新增：快捷创建表单
+const isSubmitting = ref(false)
 
-const toggleReplies = (commentId) => {
-    if (expandedReplies.value.has(commentId)) {
-        expandedReplies.value.delete(commentId)
-    } else {
-        expandedReplies.value.add(commentId)
+// 🔥 侧边栏显隐 & 进度逻辑
+const showSidebar = ref(true)
+const scrollPercent = ref(0)
+let rafId = null
+
+const handleSmartSidebar = () => {
+    if (rafId) cancelAnimationFrame(rafId)
+
+    rafId = requestAnimationFrame(() => {
+        const commentSection = document.getElementById('comments')
+        if (!commentSection) return
+
+        const commentRect = commentSection.getBoundingClientRect()
+        const viewportHeight = window.innerHeight
+        const scrollTop = window.scrollY
+
+        // 1. 显隐逻辑：当评论框距离底部 400px 时，侧边栏消失
+        const visibleHeightOfComments = viewportHeight - commentRect.top
+        showSidebar.value = visibleHeightOfComments < 400
+
+        // 2. 阅读进度优化逻辑：以“评论框距离底部400px”为 100% 终点
+        const commentsAbsoluteTop = scrollTop + commentRect.top
+        const readingEndLine = commentsAbsoluteTop - viewportHeight + 400
+
+        if (readingEndLine > 0) {
+            const percent = Math.floor((scrollTop / readingEndLine) * 100)
+            scrollPercent.value = Math.min(100, Math.max(0, percent))
+        } else {
+            scrollPercent.value = 100
+        }
+    })
+}
+
+// 🔥 动态计算颜色：即将读完时变为橙色
+const progressColor = computed(() => {
+    // 设置 98% 为变色阈值
+    return scrollPercent.value >= 98 ? '#ff9800' : '#42b883'
+})
+
+// 侧边栏样式：增加一点“位移”感，显得更灵动
+const sidebarStyle = computed(() => ({
+    opacity: showSidebar.value ? 1 : 0,
+    transform: `translateX(${showSidebar.value ? '0' : '-30px'}) scale(${showSidebar.value ? 1 : 0.9})`,
+    pointerEvents: showSidebar.value ? 'all' : 'none',
+    transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)' // 使用贝塞尔曲线，过渡更高级
+}))
+
+// 初始化互动状态
+const fetchInteractionStatus = async () => {
+    if (!isLoggedIn.value) return
+    try {
+        const res = await api.get(`/articles/${route.params.id}/interaction-status`)
+        if (res.data.success) {
+            isLiked.value = res.data.data.isLiked
+            isFavorited.value = res.data.data.isFavorited
+        }
+    } catch (err) {
+        console.warn('获取互动状态失败', err)
     }
 }
 
-const isRepliesVisible = (commentId) => {
-    return expandedReplies.value.has(commentId)
+// 🔥 处理点赞
+const handleLike = async () => {
+    if (!isLoggedIn.value) return message.warning('请先登录后点赞')
+    try {
+        const res = await api.post(`/articles/${route.params.id}/like`)
+        isLiked.value = res.data.data.status === 'liked'
+        isLiked.value ? likeCount.value++ : likeCount.value--
+        message.success(res.data.message)
+    } catch (err) {
+        message.error('操作失败')
+    }
 }
 
-// 🔥 辅助函数
-const formatRelativeTime = (dateStr) => {
-    if (!dateStr) return '';
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diff = Math.floor((now - date) / 1000);
-    if (diff < 60) return '刚刚';
-    if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-    if (diff < 2592000) return `${Math.floor(diff / 86400)} 天前`;
-    if (diff < 31536000) return `${Math.floor(diff / 2592000)} 个月前`;
-    return `${Math.floor(diff / 31536000)} 年前`;
-};
+// 🔥 处理收藏
+const handleFavorite = async () => {
+    if (!isLoggedIn.value) return message.warning('请先登录后收藏')
+    try {
+        const res = await api.post(`/articles/${route.params.id}/favorite`)
+        isFavorited.value = res.data.data.status === 'favorited'
+        isFavorited.value ? favoriteCount.value++ : favoriteCount.value--
+        message.success(res.data.message)
+    } catch (err) {
+        message.error('操作失败')
+    }
+}
 
-const formatCount = (count) => {
-    if (!count) return '';
-    if (count >= 1000) return `${(count / 1000).toFixed(1)}K`;
-    return count;
-};
+// 🔥 处理加入专栏
+// 修改：打开弹窗时重置模式
+const handleAddToColumn = async () => {
+    if (!isLoggedIn.value) return message.warning('请先登录后操作')
+    isCreatingInModal.value = false // 每次打开默认显示列表
+    try {
+        const res = await api.get('/user/columns/simple')
+        userColumns.value = res.data.data
+        showColumnModal.value = true
+    } catch (err) { message.error('获取专栏列表失败') }
+}
+
+// 🔥 新增：在弹窗中直接创建并刷新
+const handleCreateColumnInModal = async () => {
+    if (!newColumnData.value.name.trim()) return message.warning('请输入专栏名称')
+    isSubmitting.value = true
+    try {
+        const res = await api.post('/columns', {
+            name: newColumnData.value.name,
+            description: newColumnData.value.description
+        })
+        if (res.data.success) {
+            message.success('专栏创建成功！')
+            // 重置表单并切回列表模式
+            newColumnData.value = { name: '', description: '' }
+            isCreatingInModal.value = false
+            // 重新拉取列表，方便用户直接点击刚创建的专栏
+            const listRes = await api.get('/user/columns/simple')
+            userColumns.value = listRes.data.data
+        }
+    } catch (err) {
+        message.error('创建失败')
+    } finally {
+        isSubmitting.value = false
+    }
+}
+
+// 选择专栏并提交
+const selectColumnAndAdd = async (columnId) => {
+    try {
+        await api.post(`/columns/${columnId}/articles`, { articleId: article.value.id })
+        message.success('已成功添加到专栏！')
+        showColumnModal.value = false
+    } catch (err) {
+        message.error('添加失败，可能已存在')
+    }
+}
+
+// 🔥 关注状态逻辑
+const isFollowing = ref(false)
+
+// 关注/取消关注
+const toggleFollow = async () => {
+    if (!isLoggedIn.value) {
+        message.warning('请先登录后操作')
+        router.push('/login')
+        return
+    }
+    if (userStore.user.id === article.value.author_id) {
+        message.info('这是您自己的文章哦')
+        return
+    }
+
+    try {
+        const res = await api.post('/user/follow', { targetUserId: article.value.author_id })
+        isFollowing.value = res.data.data.status === 'followed'
+        message.success(res.data.message)
+    } catch (err) {
+        message.error('关注操作失败')
+    }
+}
+
+// 跳转至作者主页
+const goToAuthorProfile = () => {
+    const username = article.value?.author_username || article.value?.author_name
+    if (username) {
+        router.push(`/profile/${username}`)
+    } else {
+        message.warning('未能获取到作者信息')
+    }
+}
 
 const emojis = [
     '😀', '😁', '😂', '🤣', '😊', '😍', '😘', '😎',
@@ -91,9 +233,7 @@ const insertEmoji = (emoji) => {
 }
 
 const closeEmojiPicker = (e) => {
-    // 确保点击面板内部或者点击风车按钮时，不会触发关闭
-    if (!e.target.closest('.emoji-panel') &&
-        !e.target.closest('.windmill')) {
+    if (!e.target.closest('.emoji-panel') && !e.target.closest('.windmill')) {
         showEmojiPicker.value = false
     }
 }
@@ -102,10 +242,6 @@ const showLoginTip = () => {
     if (!isLoggedIn.value) {
         message.warning('请先登录后再留言')
     }
-}
-
-const goToLogin = () => {
-    router.push('/login')
 }
 
 const showWelcomeMessage = () => {
@@ -145,9 +281,7 @@ const removeImage = (index) => {
     selectedImages.value.splice(index, 1)
 }
 
-// ===========================
 // 🔥 火箭回到顶部逻辑
-// ===========================
 const isLaunching = ref(false)
 let scrollCheckInterval = null
 
@@ -157,7 +291,6 @@ const handleScrollToTop = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
     if (scrollCheckInterval) clearInterval(scrollCheckInterval)
 
-    // 监听滚动，直到顶部才停止动画
     scrollCheckInterval = setInterval(() => {
         if (window.scrollY <= 50) {
             clearInterval(scrollCheckInterval)
@@ -167,13 +300,13 @@ const handleScrollToTop = () => {
     }, 100)
 }
 
-// 🔥 修复：递归统计所有评论（包括无限级嵌套）
+// 🔥 递归统计所有评论
 const countAllComments = (commentList) => {
     let total = 0
     for (const comment of commentList) {
-        total += 1 // 当前评论本身
+        total += 1
         if (comment.replies && comment.replies.length > 0) {
-            total += countAllComments(comment.replies) // 递归统计子回复
+            total += countAllComments(comment.replies)
         }
     }
     return total
@@ -182,7 +315,6 @@ const countAllComments = (commentList) => {
 const totalCommentCount = computed(() => {
     return countAllComments(comments.value)
 })
-
 
 // Markdown 渲染
 const renderedContent = computed(() => {
@@ -202,58 +334,53 @@ const formatFullTime = (dateStr) => {
 }
 
 // 主题色控制
-// 1. 定义颜色变量
-const highlightColor = ref('#d6a354') // 默认颜色
+const highlightColor = ref('#d6a354')
 
-// 2. 定义主题列表
 const textThemes = [
     { id: 'classic', name: '经典', color: '#f7d794', fontColor: '#d6a354' },
     { id: 'chocolate', name: '巧克力', color: '#d2a679', fontColor: '#8b5a2b' },
     { id: 'purple', name: '暮山紫', color: '#dcd6f7', fontColor: '#9370db' }
 ]
 
-// 3. 切换颜色的函数
 const changeHighlightColor = (theme) => {
     highlightColor.value = theme.fontColor
     message.success(`主题已切换为：${theme.name}`)
 }
 
-// 4. 将变量绑定到 CSS 变量
-const contentStyle = computed(() => ({
-    '--highlight-color': highlightColor.value
-}))
-
-// API 请求
+// 获取文章
 const fetchArticle = async () => {
-    loading.value = true;
+    loading.value = true
     try {
-        const res = await api.get(`/articles/${route.params.id}`);
+        const res = await api.get(`/articles/${route.params.id}`)
         if (res.data.success) {
-            article.value = res.data.data;
-            api.post(`/articles/${route.params.id}/view`).catch(err => console.warn(err));
+            article.value = res.data.data
+            likeCount.value = article.value.likes || 0
+            favoriteCount.value = article.value.favorites || 0
+            fetchInteractionStatus()
+            api.post(`/articles/${route.params.id}/view`).catch(err => console.warn(err))
         } else {
-            message.error('文章不存在');
-            router.push('/');
+            message.error('文章不存在')
+            router.push('/')
         }
     } catch (error) {
-        message.error('加载文章失败');
+        message.error('加载文章失败')
     } finally {
-        loading.value = false;
+        loading.value = false
     }
-};
+}
 
 const fetchComments = async () => {
     try {
         const res = await api.get('/comments', {
             params: { article_id: route.params.id }
-        });
+        })
         if (res.data.success) {
-            comments.value = res.data.data || [];
+            comments.value = res.data.data || []
         }
     } catch (error) {
-        message.error('加载评论失败');
+        message.error('加载评论失败')
     }
-};
+}
 
 const replyTarget = ref(null)
 
@@ -283,7 +410,6 @@ const submitComment = async () => {
             article_id: parseInt(route.params.id),
             content: commentContent.value,
             images: imageUrls,
-            // 直接使用 replyTarget 中的 rootId (其实就是被回复的评论ID)
             parent_id: replyTarget.value ? replyTarget.value.rootId : null
         }
 
@@ -294,7 +420,6 @@ const submitComment = async () => {
             commentContent.value = ''
             selectedImages.value = []
 
-            // 自动展开回复的楼层
             if (replyTarget.value) {
                 expandedReplies.value.add(replyTarget.value.rootId)
             }
@@ -310,20 +435,15 @@ const submitComment = async () => {
     }
 }
 
-// 🔥 关键修改：回复逻辑
-// 在无限级评论中，我回复了A，那么我的 parent_id 就是 A.id
 const setReplyTarget = (comment) => {
     if (!isLoggedIn.value) return message.warning('请登录后回复')
 
     replyTarget.value = {
         id: comment.id,
         nickname: comment.nickname,
-        // 🔥 这里改了：直接用当前点击的评论ID作为 parent_id
-        // 不需要找 rootId 了，因为后端现在支持直接挂载
         rootId: comment.id
     }
 
-    // 聚焦输入框...
     const inputEl = document.getElementById('comment-input')
     if (inputEl) {
         inputEl.focus()
@@ -336,7 +456,6 @@ const cancelReply = () => {
     commentContent.value = ''
 }
 
-// 增加一个 handleReply 中转函数
 const handleReply = (comment) => {
     setReplyTarget(comment)
 }
@@ -386,8 +505,6 @@ const deleteComment = async (id) => {
     }
 }
 
-const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' })
-
 watch(isLoggedIn, (newVal) => {
     if (newVal) {
         restoreCommentContent()
@@ -401,20 +518,53 @@ watch(commentContent, (newVal) => {
     }
 })
 
-// ==========================================
-// 🔥 新增功能逻辑区
-// ==========================================
-
-// 1. 版权信息逻辑
+// 版权信息
 const copyrightInfo = ref('')
 const fetchCopyright = async () => {
-    // 模拟从数据库获取，后续替换为真实接口 api.get('/config/copyright')
-    // 这里的文本可以很长，前端 CSS 会控制只显示前几行或简化版
     const defaultText = `1. 本网站部分内容可能来源于网络,仅供大家学习与参考，如有侵权，请联系站长进行删除处理。\n2. 本网站一切内容不代表本站立场，并不代表本站赞同其观点和对其真实性负责。\n3. 版权&许可请详阅 版权声明`
     copyrightInfo.value = defaultText
 }
 
-// 2. 订阅功能
+// 🔥 1. 新增版权弹窗相关的响应式变量
+const showCopyrightModal = ref(false);
+const copyrightDetailMD = ref(''); // 存储从后端拿到的 Markdown 原文
+
+// 🔥 1. 新增一个将十六进制颜色转换为 RGB 的工具函数
+const hexToRgb = (hex) => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ?
+        `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}` :
+        '214, 163, 84'; // 默认经典色的 RGB
+};
+
+// 🔥 2. 增强 contentStyle，使其支持 RGB 变量
+const contentStyle = computed(() => ({
+    '--highlight-color': highlightColor.value,
+    '--highlight-color-rgb': hexToRgb(highlightColor.value)
+}));
+
+// 🔥 4. 获取版权说明书的方法
+const handleShowCopyrightManual = async () => {
+    try {
+        // 🔥 这里的 key 必须和后端白名单、数据库中的 key 完全一致
+        const res = await api.get('/configs/copyright_detail');
+        if (res.data.success) {
+            copyrightDetailMD.value = res.data.data;
+            showCopyrightModal.value = true;
+        }
+    } catch (err) {
+        // 如果后端返回 400，会走到这里
+        console.error("加载版权详情失败:", err);
+        message.error('无法加载版权说明书');
+    }
+};
+
+// 🔥 5. 渲染说明书内容的计算属性
+const renderedCopyright = computed(() => {
+    return md.render(copyrightDetailMD.value || '');
+});
+
+// 订阅功能
 const isSubscribed = ref(false)
 const handleSubscribe = async () => {
     if (!isLoggedIn.value) {
@@ -423,11 +573,14 @@ const handleSubscribe = async () => {
         return
     }
 
-    // 模拟 API 调用
     try {
         isSubscribed.value = !isSubscribed.value
+        if (isSubscribed.value && !isFollowing.value) {
+            await toggleFollow()
+        }
+
         if (isSubscribed.value) {
-            message.success('订阅成功！文章更新将第一时间通知您')
+            message.success('订阅成功！作者的新文章将通知您')
         } else {
             message.info('已取消订阅')
         }
@@ -436,21 +589,15 @@ const handleSubscribe = async () => {
     }
 }
 
-// 3. 分享卡片相关逻辑
+// 分享卡片
 const showShareModal = ref(false)
-const shareCardRef = ref(null) // 绑定卡片 DOM
+const shareCardRef = ref(null)
 const isGeneratingCard = ref(false)
-const cardBgColor = ref('#fff9c4') // 默认浅黄色 (Material Light Yellow)
+const cardBgColor = ref('#fff9c4')
 
-// 预设颜色列表
 const cardColors = [
-    '#fff9c4', // 默认黄
-    '#e1bee7', // 浅紫
-    '#b2dfdb', // 浅青
-    '#ffccbc', // 浅红
-    '#f0f4c3', // 浅绿
-    '#cfd8dc', // 浅灰
-    '#ffffff'  // 纯白
+    '#fff9c4', '#e1bee7', '#b2dfdb', '#ffccbc',
+    '#f0f4c3', '#cfd8dc', '#ffffff'
 ]
 
 const handleShareClick = () => {
@@ -459,41 +606,31 @@ const handleShareClick = () => {
         router.push('/login')
         return
     }
-
-    // 🔥 新增：调试日志
-    console.log('📸 当前文章封面:', article.value?.cover_image)
-    console.log('📸 代理后的URL:', getProxyUrl(article.value?.cover_image))
-
     showShareModal.value = true
 }
 
 const closeShareModal = (e) => {
-    // 点击背景关闭
     if (e.target.classList.contains('share-modal-overlay')) {
         showShareModal.value = false
     }
 }
 
-// 🔥 核心：生成并下载图片
 const downloadCard = async () => {
     if (!shareCardRef.value) return
     isGeneratingCard.value = true
 
     try {
-        // 🔥 稍微等待 100ms，让 DOM 完全渲染
         await nextTick()
 
         const canvas = await html2canvas(shareCardRef.value, {
-            useCORS: true, // 必须为 true
-            allowTaint: true, // 允许跨域图片污染画布
+            useCORS: true,
+            allowTaint: false,
             scale: 2,
             backgroundColor: null,
-            logging: true, // 开启日志，方便 F12 查看 html2canvas 的具体报错
+            logging: false
         })
 
         const imgUrl = canvas.toDataURL('image/png')
-
-        // 创建临时下载链接
         const link = document.createElement('a')
         link.download = `Veritas_Share_${article.value.id}.png`
         link.href = imgUrl
@@ -511,62 +648,109 @@ const downloadCard = async () => {
     }
 }
 
-// 🔥 增强版：带降级处理的代理 URL
 const getProxyUrl = (url) => {
     if (!url) return ''
-
-    // 如果是本地上传的图片或 Base64，直接返回
     if (url.startsWith('/uploads') || url.startsWith('data:') || url.startsWith('/api')) {
         return url
     }
-
-    // 适配环境变量
     const isDev = import.meta.env.VITE_APP_ENV === 'development'
-    const apiBase = isDev
-        ? import.meta.env.VITE_API_TARGET
-        : window.location.origin
-
+    const apiBase = isDev ? import.meta.env.VITE_API_TARGET : window.location.origin
     return `${apiBase}/api/proxy-image?url=${encodeURIComponent(url)}`
 }
 
-// 🔥 新增：图片加载错误处理
 const handleImageError = (event, fallbackUrl = null) => {
     const img = event.target
-
-    // 如果已经是降级图片了，就不再重试
     if (img.dataset.fallback === 'true') {
         console.warn('降级图片也加载失败')
         return
     }
-
-    // 标记为降级状态
     img.dataset.fallback = 'true'
-
-    // 使用降级图片（可以是 Unsplash 的占位图或本地默认图）
     const defaultImage = fallbackUrl || 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800'
+    img.src = getProxyUrl(defaultImage)
+}
 
-    console.warn('图片加载失败，使用降级图片:', img.src)
-    img.src = getProxyUrl(defaultImage) // 🔥 关键：降级图片也要走代理
+const formatCount = (count) => {
+    if (!count || count === 0) return '0'
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}K`
+    return count
+}
+
+const scrollToComments = () => {
+    const el = document.getElementById('comments')
+    if (el) {
+        const offset = 80
+        const bodyRect = document.body.getBoundingClientRect().top
+        const elementRect = el.getBoundingClientRect().top
+        const elementPosition = elementRect - bodyRect
+        window.scrollTo({
+            top: elementPosition - offset,
+            behavior: 'smooth'
+        })
+    }
 }
 
 // 生命周期
 onMounted(() => {
     fetchArticle()
     fetchComments()
-    fetchCopyright() // 获取版权信息
+    fetchCopyright()
     window.scrollTo(0, 0)
     document.addEventListener('click', closeEmojiPicker)
-    if (scrollCheckInterval) clearInterval(scrollCheckInterval)
+
+    // 监听滚动和窗口大小变化
+    window.addEventListener('scroll', handleSmartSidebar, { passive: true })
+    window.addEventListener('resize', handleSmartSidebar)
+
+    // 初始触发一次检查
+    nextTick(() => {
+        setTimeout(handleSmartSidebar, 800) // 等待 Markdown 渲染完毕后再检测
+    })
 })
 
 onUnmounted(() => {
     document.removeEventListener('click', closeEmojiPicker)
-    selectedImages.value.forEach(img => URL.revokeObjectURL(img.url))
+    window.removeEventListener('scroll', handleSmartSidebar)
+    window.removeEventListener('resize', handleSmartSidebar)
+    if (rafId) cancelAnimationFrame(rafId)
 })
 </script>
 
 <template>
     <div class="article-page" v-if="article">
+        <!-- 智能侧边栏 -->
+        <aside class="side-toolbar-wrapper" :style="sidebarStyle">
+            <div class="side-toolbar">
+                <div class="tool-item progress-item" :class="{ 'completed': scrollPercent >= 98 }" title="阅读进度">
+                    <svg class="progress-circle" viewBox="0 0 44 44">
+                        <circle class="progress-circle-bg" cx="22" cy="22" r="20"></circle>
+                        <circle class="progress-circle-bar" cx="22" cy="22" r="20" :style="{
+                            strokeDashoffset: 125.6 - (125.6 * scrollPercent) / 100,
+                            stroke: progressColor
+                        }"></circle>
+                    </svg>
+                    <span class="percent-text" :style="{ color: progressColor }">
+                        {{ scrollPercent }}<small>%</small>
+                    </span>
+                </div>
+                <div class="tool-divider"></div>
+                <div class="tool-item" :class="{ active: isLiked }" @click="handleLike" title="点赞">
+                    <span class="icon">{{ isLiked ? '❤️' : '🤍' }}</span>
+                    <span class="count">{{ formatCount(likeCount) }}</span>
+                </div>
+                <div class="tool-item" @click="scrollToComments" title="评论">
+                    <span class="icon">💬</span>
+                    <span class="count">{{ totalCommentCount }}</span>
+                </div>
+                <div class="tool-item" :class="{ active: isFavorited }" @click="handleFavorite" title="收藏">
+                    <span class="icon">{{ isFavorited ? '⭐' : '☆' }}</span>
+                    <span class="count">{{ formatCount(favoriteCount) }}</span>
+                </div>
+                <div class="tool-item" @click="handleAddToColumn" title="加入专栏">
+                    <span class="icon">📁</span>
+                </div>
+            </div>
+        </aside>
+
         <header class="hero-header">
             <div class="hero-bg"
                 :style="{ backgroundImage: `url(${article.cover_image || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'})` }">
@@ -576,10 +760,24 @@ onUnmounted(() => {
                 <div class="hero-info">
                     <h1 class="article-title">{{ article.title }}</h1>
                     <div class="article-meta">
-                        <div class="meta-item author">
-                            <img :src="article.author_avatar || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'"
-                                class="author-avatar">
-                            <span>{{ article.author_name || 'Veritas' }}</span>
+                        <div class="meta-item author" @click="goToAuthorProfile" title="查看作者主页">
+                            <div class="author-avatar-wrapper">
+                                <img :src="article.author_avatar || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'"
+                                    class="author-avatar" alt="作者头像">
+                                <button v-if="currentUser?.id !== article.author_id" class="mini-follow-btn"
+                                    :class="{ 'followed': isFollowing }" @click.stop="toggleFollow">
+                                    <svg v-if="!isFollowing" viewBox="0 0 24 24" width="14" height="14" fill="none"
+                                        stroke="currentColor" stroke-width="3">
+                                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                    </svg>
+                                    <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none"
+                                        stroke="currentColor" stroke-width="3">
+                                        <polyline points="20 6 9 17 4 12"></polyline>
+                                    </svg>
+                                </button>
+                            </div>
+                            <span class="author-name">{{ article.author_name || 'Veritas' }}</span>
                         </div>
                         <span class="meta-divider">·</span>
                         <div class="meta-item">📅 {{ formatDate(article.created_at) }}</div>
@@ -599,13 +797,16 @@ onUnmounted(() => {
 
         <main class="main-wrapper">
             <div class="content-card animate__animated animate__fadeInUp" :style="contentStyle">
-
-                <div class="section-block">
-                    <h2 class="custom-h2"><span class="hash">#</span> 网站介绍</h2>
-                    <p class="intro-text">POETIZE - 高品质的个人网站系统！</p>
+                <div class="article-preface" v-if="article.summary">
+                    <div class="preface-content">
+                        <span class="quote-left">“</span>
+                        <p class="summary-text">{{ article.summary }}</p>
+                        <span class="quote-right">”</span>
+                    </div>
+                    <div class="preface-divider"></div>
                 </div>
 
-                <hr class="dashed-line">
+                <hr class="dashed-line" :class="{ 'preface-gap': article.summary }">
 
                 <div class="markdown-body article-content" v-html="renderedContent"></div>
 
@@ -619,21 +820,30 @@ onUnmounted(() => {
                         {{ isLoggedIn ? (currentUser.nickname || currentUser.username) : (article.author_name ||
                             'Veritas') }}
                     </p>
-                    <div class="copyright-text">
-                        <span v-for="(line, idx) in copyrightInfo.split('\n')" :key="idx"
-                            style="display:block; margin-bottom: 4px;">
-                            {{ line }}
-                        </span>
-                    </div>
+                    <span v-for="(line, idx) in copyrightInfo.split('\n').slice(0, 2)" :key="idx"
+                        style="display:block; margin-bottom: 4px;">
+                        {{ line }}
+                    </span>
+                    <p style="margin-top: 8px;">
+                        3. 版权&许可请详阅 <span class="copyright-link-btn" @click="handleShowCopyrightManual">版权声明</span>
+                    </p>
                 </div>
 
                 <div class="action-buttons-row">
+                    <button class="btn-large btn-like" :class="{ active: isLiked }" @click="handleLike">
+                        <span class="icon">{{ isLiked ? '❤️' : '🤍' }}</span>
+                        {{ isLiked ? '已点赞' : '点赞' }}
+                    </button>
+                    <button class="btn-large btn-favorite" :class="{ active: isFavorited }" @click="handleFavorite">
+                        <span class="icon">{{ isFavorited ? '⭐' : '☆' }}</span>
+                        {{ isFavorited ? '已收藏' : '收藏' }}
+                    </button>
                     <button class="btn-large btn-purple" @click="handleSubscribe">
                         <span class="icon">{{ isSubscribed ? '✅' : '☁️' }}</span>
                         {{ isSubscribed ? '已订阅' : '订阅' }}
                     </button>
                     <button class="btn-large btn-pink" @click="handleShareClick">
-                        <span class="icon">❤️</span> 卡片分享
+                        <span class="icon">🖼️</span> 卡片分享
                     </button>
                 </div>
 
@@ -654,7 +864,7 @@ onUnmounted(() => {
                             <div v-if="!isLoggedIn" class="disabled-overlay" @click="showLoginTip"></div>
                             <div v-if="selectedImages.length" class="image-preview">
                                 <div v-for="(img, index) in selectedImages" :key="index" class="preview-item">
-                                    <img :src="img.url" />
+                                    <img :src="img.url" alt="预览图" />
                                     <span class="remove" @click="removeImage(index)">×</span>
                                 </div>
                             </div>
@@ -697,30 +907,62 @@ onUnmounted(() => {
                         </div>
                     </div>
                 </div>
-
             </div>
         </main>
 
-        <div class="floating-tools">
-            <div class="tool-btn rocket-btn" :class="{ 'launching': isLaunching }" @click="handleScrollToTop"
-                title="回到顶部">
-                <svg class="rocket-icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg"
-                    width="32" height="32">
-                    <path
-                        d="M528 67.5l-16-16.7-15.9 16.7c-7.3 7.7-179.9 190.6-179.9 420.8 0 112 40 210.1 73.5 272.7l6.2 11.6H627l5.9-13c3.1-6.8 75-167.8 75-271.3 0-230.2-172.6-413.1-179.9-420.8z m-16 48.8c19 22.9 51.9 66.1 82.3 122.5H429.8c30.3-56.4 63.3-99.6 82.2-122.5z m86.3 612.2H422.5c-25.7-50.6-62.2-140.1-62.2-240.2 0-75 20.8-145.5 47.7-205.4h208.2c26.8 59.9 47.6 130.3 47.6 205.4-0.1 78.3-48.7 200.4-65.5 240.2z"
-                        fill="#1E59E4"></path>
-                    <path
-                        d="M834.7 623.9H643.3l6.7-27.3c9.1-37 13.7-73.4 13.7-108.2 0-44.8-7.7-92-22.9-140.3l-17-54 49.1 28.3c99.8 57.6 161.8 164.7 161.8 279.5v22z m-135.9-44.2h90.9c-5.7-71-38.8-137.2-91.3-184.6 6.3 31.7 9.4 62.9 9.4 93.2 0.1 29.7-3 60.3-9 91.4zM380.1 623.9H189.3v-22.1c0-114.8 62-221.9 161.8-279.5l49.1-28.3-17 54c-15.2 48.3-22.9 95.5-22.9 140.3 0 34.5 4.5 71 13.4 108.4l6.4 27.2z m-145.8-44.2H325c-5.9-31.3-8.8-61.9-8.8-91.4 0-30.3 3.2-61.5 9.4-93.2-52.5 47.5-85.6 113.6-91.3 184.6zM512 529.5c-45 0-81.6-36.6-81.6-81.6s36.6-81.6 81.6-81.6 81.6 36.6 81.6 81.6-36.6 81.6-81.6 81.6z m0-119c-20.7 0-37.5 16.8-37.5 37.5s16.8 37.5 37.5 37.5 37.5-16.8 37.5-37.5-16.8-37.5-37.5-37.5z"
-                        fill="#1E59E4"></path>
-                    <path
-                        d="M512 999.7l-20.3-20.3c-28.8-28.6-68.3-67.9-68.3-111.6 0-48.9 39.8-88.6 88.6-88.6 48.9 0 88.6 39.8 88.6 88.6 0 43.6-24.4 67.9-64.8 108.2L512 999.7z m0-176.4c-24.5 0-44.5 20-44.5 44.5 0 21.5 23.8 48.4 44.5 69.5 33.6-33.7 44.4-47 44.4-69.5 0.1-24.6-19.9-44.5-44.4-44.5z"
-                        fill="#FF5A06"></path>
-                </svg>
+        <!-- 专栏弹窗 -->
+        <Teleport to="body">
+            <div v-if="showColumnModal" class="column-modal-overlay" @click="showColumnModal = false">
+                <div class="column-modal" @click.stop>
+                    <div class="modal-header">
+                        <h3>{{ isCreatingInModal ? '新建专栏文件夹' : '添加到我的专栏' }}</h3>
+                        <button class="close-btn" @click="showColumnModal = false">×</button>
+                    </div>
+
+                    <div class="modal-body">
+                        <template v-if="!isCreatingInModal">
+                            <div class="column-list-container">
+                                <div v-for="col in userColumns" :key="col.id" class="column-select-item"
+                                    @click="selectColumnAndAdd(col.id)">
+                                    <span class="col-icon">📘</span>
+                                    <span class="col-name">{{ col.name }}</span>
+                                    <span class="add-mark">+</span>
+                                </div>
+
+                                <div v-if="userColumns.length === 0" class="empty-columns-guide">
+                                    <p>您还没有创建过专栏哦</p>
+                                    <button class="btn-create-now" @click="isCreatingInModal = true">
+                                        ✨ 立即创建一个
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div v-if="userColumns.length > 0" class="modal-action-footer">
+                                <button class="text-btn" @click="isCreatingInModal = true">+ 新建专栏文件夹</button>
+                            </div>
+                        </template>
+
+                        <template v-else>
+                            <div class="quick-create-form">
+                                <input v-model="newColumnData.name" type="text" placeholder="专栏名称 (如：我的必读清单)"
+                                    class="modal-input">
+                                <textarea v-model="newColumnData.description" placeholder="简单描述一下这个专栏吧..."
+                                    class="modal-input"></textarea>
+                                <div class="form-ops">
+                                    <button class="btn-secondary" @click="isCreatingInModal = false">返回选择</button>
+                                    <button class="btn-primary" @click="handleCreateColumnInModal"
+                                        :disabled="isSubmitting">
+                                        {{ isSubmitting ? '同步中...' : '确认创建' }}
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
             </div>
-        </div>
+        </Teleport>
 
-        <div style="height: 100px;"></div>
-
+        <!-- 分享卡片弹窗 -->
         <Teleport to="body">
             <div v-if="showShareModal" class="share-modal-overlay" @click="closeShareModal">
                 <div class="share-modal-content" @click.stop>
@@ -742,11 +984,9 @@ onUnmounted(() => {
                                 <div class="card-title">{{ article.title }}</div>
 
                                 <div class="card-cover-wrapper">
-                                    <!-- 🔥 核心修复：确保使用当前文章的封面 -->
                                     <img v-if="article.cover_image" :src="getProxyUrl(article.cover_image)"
                                         @error="handleImageError($event, 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800')"
                                         class="card-cover" crossorigin="anonymous" alt="文章封面">
-                                    <!-- 如果没有封面，显示占位图 -->
                                     <img v-else
                                         :src="getProxyUrl('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800')"
                                         class="card-cover" crossorigin="anonymous" alt="默认封面">
@@ -789,6 +1029,42 @@ onUnmounted(() => {
             </div>
         </Teleport>
 
+        <Teleport to="body">
+            <Transition name="fade-zoom">
+                <div v-if="showCopyrightModal" class="art-paper-overlay" @click="showCopyrightModal = false">
+                    <div class="art-paper-container" @click.stop>
+                        <div class="close-paper-btn" @click="showCopyrightModal = false">✕</div>
+
+                        <div class="art-paper-content">
+                            <div class="markdown-body" v-html="renderedCopyright"></div>
+                        </div>
+                    </div>
+                </div>
+            </Transition>
+        </Teleport>
+
+        <!-- 火箭回到顶部 -->
+        <div class="floating-tools">
+            <div class="tool-btn rocket-btn" :class="{ 'launching': isLaunching }" @click="handleScrollToTop"
+                title="回到顶部">
+                <div class="rocket-wrapper">
+                    <svg class="rocket-icon" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="32"
+                        height="32">
+                        <path
+                            d="M528 67.5l-16-16.7-15.9 16.7c-7.3 7.7-179.9 190.6-179.9 420.8 0 112 40 210.1 73.5 272.7l6.2 11.6H627l5.9-13c3.1-6.8 75-167.8 75-271.3 0-230.2-172.6-413.1-179.9-420.8z m-16 48.8c19 22.9 51.9 66.1 82.3 122.5H429.8c30.3-56.4 63.3-99.6 82.2-122.5z m86.3 612.2H422.5c-25.7-50.6-62.2-140.1-62.2-240.2 0-75 20.8-145.5 47.7-205.4h208.2c26.8 59.9 47.6 130.3 47.6 205.4-0.1 78.3-48.7 200.4-65.5 240.2z"
+                            fill="#1E59E4"></path>
+                        <path
+                            d="M834.7 623.9H643.3l6.7-27.3c9.1-37 13.7-73.4 13.7-108.2 0-44.8-7.7-92-22.9-140.3l-17-54 49.1 28.3c99.8 57.6 161.8 164.7 161.8 279.5v22z m-135.9-44.2h90.9c-5.7-71-38.8-137.2-91.3-184.6 6.3 31.7 9.4 62.9 9.4 93.2 0.1 29.7-3 60.3-9 91.4zM380.1 623.9H189.3v-22.1c0-114.8 62-221.9 161.8-279.5l49.1-28.3-17 54c-15.2 48.3-22.9 95.5-22.9 140.3 0 34.5 4.5 71 13.4 108.4l6.4 27.2z m-145.8-44.2H325c-5.9-31.3-8.8-61.9-8.8-91.4 0-30.3 3.2-61.5 9.4-93.2-52.5 47.5-85.6 113.6-91.3 184.6zM512 529.5c-45 0-81.6-36.6-81.6-81.6s36.6-81.6 81.6-81.6 81.6 36.6 81.6 81.6-36.6 81.6-81.6 81.6z m0-119c-20.7 0-37.5 16.8-37.5 37.5s16.8 37.5 37.5 37.5 37.5-16.8 37.5-37.5-16.8-37.5-37.5-37.5z"
+                            fill="#1E59E4"></path>
+                        <path
+                            d="M512 999.7l-20.3-20.3c-28.8-28.6-68.3-67.9-68.3-111.6 0-48.9 39.8-88.6 88.6-88.6 48.9 0 88.6 39.8 88.6 88.6 0 43.6-24.4 67.9-64.8 108.2L512 999.7z m0-176.4c-24.5 0-44.5 20-44.5 44.5 0 21.5 23.8 48.4 44.5 69.5 33.6-33.7 44.4-47 44.4-69.5 0.1-24.6-19.9-44.5-44.4-44.5z"
+                            fill="#FF5A06"></path>
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <div style="height: 100px;"></div>
     </div>
 
     <div v-else class="loading-screen">
@@ -891,13 +1167,82 @@ onUnmounted(() => {
 }
 
 .author-avatar {
+    width: 50px;
+    /* 调大头像 */
+    height: 50px;
+    border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+    object-fit: cover;
+}
+
+.author-avatar:hover {
+    transform: scale(1.05);
+}
+
+.author-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.meta-item.author {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    cursor: pointer;
+    /* 鼠标变为手型 */
+    transition: opacity 0.2s;
+    user-select: none;
+}
+
+/* 悬停效果：名字稍微变亮或加下划线 */
+.meta-item.author:hover .author-name {
+    text-decoration: underline;
+}
+
+/* 头像悬停轻微放大已经在之前帮你写好了 */
+.author-avatar:hover {
+    transform: scale(1.05);
+}
+
+.author-avatar-wrapper {
+    position: relative;
+    display: inline-flex;
+}
+
+/* 🔥 迷你关注按钮样式 */
+.mini-follow-btn {
+    position: absolute;
+    top: -2px;
+    right: -5px;
     width: 22px;
     height: 22px;
+    background: #42b883;
+    /* Veritas 绿 */
+    color: #fff;
+    border: 2px solid #fff;
     border-radius: 50%;
-    border: 1px solid rgba(255, 255, 255, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mini-follow-btn:hover {
+    transform: scale(1.2);
+}
+
+.mini-follow-btn.followed {
+    background: #fff;
+    color: #42b883;
+    border-color: #42b883;
 }
 
 .meta-divider {
+    margin: 0 5px;
     opacity: 0.6;
     font-weight: normal;
 }
@@ -937,6 +1282,7 @@ onUnmounted(() => {
     background: #ffffff;
     padding: 40px;
     min-height: 500px;
+    --highlight-color-rgb: 214, 163, 84;
     --highlight-color: #d6a354;
     /* 默认值 */
 }
@@ -976,12 +1322,6 @@ onUnmounted(() => {
     transition: color 0.3s ease, border-color 0.3s ease;
 }
 
-.dashed-line {
-    border: 0;
-    border-top: 1px dashed #eee;
-    margin: 40px 0;
-}
-
 .last-updated {
     font-size: 0.85rem;
     color: #999;
@@ -1011,7 +1351,7 @@ onUnmounted(() => {
     padding: 10px 30px;
     border-radius: 50px;
     border: none;
-    color: white;
+    color: rgb(59, 59, 59);
     font-weight: 600;
     cursor: pointer;
     display: flex;
@@ -1907,5 +2247,745 @@ textarea:disabled {
 .download-btn:disabled {
     background: #ccc;
     cursor: not-allowed;
+}
+
+.side-toolbar-wrapper {
+    position: fixed;
+    /* 1. 将 top 调大，确保避开顶部的 Hero 封面和标题区 */
+    top: 400px;
+    /* 2. 这里的偏移量需要根据 .content-card 的 max-width (900px) 来微调 */
+    /* 900/2 = 450, 再往左挪 70px 左右比较合适 */
+    left: calc(50% - 530px);
+    z-index: 100;
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.side-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    /* 间距稍微收紧，更精致 */
+    background: rgba(255, 255, 255, 0.6);
+    /* 半透明背景 */
+    backdrop-filter: blur(10px);
+    /* 磨砂玻璃效果 */
+    padding: 12px 8px;
+    border-radius: 40px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+}
+
+.tool-item {
+    width: 44px;
+    height: 44px;
+    background: #fff;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    transition: all 0.3s;
+    position: relative;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.tool-item:hover {
+    background: #f8f9fa;
+    transform: scale(1.1);
+}
+
+/* 气泡计数器优化 */
+.tool-item .count {
+    position: absolute;
+    top: -4px;
+    left: 30px;
+    background: #94a3b8;
+    color: #fff;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 700;
+    border: 2px solid #fff;
+    /* 增加白色描边，更有立体感 */
+}
+
+.tool-item.active {
+    background: #fff1f2;
+}
+
+.tool-item.active .icon {
+    filter: drop-shadow(0 0 5px rgba(255, 95, 126, 0.3));
+    transform: scale(1.1);
+}
+
+.tool-item.active .count {
+    background: #ff5f7e;
+}
+
+/* --- 🔥 底部按钮增强 --- */
+.btn-like.active {
+    background: #ff5f7e;
+    color: #fff;
+}
+
+.btn-favorite.active {
+    background: #fdcb6e;
+    color: #fff;
+}
+
+.btn-favorite {
+    background: #ffeaa7;
+    color: #d63031;
+}
+
+/* --- 🔥 专栏弹窗样式 --- */
+.column-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10000;
+    backdrop-filter: blur(4px);
+}
+
+.column-modal {
+    background: #fff;
+    width: 350px;
+    border-radius: 16px;
+    overflow: hidden;
+    animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(20px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.column-select-item {
+    padding: 15px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: background 0.2s;
+    border-bottom: 1px solid #f5f5f5;
+}
+
+.column-select-item:hover {
+    background: #f0fdf4;
+}
+
+.column-select-item .col-name {
+    flex: 1;
+    font-weight: 500;
+}
+
+.add-mark {
+    color: #42b983;
+    font-weight: bold;
+}
+
+/* 响应式适配 */
+@media (max-width: 1200px) {
+    .side-toolbar-wrapper {
+        left: 30px;
+        /* 屏幕变窄时，固定在左侧一定距离 */
+    }
+}
+
+/* 🔥 当屏幕宽度低于 1050px 时，侧边栏可能会遮挡正文，此时隐藏它 */
+@media (max-width: 1050px) {
+    .side-toolbar-wrapper {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateX(-20px);
+        /* 侧向滑出消失 */
+    }
+}
+
+/* 进场动画 */
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+    transition: all 0.3s ease;
+}
+
+.fade-slide-enter-from,
+.fade-slide-leave-to {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+}
+
+/* 引导创建按钮 */
+.empty-columns-guide {
+    padding: 30px 10px;
+    text-align: center;
+    color: #999;
+}
+
+.btn-create-now {
+    margin-top: 12px;
+    background: #42b883;
+    color: white;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: 0.3s;
+}
+
+.modal-action-footer {
+    padding: 10px;
+    text-align: center;
+    border-top: 1px solid #f5f5f5;
+}
+
+.text-btn {
+    background: none;
+    border: none;
+    color: #42b883;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+/* 快捷创建表单 */
+.quick-create-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+.modal-input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    background: #fcfcfc;
+    font-size: 14px;
+    outline: none;
+}
+
+.modal-input:focus {
+    border-color: #42b883;
+    background: #fff;
+}
+
+.form-ops {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.btn-secondary {
+    flex: 1;
+    padding: 10px;
+    background: #f5f5f5;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #666;
+}
+
+.btn-primary {
+    flex: 2;
+    padding: 10px;
+    background: #42b883;
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-primary:disabled {
+    background: #a5d6a7;
+    cursor: not-allowed;
+}
+
+/* 引导创建按钮 */
+.empty-columns-guide {
+    padding: 30px 10px;
+    text-align: center;
+    color: #999;
+}
+
+.btn-create-now {
+    margin-top: 12px;
+    background: #42b883;
+    color: white;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: 0.3s;
+}
+
+.modal-action-footer {
+    padding: 10px;
+    text-align: center;
+    border-top: 1px solid #f5f5f5;
+}
+
+.text-btn {
+    background: none;
+    border: none;
+    color: #42b883;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+/* 快捷创建表单 */
+.quick-create-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+.modal-input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    background: #fcfcfc;
+    font-size: 14px;
+    outline: none;
+}
+
+.modal-input:focus {
+    border-color: #42b883;
+    background: #fff;
+}
+
+.form-ops {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.btn-secondary {
+    flex: 1;
+    padding: 10px;
+    background: #f5f5f5;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    color: #666;
+}
+
+.btn-primary {
+    flex: 2;
+    padding: 10px;
+    background: #42b883;
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-primary:disabled {
+    background: #a5d6a7;
+    cursor: not-allowed;
+}
+
+
+/* 确保 side-toolbar-wrapper 的 transition 不会跟 inline-style 冲突 */
+.side-toolbar-wrapper {
+    position: fixed;
+    top: 400px;
+    left: calc(50% - 530px);
+    z-index: 100;
+    /* 移除 CSS 里的 transition，改由 computed 的 sidebarStyle 统一控制，避免抖动 */
+    will-change: opacity, transform;
+}
+
+/* 当屏幕变窄，侧边栏在左侧固定位置 */
+@media (max-width: 1200px) {
+    .side-toolbar-wrapper {
+        left: 20px;
+    }
+}
+
+/* 屏幕太小时完全不显示，避免遮挡 */
+@media (max-width: 1050px) {
+    .side-toolbar-wrapper {
+        display: none !important;
+    }
+}
+
+/* --- 🌀 阅读进度环专用样式 --- */
+.progress-item {
+    background: #fdfdfd !important;
+    cursor: default !important;
+    /* 进度仅展示，不可点 */
+}
+
+.progress-circle {
+    width: 40px;
+    height: 40px;
+    transform: rotate(-90deg);
+    /* 让进度从正上方开始 */
+}
+
+.progress-circle-bg {
+    fill: none;
+    stroke: #f1f1f1;
+    /* 底色环 */
+    stroke-width: 3.5;
+}
+
+/* --- 🌀 阅读进度环升级样式 --- */
+.progress-circle-bar {
+    fill: none;
+    stroke-width: 3.5;
+    stroke-linecap: round;
+    stroke-dasharray: 125.6;
+    /* 🔥 关键：增加 stroke 的过渡动画，让变色不生硬 */
+    transition: stroke-dashoffset 0.1s linear, stroke 0.4s ease;
+}
+
+.percent-text {
+    position: absolute;
+    font-size: 10px;
+    font-weight: 800;
+    font-family: 'Inter', sans-serif;
+    letter-spacing: -0.5px;
+    /* 🔥 颜色也增加过渡 */
+    transition: color 0.4s ease;
+}
+
+/* 🔥 亮点：当进度 >= 98% 时的发光效果 */
+.progress-item.completed {
+    filter: drop-shadow(0 0 3px rgba(255, 152, 0, 0.4));
+    animation: pulse-orange 2s infinite;
+}
+
+@keyframes pulse-orange {
+    0% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.05);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+.percent-text small {
+    font-size: 7px;
+}
+
+/* 分割线 */
+.tool-divider {
+    width: 20px;
+    height: 1px;
+    background: rgba(0, 0, 0, 0.05);
+    margin: -5px auto 5px;
+}
+
+/* --- 🔥 文章导读区：主题联动优化 --- */
+.article-preface {
+    margin-bottom: 0;
+    padding: 0 20px;
+    position: relative;
+    transition: all 0.5s ease; /* 增加整体切换时的过渡感 */
+}
+
+.preface-content {
+    position: relative;
+    padding: 25px 40px;
+    /* 🔥 联动背景色：使用主题色的 RGB 变量，赋予极低的透明度 (0.05) */
+    background: linear-gradient(to right, rgba(var(--highlight-color-rgb), 0.08), transparent);
+    border-radius: 12px;
+    transition: background 0.5s ease;
+}
+
+.summary-text {
+    font-size: 1.08rem;
+    line-height: 2;
+    /* 🔥 联动字体颜色：紧跟主题高亮色 */
+    color: var(--highlight-color);
+    font-style: italic;
+    font-family: "Kaiti", "STKaiti", serif; /* 使用更具文学气息的字体 */
+    margin: 0;
+    text-align: justify;
+    transition: color 0.5s ease;
+}
+
+/* --- 🔥 虚线间距优化 --- */
+.dashed-line {
+    border: 0;
+    border-top: 1px dashed #ccc2c2;
+    margin: 30px 0;
+    /* 原来是 40px，统一减小到 30px */
+}
+
+/* 优化虚线间距 */
+.dashed-line.preface-gap {
+    margin-top: 20px;
+    margin-bottom: 30px;
+    border-top: 1px dashed rgba(var(--highlight-color-rgb), 0.3); /* 虚线也带一点主题色调 */
+    transition: border-color 0.5s ease;
+}
+
+/* 🔥 联动引号颜色 */
+.quote-left,
+.quote-right {
+    position: absolute;
+    font-size: 4.5rem;
+    font-family: serif;
+    /* 🔥 使用主题色并配合低透明度，显得深邃且高级 */
+    color: var(--highlight-color);
+    opacity: 0.2;
+    line-height: 1;
+    transition: color 0.5s ease;
+}
+
+.quote-left { top: -5px; left: 10px; }
+.quote-right { bottom: -35px; right: 10px; }
+
+/* 🔥 联动底部短下划线 */
+.preface-divider {
+    width: 80px;
+    height: 4px;
+    /* 🔥 颜色完全同步主题色 */
+    background: var(--highlight-color);
+    margin: 25px auto 0;
+    border-radius: 10px;
+    opacity: 0.8;
+    box-shadow: 0 2px 10px rgba(var(--highlight-color-rgb), 0.2); /* 增加淡淡的同色系投影 */
+    transition: all 0.5s ease;
+}
+
+.article-content {
+    margin-top: 0;
+}
+
+/* 艺术纸 Modal 覆盖层 */
+.art-paper-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(8px);
+    z-index: 20000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* 罗马纸/艺术纸容器 */
+.art-paper-container {
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    background-color: #fcfaf2;
+    /* 纸张米黄色 */
+    background-image:
+        radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 100%),
+        url('https://www.transparenttextures.com/patterns/papyrus.png');
+    /* 纸张纹理 */
+    padding: 50px 40px;
+    border-radius: 4px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15), inset 0 0 100px rgba(220, 180, 120, 0.1);
+    position: relative;
+    overflow-y: auto;
+    border: 1px solid #e8dcc4;
+}
+
+/* 纸张装饰边缘（可选） */
+.art-paper-container::before {
+    content: '';
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    border: 1px solid rgba(180, 140, 90, 0.2);
+    pointer-events: none;
+}
+
+/* 艺术字体排版 */
+.art-paper-content {
+    /* 推荐使用 楷体 或 寻找专门的手写字体 webfont */
+    font-family: "Kaiti", "STKaiti", "Dancing Script", cursive;
+    color: #4a3c28;
+    line-height: 2;
+    font-size: 1.15rem;
+}
+
+/* 深度选择器处理 Markdown 渲染出的标签 */
+.art-paper-content :deep(h1) {
+    text-align: center;
+    color: #8b5a2b;
+    margin-bottom: 30px;
+    font-size: 1.8rem;
+}
+
+.art-paper-content :deep(h3) {
+    color: #d2a679;
+    border-bottom: 1px dashed #d2a679;
+    display: inline-block;
+    margin-top: 20px;
+}
+
+/* 🔥 关键优化：漂亮颜色的波浪下划线 */
+.art-paper-content :deep(del) {
+    text-decoration: none;
+    /* 去掉原有的删除线 */
+    text-decoration: underline wavy #ff7e5f;
+    /* 橙红色波浪线 */
+    color: #e67e22;
+    font-weight: bold;
+    padding: 0 4px;
+}
+
+/* 关闭按钮 */
+.close-paper-btn {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    font-size: 24px;
+    color: #8b5a2b;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: 0.3s;
+}
+
+.close-paper-btn:hover {
+    opacity: 1;
+    transform: rotate(90deg);
+}
+
+/* 自定义滚动条样式 */
+.art-paper-container::-webkit-scrollbar {
+    width: 4px;
+}
+
+.art-paper-container::-webkit-scrollbar-thumb {
+    background: #d2a679;
+    border-radius: 10px;
+}
+
+/* 版权点击按钮样式 */
+.copyright-link-btn {
+    color: #42b983;
+    font-weight: bold;
+    cursor: pointer;
+    text-decoration: underline;
+    transition: all 0.3s;
+}
+
+.copyright-link-btn:hover {
+    color: #ff7e5f;
+}
+
+/* 艺术纸 Overlay */
+.art-paper-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(10px);
+    z-index: 20000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* 艺术纸（罗马纸/羊皮纸）容器 */
+.art-paper-container {
+    width: 90%;
+    max-width: 650px;
+    max-height: 85vh;
+    background-color: #fcfaf2;
+    /* 暖纸色 */
+    /* 纸张纹理 + 渐变阴影 */
+    background-image:
+        radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 100%),
+        url('https://www.transparenttextures.com/patterns/papyrus.png');
+    padding: 60px 50px;
+    border-radius: 4px;
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.2), inset 0 0 100px rgba(220, 180, 120, 0.15);
+    position: relative;
+    overflow-y: auto;
+    border: 1px solid #e8dcc4;
+}
+
+/* 纸张内容排版 */
+.art-paper-content {
+    /* 这里你可以引入专门的 WebFont，或者使用常见的楷体 */
+    font-family: "Kaiti", "STKaiti", "Microsoft YaHei", serif;
+    color: #4a3c28;
+    line-height: 2.2;
+}
+
+.art-paper-content :deep(h1) {
+    text-align: center;
+    color: #8b5a2b;
+    font-size: 2rem;
+    margin-bottom: 40px;
+    border: none !important;
+}
+
+.art-paper-content :deep(h3) {
+    color: #d2a679;
+    border-bottom: 2px dashed rgba(210, 166, 121, 0.3);
+    padding-bottom: 5px;
+    margin-top: 30px;
+}
+
+/* 🔥 亮点：波浪线强调样式（对应 MD 的 ~~文字~~） */
+.art-paper-content :deep(del) {
+    text-decoration: none;
+    background: linear-gradient(to right, rgba(255, 126, 95, 0.1), rgba(255, 126, 95, 0.05));
+    border-bottom: 2px wavy #ff7e5f;
+    /* 橙红色波浪 */
+    color: #e67e22;
+    font-weight: bold;
+    padding: 0 4px;
+}
+
+.close-paper-btn {
+    position: absolute;
+    top: 25px;
+    right: 25px;
+    font-size: 24px;
+    color: #8b5a2b;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: 0.3s;
+}
+
+.close-paper-btn:hover {
+    opacity: 1;
+    transform: rotate(90deg);
+}
+
+/* 进场动画 */
+.fade-zoom-enter-active,
+.fade-zoom-leave-active {
+    transition: all 0.4s ease;
+}
+
+.fade-zoom-enter-from,
+.fade-zoom-leave-to {
+    opacity: 0;
+    transform: scale(0.9) translateY(20px);
 }
 </style>

@@ -1,12 +1,13 @@
 <script setup>
-import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, computed, onUnmounted, watch, nextTick } from 'vue'
+import { useRouter, useRoute } from 'vue-router' // 🔥 修正：从这里引入 useRoute
 import { useUserStore } from '@/stores/user.js'
 import { Country, State, City } from 'country-state-city'
 import { message } from '@/utils/message.js'
 import { api } from '@/utils/api'
 
 const router = useRouter()
+const route = useRoute() // 🔥 修正：正确初始化 route 实例
 const userStore = useUserStore()
 
 const activeTab = ref('personal')
@@ -54,11 +55,19 @@ const menuItems = [
     }
 ]
 
+// 核心逻辑：根据 URL 参数自动切换 Tab
+const handleTabSwitch = () => {
+    // 如果 URL 里的 tab=privacy，自动切换到 ID 为 'data' 的面板
+    if (route.query.tab === 'privacy') {
+        activeTab.value = 'data'
+        console.log('🛡️ 已根据导航指令切换至数据与隐私面板')
+    }
+}
+
 const avatarSrc = computed(() => {
     if (!user.value.avatar) return ''
-    if (user.value.avatar.startsWith('data:image')) return user.value.avatar
-    if (user.value.avatar.startsWith('http')) return user.value.avatar
-    return `${import.meta.env.VITE_API_BASE_URL}${user.value.avatar}`
+    if (user.value.avatar.startsWith('data:image') || user.value.avatar.startsWith('http')) return user.value.avatar
+    return user.value.avatar
 })
 
 // ========== 🎂 生日日历选择器 ==========
@@ -298,20 +307,6 @@ const fetchUserInfo = async () => {
     }
 }
 
-const handleCancel = () => {
-    // 只有当数据真的有变动时，才弹窗询问（优化体验）
-    if (hasUnsavedChanges.value) {
-        if (confirm('确定要放弃所有未保存的修改并返回吗?')) {
-            // 使用深拷贝恢复数据，更稳健
-            user.value = JSON.parse(JSON.stringify(originalUser.value))
-            router.back()
-        }
-    } else {
-        // 如果没改动，直接返回，不用弹窗烦用户
-        router.back()
-    }
-}
-
 const validateForm = () => {
     const errors = []
 
@@ -474,7 +469,7 @@ const handlePublish = async () => {
             localStorage.setItem('username', newUserInfo.username);
 
             // 5. 更新原始数据备份 (防止"未保存修改"弹窗误报)
-            originalUser.value = JSON.parse(JSON.stringify(newUserInfo));
+            originalUser.value = JSON.parse(JSON.stringify(user.value));
 
             console.log(`🔄 本地缓存已强制更新为: ${newUserInfo.username}`);
             // 🔥🔥🔥 核心修复结束 🔥🔥🔥
@@ -558,11 +553,67 @@ const handleFileChange = (event) => {
         reader.readAsDataURL(file)
     }
 }
+
+const formFields = [
+    'username', 'nickname', 'email', 'avatar',
+    'birthday', 'gender', 'phone', 'region',
+    'bio', 'social_link'
+];
+
 // 在 computed 中添加安全访问
 const hasUnsavedChanges = computed(() => {
-    if (!user.value || !originalUser.value) return false
-    return JSON.stringify(user.value) !== JSON.stringify(originalUser.value)
-})
+    if (!user.value || !originalUser.value) return false;
+
+    // 只对比 formFields 列表中的字段
+    return formFields.some(field => {
+        const current = user.value[field] || ''; // 处理 null/undefined 为空串
+        const original = originalUser.value[field] || '';
+        return String(current) !== String(original);
+    });
+});
+
+/**
+ * 场景 A: 顶部返回箭头按钮调用
+ * 意图：离开当前页面
+ */
+const goBack = () => {
+    // 只有当数据真的有变动时，才弹窗询问
+    if (hasUnsavedChanges.value) {
+        if (confirm('您有尚未保存的修改，确定要放弃修改并返回吗?')) {
+            router.back();
+        }
+    } else {
+        // 如果数据已保存或未变动，直接静默返回
+        router.back();
+    }
+}
+
+/**
+ * 场景 B: 底部“放弃修改”按钮调用
+ * 意图：清空本次编辑的内容，回退到初始状态，但不离开页面
+ */
+const resetForm = () => {
+    if (hasUnsavedChanges.value) {
+        if (confirm('确定要重置所有修改吗？该操作无法撤销。')) {
+            // 使用备份数据覆盖当前数据（深拷贝防止引用污染）
+            user.value = JSON.parse(JSON.stringify(originalUser.value));
+
+            // 如果涉及到电话号码组件，记得同步重置其内部状态
+            if (user.value.phone) {
+                const phoneMatch = user.value.phone.match(/^(\+\d+)\s(.+)$/);
+                if (phoneMatch) {
+                    phoneInput.value = phoneMatch[2];
+                    const country = phoneCountries.find(c => c.code === phoneMatch[1]);
+                    if (country) selectedPhoneCountry.value = country;
+                }
+            } else {
+                phoneInput.value = '';
+            }
+
+            message.info('表单已重置');
+        }
+    }
+}
 
 const closeAllDropdowns = () => {
     showGenderDropdown.value = false
@@ -583,7 +634,160 @@ watch(() => userStore.user, (newUser) => {
     }
 }, { immediate: true, deep: true })
 
-// 在 Account.vue 的 setup 函数中
+// ========== 🔐 安全与登录逻辑 (新增) ==========
+const passwordData = ref({
+    oldPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+});
+
+const isChangingPassword = ref(false);
+
+// 判断密码表单是否有改动
+const hasPasswordChanges = computed(() => {
+    return passwordData.value.oldPassword !== '' ||
+        passwordData.value.newPassword !== '' ||
+        passwordData.value.confirmPassword !== '';
+});
+
+// 重置密码表单
+const resetPasswordForm = () => {
+    passwordData.value = { oldPassword: '', newPassword: '', confirmPassword: '' };
+};
+
+// 提交修改密码
+const handleChangePassword = async () => {
+    // 1. 前端基础校验
+    if (!passwordData.value.oldPassword) return message.warning('请输入原密码');
+    if (passwordData.value.newPassword.length < 6) return message.warning('新密码至少6位');
+    if (passwordData.value.newPassword !== passwordData.value.confirmPassword) {
+        return message.warning('两次输入的新密码不一致');
+    }
+    if (passwordData.value.oldPassword === passwordData.value.newPassword) {
+        return message.warning('新密码不能与原密码相同');
+    }
+
+    isChangingPassword.value = true;
+    try {
+        const res = await api.post('/user/update-password', {
+            oldPassword: passwordData.value.oldPassword,
+            newPassword: passwordData.value.newPassword
+        });
+
+        if (res.data.success) {
+            message.success('🎉 密码修改成功！为了安全，请重新登录');
+            resetPasswordForm();
+
+            // 延时跳转到登录页，让用户看清提示
+            setTimeout(() => {
+                userStore.logout(); // 清除本地token和状态
+                router.push('/login');
+            }, 1500);
+        }
+    } catch (error) {
+        // 错误已经在 api.js 拦截处理了，这里可以做特定 UI 响应
+    } finally {
+        isChangingPassword.value = false;
+    }
+};
+
+// ========== 🛡️ 数据与隐私逻辑 (新增) ==========
+const isExporting = ref(false);
+const isDeleting = ref(false);
+
+const handleExportData = async () => {
+    isExporting.value = true
+    try {
+        const res = await api.get('/user/export-data', { responseType: 'blob' })
+        const blob = new Blob([res.data], { type: 'application/json' })
+        const url = window.URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.setAttribute('download', `Veritas_Data_${userStore.user.username}_${new Date().toISOString().split('T')[0]}.json`)
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        window.URL.revokeObjectURL(url)
+        message.success('数据导出成功！')
+    } catch (err) {
+        message.error('导出失败，请重试')
+    } finally {
+        isExporting.value = false
+    }
+}
+
+// 2. 注销账户逻辑
+const handleDeleteAccount = async () => {
+    // 第一次确认
+    if (!confirm('🚨 警告：注销后您的所有资料及设置将被永久删除且无法恢复。确定要继续吗？')) return;
+
+    // 第二次确认（防止误触）
+    const confirmName = prompt('请输入您的用户名以确认注销账户：');
+    if (confirmName !== user.value.username) {
+        return message.warning('验证失败，操作已取消');
+    }
+
+    isDeleting.value = true;
+    try {
+        const res = await api.delete('/user/account');
+        if (res.data.success) {
+            message.success('👋 账号已注销，感谢您的陪伴');
+            userStore.logout();
+            router.push('/');
+        }
+    } catch (error) {
+        // 报错由拦截器处理
+    } finally {
+        isDeleting.value = false;
+    }
+};
+
+// ========== 🤝 用户与分享逻辑 (新增) ==========
+const shareUrl = computed(() => {
+    // 假设你的个人资料页面路径是 /user/:username
+    const origin = window.location.origin;
+    return `${origin}/blog?author=${user.value.username}`;
+});
+
+// 复制链接功能
+const handleCopyLink = async () => {
+    try {
+        await navigator.clipboard.writeText(shareUrl.value);
+        message.success('🔗 个人主页链接已复制到剪贴板');
+    } catch (err) {
+        // 降级处理：手动选中文本
+        const input = document.createElement('input');
+        input.value = shareUrl.value;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        message.success('🔗 链接已复制');
+    }
+};
+
+const siteStats = ref({
+    articleCount: 0,
+    categoryCount: 0,
+    totalViews: 0
+})
+
+const fetchSiteStats = async () => {
+    try {
+        const res = await api.get('/blog/stats')
+        if (res.data.success) {
+            siteStats.value = res.data.data
+        }
+    } catch (error) {
+        console.error('获取统计失败', error)
+    }
+}
+
+// 监听路由变化，防止用户在页面内多次点击“你的数据”不刷新
+watch(() => route.query.tab, () => {
+    handleTabSwitch()
+})
+
 onMounted(async () => {
     try {
         // 添加延迟，确保路由完全加载
@@ -619,8 +823,9 @@ onMounted(async () => {
             message.error('页面加载失败，请刷新重试')
         }
     }
-
     window.addEventListener('click', closeAllDropdowns)
+    fetchSiteStats()
+    handleTabSwitch()
 })
 
 onUnmounted(() => {
@@ -646,7 +851,7 @@ onUnmounted(() => {
             <main class="content">
                 <div v-if="activeTab === 'personal'" class="panel">
                     <div class="panel-header">
-                        <button class="back-btn" @click="handleCancel" title="返回上一页">
+                        <button class="back-btn" @click="goBack" title="返回上一页">
                             <svg viewBox="0 0 24 24" class="back-icon">
                                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
                                     fill="currentColor" />
@@ -842,7 +1047,7 @@ onUnmounted(() => {
                     </div>
 
                     <div class="actions">
-                        <button @click="handleCancel" class="btn-secondary" :disabled="!hasUnsavedChanges">
+                        <button @click="resetForm" class="btn-secondary" :disabled="!hasUnsavedChanges">
                             放弃修改
                         </button>
 
@@ -852,9 +1057,180 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <div v-else class="panel">
-                    <h2 class="panel-title">{{menuItems.find(m => m.id === activeTab)?.label}}</h2>
-                    <p style="color: rgba(255,255,255,0.6);">该功能正在开发中...</p>
+                <div v-else-if="activeTab === 'security'" class="panel animate__animated animate__fadeIn">
+                    <div class="panel-header">
+                        <button class="back-btn" @click="goBack">
+                            <svg viewBox="0 0 24 24" class="back-icon">
+                                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
+                                    fill="currentColor" />
+                            </svg>
+                        </button>
+                        <h2 class="panel-title">安全与登录</h2>
+                    </div>
+
+                    <div class="security-section">
+                        <h3 class="section-subtitle">修改账户密码</h3>
+
+                        <div class="form-group">
+                            <label class="label">原密码</label>
+                            <input type="password" v-model="passwordData.oldPassword" class="input"
+                                placeholder="输入当前使用的密码" />
+                        </div>
+
+                        <div class="form-group">
+                            <label class="label">新密码</label>
+                            <input type="password" v-model="passwordData.newPassword" class="input"
+                                placeholder="设置新的登录密码 (至少6位)" />
+                        </div>
+
+                        <div class="form-group">
+                            <label class="label">确认新密码</label>
+                            <input type="password" v-model="passwordData.confirmPassword" class="input"
+                                placeholder="再次输入新密码" />
+                        </div>
+
+                        <div class="actions">
+                            <button @click="resetPasswordForm" class="btn-secondary" :disabled="!hasPasswordChanges">
+                                重置表单
+                            </button>
+                            <button @click="handleChangePassword" class="btn-primary"
+                                :disabled="isChangingPassword || !hasPasswordChanges">
+                                {{ isChangingPassword ? '提交中...' : '更新密码' }}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="security-info-box">
+                        <p class="tip">💡 安全建议：请勿在多个网站使用相同的密码，并定期更换密码以保障账户安全。</p>
+                    </div>
+                </div>
+
+                <div v-else-if="activeTab === 'data'" class="panel animate__animated animate__fadeIn">
+                    <div class="panel-header">
+                        <button class="back-btn" @click="goBack">
+                            <svg viewBox="0 0 24 24" class="back-icon">
+                                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
+                                    fill="currentColor" />
+                            </svg>
+                        </button>
+                        <h2 class="panel-title">数据与隐私</h2>
+                    </div>
+
+                    <div class="privacy-section">
+                        <h3 class="section-subtitle">个人数据副本</h3>
+                        <p class="section-desc">您可以下载一份您在 Veritas 博客上的所有个人信息、设置和活动历史记录。数据将以 JSON 格式提供。</p>
+                        <button @click="handleExportData" class="btn-secondary" :disabled="isExporting">
+                            {{ isExporting ? '打包中...' : '📦 导出我的所有数据' }}
+                        </button>
+                    </div>
+
+                    <div class="divider"></div>
+
+                    <div class="privacy-section danger-zone">
+                        <h3 class="section-subtitle danger">注销您的账户</h3>
+                        <p class="section-desc">一旦您注销了账户，将无法撤回。该账户的所有内容、个性化壁纸及评论标识将被移除。</p>
+                        <button @click="handleDeleteAccount" class="btn-danger" :disabled="isDeleting">
+                            {{ isDeleting ? '正在注销...' : '删除账户' }}
+                        </button>
+                    </div>
+                </div>
+
+                <div v-else-if="activeTab === 'people'" class="panel animate__animated animate__fadeIn">
+                    <div class="panel-header">
+                        <button class="back-btn" @click="goBack">
+                            <svg viewBox="0 0 24 24" class="back-icon">
+                                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"
+                                    fill="currentColor" />
+                            </svg>
+                        </button>
+                        <h2 class="panel-title">用户与分享</h2>
+                    </div>
+
+                    <div class="share-section">
+                        <h3 class="section-subtitle">个性化数字名片</h3>
+                        <p class="section-desc">这是其他用户在博客页看到您的真实样子：</p>
+
+                        <div class="card-preview-container">
+                            <div class="sidebar-card profile-card-crystal mini-preview">
+                                <div class="profile-bg-illustration">
+                                    <img src="https://w.wallhaven.cc/full/5g/wallhaven-5gjgj8.jpg" class="illus-img"
+                                        alt="bg">
+                                </div>
+
+                                <div class="profile-avatar-wrapper">
+                                    <img :src="avatarSrc" alt="Avatar" class="avatar-img" v-if="avatarSrc">
+                                    <div class="avatar-placeholder-mini" v-else>👤</div>
+                                </div>
+
+                                <div class="profile-info-text">
+                                    <h2 class="profile-name">{{ user.nickname || user.username }}</h2>
+                                </div>
+
+                                <div class="profile-stats-grid">
+                                    <div class="stat-col">
+                                        <div class="stat-label-row"><span class="stat-icon">📖</span><span
+                                                class="stat-label">文章</span></div>
+                                        <div class="stat-num">{{ siteStats.articleCount }}</div>
+                                    </div>
+                                    <div class="stat-col">
+                                        <div class="stat-label-row"><span class="stat-icon">🗂️</span><span
+                                                class="stat-label">分类</span></div>
+                                        <div class="stat-num">{{ siteStats.categoryCount }}</div>
+                                    </div>
+                                    <div class="stat-col">
+                                        <div class="stat-label-row"><span class="stat-icon">🔥</span><span
+                                                class="stat-label">访问量</span></div>
+                                        <div class="stat-num">{{ siteStats.totalViews }}</div>
+                                    </div>
+                                </div>
+
+                                <div class="profile-action-btn">
+                                    <button class="friend-btn-crystal">
+                                        <span class="icon-star">☆</span> 友链
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="divider"></div>
+
+                    <div class="share-section">
+                        <h3 class="section-subtitle">分享我的博客</h3>
+                        <p class="section-desc">通过唯一链接让朋友们快速找到你的文章和足迹。</p>
+
+                        <div class="share-link-wrapper">
+                            <div class="link-display">{{ shareUrl }}</div>
+                            <button @click="handleCopyLink" class="copy-link-btn">复制链接</button>
+                        </div>
+                    </div>
+
+                    <div class="share-section">
+                        <h3 class="section-subtitle">社交链接管理</h3>
+                        <p class="section-desc">在这里配置您的社交账号（如 GitHub、CSDN等）。</p>
+
+                        <div class="social-input-group">
+                            <div class="input-with-icon">
+                                <span class="input-prefix">🔗</span>
+                                <input type="url" v-model="user.social_link" class="input"
+                                    placeholder="请输入您的社交主页完整链接 (https://...)" />
+                            </div>
+
+                            <div class="social-actions-row">
+                                <span class="status-hint" v-if="user.social_link">
+                                    <i class="icon-check">✅</i> 已准备好展示
+                                </span>
+                                <span class="status-hint warning" v-else>
+                                    <i class="icon-info">ℹ️</i> 当前未设置链接，首页将隐藏此入口
+                                </span>
+
+                                <button @click="handlePublish" class="btn-primary-sm"
+                                    :disabled="isSaving || !hasUnsavedChanges">
+                                    {{ isSaving ? '同步中...' : '同步到数据库' }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </main>
         </div>
@@ -862,39 +1238,23 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 添加加载状态样式 */
-.loading-state {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 300px;
-    color: rgba(255, 255, 255, 0.6);
-    font-size: 18px;
-}
-
 /* ==================== 1. 布局容器 ==================== */
-/* 🔥 外部容器：锁定全屏，禁止页面级滚动 */
 .account-container {
     height: 100vh;
     width: 100vw;
     overflow: hidden;
-    /* 关键：禁止外部滚动 */
     display: flex;
     justify-content: center;
     align-items: center;
-    /* 垂直居中卡片 */
     padding-top: 60px;
-    /* 留出 Navbar 的空间 */
     box-sizing: border-box;
 }
 
-/* 🔥 卡片容器：固定比例高度，作为内部滑动的"窗口" */
 .unified-card {
     display: flex;
     width: 90%;
     max-width: 1200px;
     height: 85%;
-    /* 关键：固定高度比例 */
     max-height: 800px;
     background: rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(20px);
@@ -903,7 +1263,6 @@ onUnmounted(() => {
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.2);
     border: 1px solid rgba(255, 255, 255, 0.1);
     overflow: hidden;
-    /* 防止卡片圆角被内容破坏 */
 }
 
 /* ==================== 2. 侧边栏 ==================== */
@@ -950,7 +1309,6 @@ onUnmounted(() => {
     flex: 1;
     height: 100%;
     overflow-y: auto;
-    /* 🔥 关键：内容超出时，只在这里出现滚动条 */
     padding: 40px 60px;
     display: flex;
     flex-direction: column;
@@ -958,7 +1316,6 @@ onUnmounted(() => {
     scroll-behavior: smooth;
 }
 
-/* 美化滚动条 */
 .content::-webkit-scrollbar {
     width: 8px;
 }
@@ -984,7 +1341,6 @@ onUnmounted(() => {
     padding-bottom: 40px;
 }
 
-/* 顶部导航栏样式 (新增) */
 .panel-header {
     display: flex;
     align-items: center;
@@ -992,18 +1348,41 @@ onUnmounted(() => {
     position: relative;
 }
 
-/* 标题样式 (合并优化版) */
 .panel-title {
     font-size: 28px;
-    /* 调小一点更精致 */
     font-weight: 700;
     color: white;
     margin-bottom: 0;
-    /* 由 header 控制间距 */
     text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
 }
 
-/* 返回按钮样式 (新增) */
+.section-subtitle {
+    color: #42b883;
+    font-size: 18px;
+    margin-bottom: 20px;
+    padding-left: 5px;
+    border-left: 4px solid #42b883;
+}
+
+.section-subtitle.danger {
+    color: #ff5f56;
+    border-left-color: #ff5f56;
+}
+
+.section-desc {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+}
+
+.divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.05);
+    margin: 20px 0;
+}
+
+/* ==================== 4. 返回按钮 ==================== */
 .back-btn {
     display: flex;
     align-items: center;
@@ -1036,7 +1415,7 @@ onUnmounted(() => {
     fill: currentColor;
 }
 
-/* ==================== 4. 表单通用样式 ==================== */
+/* ==================== 5. 表单通用样式 ==================== */
 .form-group {
     margin-bottom: 28px;
 }
@@ -1069,7 +1448,6 @@ onUnmounted(() => {
     width: 100%;
     padding: 14px 18px;
     background: rgba(0, 0, 0, 0.2);
-    /* 统一深色背景 */
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 12px;
     color: white;
@@ -1097,7 +1475,7 @@ onUnmounted(() => {
     min-height: 120px;
 }
 
-/* ==================== 5. 头像上传 ==================== */
+/* ==================== 6. 头像上传 ==================== */
 .avatar-upload {
     display: flex;
     align-items: center;
@@ -1137,7 +1515,7 @@ onUnmounted(() => {
     background: rgba(255, 255, 255, 0.2);
 }
 
-/* ==================== 6. 下拉框与特殊输入框 (性别/电话) ==================== */
+/* ==================== 7. 下拉框与特殊输入框 ==================== */
 .dropdown-wrapper,
 .phone-wrapper {
     position: relative;
@@ -1146,7 +1524,6 @@ onUnmounted(() => {
     gap: 12px;
 }
 
-/* 统一输入框外观：整合了 dropdown-input, phone-code, phone-input */
 .dropdown-input,
 .phone-code,
 .phone-input {
@@ -1160,7 +1537,6 @@ onUnmounted(() => {
     box-sizing: border-box;
 }
 
-/* 交互状态 */
 .dropdown-input:hover,
 .phone-code:hover {
     background: rgba(0, 0, 0, 0.3);
@@ -1168,7 +1544,6 @@ onUnmounted(() => {
     cursor: pointer;
 }
 
-/* 聚焦状态 */
 .phone-input:focus {
     outline: none;
     border-color: #42b883;
@@ -1200,7 +1575,6 @@ onUnmounted(() => {
     background: rgba(255, 107, 107, 0.1);
 }
 
-/* 下拉菜单面板 */
 .dropdown-menu,
 .phone-dropdown {
     position: absolute;
@@ -1257,7 +1631,7 @@ onUnmounted(() => {
     opacity: 0.7;
 }
 
-/* ==================== 7. 弹窗样式 (日历/地区) ==================== */
+/* ==================== 8. 弹窗样式 ==================== */
 .date-picker-modal,
 .region-modal {
     position: fixed;
@@ -1339,7 +1713,7 @@ onUnmounted(() => {
     cursor: not-allowed;
 }
 
-/* ==================== 8. 按钮样式 (主界面 & 弹窗通用) ==================== */
+/* ==================== 9. 按钮样式 ==================== */
 .actions {
     display: flex;
     gap: 20px;
@@ -1356,18 +1730,14 @@ onUnmounted(() => {
     justify-content: flex-end;
 }
 
-/* 🔥 通用按钮基础：统一高度、圆角和字体，确保视觉重量一致 */
 .btn-primary,
 .btn-secondary,
 .btn-confirm,
 .btn-cancel {
     height: 42px;
-    /* 固定高度，不再靠 padding 撑开，更整齐 */
     padding: 0 24px;
     border-radius: 12px;
-    /* 和输入框保持一致的圆角 */
     border: 1px solid transparent;
-    /* 预留边框位，防止抖动 */
     cursor: pointer;
     font-size: 14px;
     font-weight: 600;
@@ -1378,10 +1748,8 @@ onUnmounted(() => {
     align-items: center;
     justify-content: center;
     min-width: 100px;
-    /* 保证按钮有最小宽度，显得大气 */
 }
 
-/* ✅ 主操作按钮 (保存/确定) - 保持醒目的渐变 */
 .btn-primary,
 .btn-confirm {
     background: linear-gradient(135deg, #42b883 0%, #33a06f 100%);
@@ -1396,10 +1764,8 @@ onUnmounted(() => {
     filter: brightness(1.1);
 }
 
-/* ⚪️ 次要操作按钮 (放弃/取消) - 升级为实体毛玻璃风格 */
 .btn-secondary,
 .btn-cancel {
-    /* 之前的透明背景太弱了，现在加深背景色，让它看起来也是个"实体按钮" */
     background: rgba(255, 255, 255, 0.1);
     color: rgba(255, 255, 255, 0.9);
     border-color: rgba(255, 255, 255, 0.1);
@@ -1414,7 +1780,6 @@ onUnmounted(() => {
     transform: translateY(-2px);
 }
 
-/* 🚫 禁用状态 (Disabled) - 两个按钮在不可用时样式统一 */
 .btn-primary:disabled,
 .btn-confirm:disabled,
 .btn-secondary:disabled,
@@ -1422,7 +1787,6 @@ onUnmounted(() => {
     opacity: 0.5;
     cursor: not-allowed;
     background: rgba(128, 128, 128, 0.2);
-    /* 统一变成灰色背景 */
     color: rgba(255, 255, 255, 0.3);
     box-shadow: none;
     transform: none;
@@ -1430,7 +1794,317 @@ onUnmounted(() => {
     filter: none;
 }
 
-/* ==================== 9. 移动端适配 (合并优化版) ==================== */
+.btn-danger {
+    height: 42px;
+    padding: 0 24px;
+    border-radius: 12px;
+    background: #ff5f56;
+    color: white;
+    border: none;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+    box-shadow: 0 4px 15px rgba(255, 95, 86, 0.3);
+}
+
+.btn-danger:hover {
+    background: #ff473d;
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(255, 95, 86, 0.4);
+}
+
+.btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ==================== 10. 安全与登录 ==================== */
+.security-info-box {
+    margin-top: 40px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+}
+
+.security-info-box .tip {
+    margin: 0;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.danger-zone {
+    margin-top: 20px;
+    padding: 25px;
+    background: rgba(255, 95, 86, 0.05);
+    border: 1px solid rgba(255, 95, 86, 0.2);
+    border-radius: 12px;
+}
+
+/* ==================== 11. 用户与分享 ==================== */
+.card-preview-container {
+    padding: 40px;
+    background: rgba(15, 23, 42, 0.4);
+    border-radius: 20px;
+    display: flex;
+    justify-content: center;
+    margin-bottom: 30px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.mini-preview {
+    width: 280px !important;
+    background: linear-gradient(0deg, #d9f4f0 0%, #f6fcfb 100%) !important;
+    border-radius: 16px !important;
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15) !important;
+    border: 1px solid rgba(255, 255, 255, 0.8) !important;
+    overflow: hidden;
+    margin-bottom: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    text-align: center;
+}
+
+.mini-preview .profile-bg-illustration {
+    width: 100%;
+    height: 110px;
+    overflow: hidden;
+    clip-path: ellipse(130% 100% at 50% 0%);
+}
+
+.mini-preview .profile-avatar-wrapper {
+    width: 70px;
+    height: 70px;
+    margin: -35px auto 10px;
+    border-radius: 50%;
+    padding: 2px;
+    background: #fff;
+    position: relative;
+    z-index: 2;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+.mini-preview .profile-name {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #2c3e50 !important;
+    margin: 5px 0 15px;
+}
+
+.mini-preview .profile-stats-grid {
+    display: flex;
+    justify-content: space-around;
+    padding: 0 15px;
+    margin-bottom: 20px;
+}
+
+.mini-preview .stat-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.mini-preview .stat-label-row {
+    font-size: 0.8rem;
+    color: #666 !important;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 500;
+}
+
+.mini-preview .stat-num {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #333 !important;
+}
+
+.mini-preview .profile-action-btn {
+    padding: 0 25px 25px;
+}
+
+.mini-preview .friend-btn-crystal {
+    width: 100%;
+    height: 40px;
+    background: #48cbb6 !important;
+    border: none !important;
+    border-radius: 50px !important;
+    color: white !important;
+    font-size: 0.9rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    box-shadow: 0 5px 15px rgba(72, 203, 182, 0.3) !important;
+}
+
+.mini-preview .friend-btn-crystal .icon-star {
+    font-size: 1.1rem;
+}
+
+.illus-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.profile-avatar-wrapper {
+    width: 70px;
+    height: 70px;
+    margin: -35px auto 10px;
+    border-radius: 50%;
+    padding: 2px;
+    background: #fff;
+    position: relative;
+    z-index: 2;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+}
+
+.avatar-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.profile-name {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #2c3e50;
+    margin: 5px 0 15px;
+}
+
+.profile-stats-grid {
+    display: flex;
+    justify-content: space-around;
+    padding: 0 15px;
+    margin-bottom: 20px;
+}
+
+.stat-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.stat-label-row {
+    font-size: 0.75rem;
+    color: #666;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.stat-num {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #333;
+}
+
+.profile-action-btn {
+    padding: 0 25px 20px;
+}
+
+.share-link-wrapper {
+    display: flex;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.link-display {
+    flex: 1;
+    padding: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.copy-link-btn {
+    background: #42b883;
+    color: white;
+    border: none;
+    padding: 0 20px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background 0.3s;
+}
+
+.copy-link-btn:hover {
+    background: #3aa876;
+}
+
+.social-input-group {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.input-with-icon {
+    display: flex;
+    align-items: center;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    margin-bottom: 15px;
+}
+
+.input-prefix {
+    padding: 0 15px;
+    font-size: 18px;
+}
+
+.input-with-icon .input {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.social-actions-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.status-hint {
+    font-size: 13px;
+    color: #42b883;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.status-hint.warning {
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.btn-primary-sm {
+    height: 34px;
+    padding: 0 15px;
+    font-size: 12px;
+    background: #42b883;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.btn-primary-sm:hover:not(:disabled) {
+    background: #3aa876;
+    transform: translateY(-1px);
+}
+
+/* ==================== 12. 移动端适配 ==================== */
 @media (max-width: 768px) {
     .account-container {
         padding-top: 60px;
@@ -1478,7 +2152,6 @@ onUnmounted(() => {
         padding: 20px;
     }
 
-    /* 顶部导航移动端调整 */
     .panel-header {
         margin-bottom: 20px;
     }

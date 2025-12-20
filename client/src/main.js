@@ -10,6 +10,19 @@ import config from "@/config/index.js";
 import "./style.css";
 import { ErrorHandler } from "@/utils/error-handler.js";
 
+
+// --- 🔥 核心优化：在 App 挂载前立即应用主题 ---
+const initTheme = () => {
+  const savedTheme = localStorage.getItem('theme') || 'light'
+  if (savedTheme === 'dark') {
+    document.documentElement.classList.add('dark')
+  } else {
+    document.documentElement.classList.remove('dark')
+  }
+}
+initTheme() // 立即执行
+
+
 // 初始化错误处理器
 ErrorHandler.init();
 

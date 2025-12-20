@@ -10,6 +10,7 @@ import Blog from "./views/Blog.vue";
 import ArticleDetail from "./views/ArticleDetail.vue";
 import Login from "./views/Login.vue";
 import Register from "./views/Register.vue";
+import Profile from "./views/Profile.vue";
 import Account from "./views/Account.vue";
 
 const router = createRouter({
@@ -30,6 +31,12 @@ const router = createRouter({
       path: "/article/:id",
       component: ArticleDetail,
       meta: { title: "Veritas - 文章详情", guestAccess: true },
+    },
+    {
+      path: "/column/:id",
+      name: "ColumnDetail",
+      component: () => import("@/views/ColumnDetail.vue"), // 稍后创建这个文件
+      props: true, // 开启 props 传参，让组件直接接收 id
     },
 
     // ==================== 用户系统 ====================
@@ -52,10 +59,19 @@ const router = createRouter({
       },
     },
     {
+      path: "/profile/:username",
+      name: "Profile",
+      component: Profile,
+      meta: {
+        title: "个人主页",
+        guestAccess: true, // 允许游客查看他人的主页
+      },
+    },
+    {
       path: "/account",
       component: Account,
       meta: {
-        title: "Veritas - 个人账号中心",
+        title: "Veritas - 个人中心",
         requiresAuth: true,
       },
     },
@@ -124,6 +140,12 @@ const router = createRouter({
           component: () => import("@/views/admin/WallpaperManage.vue"),
           meta: { title: "后台 - 壁纸管理", requiresRole: "admin" },
         },
+        {
+          path: "copyright",
+          name: "AdminCopyright",
+          component: () => import("@/views/admin/CopyrightManage.vue"),
+          meta: { title: "后台 - 版权管理", requiresRole: "admin" },
+        },
         // 未来可以继续添加：
         // { path: 'articles', component: ... },
         // { path: 'comments', component: ... },
@@ -169,10 +191,18 @@ router.beforeEach(async (to, from, next) => {
   }
 
   const isLoggedIn = !!token;
-  const userRole = userStore.user?.role;
+
+  // 🔥 核心修改：判断是否正在切换账号
+  const isSwitchingAccount =
+    sessionStorage.getItem("isSwitchingAccount") === "true";
 
   // 3. 防止已登录用户访问登录/注册页
   if (to.meta.preventIfLoggedIn && isLoggedIn) {
+    // 如果正在切换账号，允许进入登录页，不进行拦截
+    if (isSwitchingAccount && to.path === "/login") {
+      return next();
+    }
+
     message.info("您已登录，无需重复操作");
     return next("/");
   }

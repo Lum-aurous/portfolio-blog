@@ -48,6 +48,7 @@ const menuItems = [
     { name: '公告管理', path: '/admin/notices', icon: '📢' },
     { name: '友链管理', path: '/admin/friends', icon: '🔗' },
     { name: '壁纸管理', path: '/admin/wallpapers', icon: '🖼️' },
+    { name: '版权管理', path: '/admin/copyright', icon: '⚖️' },
 ]
 
 const handleLogout = () => {
