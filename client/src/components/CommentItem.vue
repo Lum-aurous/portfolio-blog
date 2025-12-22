@@ -24,10 +24,10 @@ const props = defineProps({
 
 // 1. 判断该评论者是不是文章作者
 const isArticleAuthor = computed(() => {
-    // 1. 获取评论者的 ID (请确认后端返回的是 commenter_id 还是 user_id)
+    // 🔥 修正：对比“当前评论者ID”和“父组件传下来的文章作者ID”
     const commenterId = props.comment.commenter_id || props.comment.user_id;
     
-    // 2. 对比外部传进来的文章作者 ID (props.articleAuthorId)
+    // 使用 Number 强制转换，防止 String 和 Number 匹配失败
     return Number(commenterId) === Number(props.articleAuthorId);
 })
 

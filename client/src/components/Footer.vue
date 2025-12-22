@@ -1,6 +1,6 @@
 <script setup>
-import { ref, computed } from 'vue'
-import { useRouter } from 'vue-router' // 🔥 引入路由用于跳转
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user.js'
 import { message } from '@/utils/message.js'
 
@@ -8,52 +8,67 @@ const router = useRouter()
 const userStore = useUserStore()
 const currentYear = new Date().getFullYear()
 
-// --- 🔥 核心逻辑：暗门计数器 ---
+// --- 1. 暗门逻辑 ---
 const clickCount = ref(0)
 const lastClickTime = ref(0)
-
 const handleAdminClick = () => {
     const now = Date.now()
-
-    // 如果两次点击间隔超过 3 秒，重置计数器
-    if (now - lastClickTime.value > 3000) {
-        clickCount.value = 0
-    }
-
+    if (now - lastClickTime.value > 3000) clickCount.value = 0
     lastClickTime.value = now
     clickCount.value++
-
-    // 当点击次数达到 5 次时
     if (clickCount.value === 5) {
-        clickCount.value = 0 // 重置计数
-
-        // 校验身份：如果是管理员直接跳后台，否则提示权限不足
+        clickCount.value = 0
         if (userStore.user?.role === 'admin') {
-            message.success('身份确认：正在进入管理系统...')
+            message.success('验证成功，进入管理系统...')
             router.push('/admin')
-        } else {
-            console.log('🤫 发现暗门，但你不是管理员哦')
-            // 保持神秘感，可以不给任何提示，或者给一个调皮的提示
         }
     }
 }
 
-// 动态判断显示名称
-const adminDisplayName = computed(() => {
-    const user = userStore.user
-    return (user && user.role === 'admin') ? user.username : 'Veritas'
+const isAdmin = computed(() => userStore.user?.role === 'admin')
+const adminDisplayName = computed(() => isAdmin.value ? userStore.user.username : 'Veritas')
+
+// --- 2. 运行时间计时器逻辑 ---
+const runtimeText = ref('')
+let timer = null
+
+const calculateRuntime = () => {
+    const startDate = new Date('2024-01-01 00:00:00') // 👈 请设置你网站的真实诞生日
+    const now = new Date()
+    const diff = now - startDate
+
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+    const hours = Math.floor((diff / (1000 * 60 * 60)) % 24)
+    const mins = Math.floor((diff / (1000 * 60)) % 60)
+    const secs = Math.floor((diff / 1000) % 60)
+
+    runtimeText.value = `${days}天 ${hours}时 ${mins}分 ${secs}秒`
+}
+
+onMounted(() => {
+    calculateRuntime()
+    timer = setInterval(calculateRuntime, 1000)
+})
+
+onUnmounted(() => {
+    if (timer) clearInterval(timer)
 })
 </script>
 
 <template>
     <footer class="site-footer">
         <div class="footer-container">
+            <div class="runtime-info">
+                <span class="clock-icon">🕒</span> 本站已平稳运行：<span class="time-text">{{ runtimeText }}</span>
+            </div>
+
             <div class="copyright-line">
-                <span class="c-text">© {{ currentYear }} <span class="brand-text">Veritas WEBlog</span></span>
+                <span>© {{ currentYear }} <span class="brand-text">Veritas WEBlog</span></span>
                 <span class="divider">|</span>
                 <span class="dev-text">
                     Designed & Developed by
-                    <span class="admin-name" @click="handleAdminClick" title="Veritas">{{ adminDisplayName }}</span>
+                    <span class="admin-name" :class="{ 'admin-active': isAdmin }" @click="handleAdminClick">{{
+                        adminDisplayName }}</span>
                 </span>
             </div>
 
@@ -71,11 +86,10 @@ const adminDisplayName = computed(() => {
 <style scoped>
 .site-footer {
     width: 100%;
-    padding: 20px 0 25px;
+    padding: 25px 0 30px;
     margin-top: 40px;
     background: rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
     border-top: 1px solid rgba(255, 255, 255, 0.2);
     text-align: center;
 }
@@ -85,44 +99,47 @@ const adminDisplayName = computed(() => {
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
+}
+
+/* 运行时间样式 */
+.runtime-info {
+    font-size: 0.75rem;
+    color: #64748b;
+    margin-bottom: 4px;
+}
+
+.time-text {
+    font-family: monospace;
+    color: #475569;
+    font-weight: 600;
 }
 
 .copyright-line {
     font-size: 0.85rem;
     color: #334155;
-    font-weight: 500;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
     text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5);
-    /* 确保文字不会被选中，增加“点击”的隐蔽性 */
     user-select: none;
 }
 
-.brand-text {
-    color: #1e293b;
-    font-weight: 600;
-}
-
-.divider {
-    color: #94a3b8;
-    margin: 0 4px;
-}
-
-/* 管理员名字样式 */
 .admin-name {
     color: #059669;
     font-weight: 700;
-    cursor: pointer;
-    /* 虽然是暗门，但管理员鼠标放上去还是要有反馈 */
     transition: all 0.3s ease;
 }
 
-/* 点击时的微小缩放反馈，仅管理员自己能感觉到 */
-.admin-name:active {
-    transform: scale(0.95);
+/* 🔥 管理员登录时的暗门提示：极细的虚线下划线，只有鼠标悬停才明显 */
+.admin-active {
+    cursor: pointer;
+    border-bottom: 1px dashed transparent;
+}
+
+.admin-active:hover {
+    border-bottom: 1px dashed #059669;
 }
 
 .footer-links {
@@ -133,33 +150,25 @@ const adminDisplayName = computed(() => {
     font-size: 0.8rem;
 }
 
-.link-item {
-    color: #475569;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    text-decoration: none;
-}
-
 .highlight-link {
     color: #059669 !important;
     font-weight: 700;
 }
 
+.link-item {
+    color: #475569;
+    text-decoration: none;
+}
+
 .link-item:hover {
-    opacity: 0.8;
     text-decoration: underline;
 }
 
 .dot {
     color: #94a3b8;
-    font-weight: bold;
 }
 
 @media (max-width: 768px) {
-    .site-footer {
-        padding: 15px 0 20px;
-    }
-
     .copyright-line {
         flex-direction: column;
         gap: 4px;

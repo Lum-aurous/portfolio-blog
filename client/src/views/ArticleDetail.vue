@@ -799,7 +799,7 @@ onUnmounted(() => {
                     <svg class="progress-circle" viewBox="0 0 44 44">
                         <circle class="progress-circle-bg" cx="22" cy="22" r="20"></circle>
                         <circle class="progress-circle-bar" cx="22" cy="22" r="20" :style="{
-                            // 🔥 添加逻辑保护：如果 scrollPercent 是 NaN 或 0，给个默认值 125.6 (即进度为0)
+                            // 🔥 增加 NaN 和 0 的逻辑保护
                             strokeDashoffset: (isNaN(scrollPercent) || !scrollPercent) ? 125.6 : (125.6 - (125.6 * scrollPercent) / 100),
                             stroke: progressColor
                         }">
