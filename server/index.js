@@ -144,18 +144,52 @@ if (!fs.existsSync("logs")) {
 // ==========================================
 // 🔥 CORS 配置
 // ==========================================
+// const corsOptions = {
+//   origin: function (origin, callback) {
+//     const allowedOrigins = process.env.ALLOWED_ORIGINS
+//       ? process.env.ALLOWED_ORIGINS.split(",")
+//       : ["http://localhost:5173"];
+
+//     const cpolarRegex = /^https?:\/\/[a-z0-9-]+\.cpolar\.(cn|io)$/;
+
+//     if (
+//       !origin ||
+//       allowedOrigins.includes(origin) ||
+//       cpolarRegex.test(origin)
+//     ) {
+//       callback(null, true);
+//     } else {
+//       logger.warn(`❌ CORS 拒绝: ${origin}`);
+//       callback(new Error("Not allowed by CORS"));
+//     }
+//   },
+//   credentials: true,
+// };
+
+// app.use(cors(corsOptions));
+// app.options(/.*/, cors(corsOptions));
+
+// ==========================================
+// 🔥 CORS 配置 - 修复版
+// ==========================================
+// ==========================================
+// 🔥 CORS 配置
+// ==========================================
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(",")
-      : ["http://localhost:5173"];
+      : ["http://localhost:5173", "http://localhost:3000"];
 
-    const cpolarRegex = /^https?:\/\/[a-z0-9-]+\.cpolar\.(cn|io)$/;
-
+    // 🔥 自动允许所有 cpolar 域名
+    const cpolarRegex = /^https?:\/\/[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.cpolar\.(cn|io)(:\d+)?$/;
+    
     if (
       !origin ||
       allowedOrigins.includes(origin) ||
-      cpolarRegex.test(origin)
+      cpolarRegex.test(origin) ||
+      origin.includes('.cpolar.') ||
+      origin.includes('localhost')
     ) {
       callback(null, true);
     } else {
@@ -164,10 +198,10 @@ const corsOptions = {
     }
   },
   credentials: true,
+  optionsSuccessStatus: 200
 };
 
 app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
 
 // ==========================================
 // 🔥 优化5: 请求体解析（添加限制）
@@ -4620,7 +4654,7 @@ app.get("/api/proxy-image", async (req, res) => {
   }
 });
 
-app.options("/api/proxy-image", cors(corsOptions), (req, res) =>
+app.options("/api/proxy-image", (req, res) =>
   res.sendStatus(200)
 );
 
