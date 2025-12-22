@@ -33,7 +33,7 @@ const runtimeText = ref('')
 let timer = null
 
 const calculateRuntime = () => {
-    const startDate = new Date('2024-01-01 00:00:00') // 👈 请设置你网站的真实诞生日
+    const startDate = new Date('2025-12-01 00:00:00') // 👈 请设置你网站的真实诞生日
     const now = new Date()
     const diff = now - startDate
 
