@@ -2,7 +2,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { useUserStore } from "@/stores/user.js"; // 引入 Pinia Store
 import { message } from "@/utils/message.js"; // 引入消息提示
-import config from "@/config/index.js";
 
 // 前台组件
 import Home from "./views/Home.vue";
@@ -75,7 +74,13 @@ const router = createRouter({
         requiresAuth: true,
       },
     },
-
+    {
+      path: "/copyright",
+      name: "Copyright",
+      // 建议使用异步加载，优化性能
+      component: () => import("@/views/CopyrightDetail.vue"),
+      meta: { title: "版权声明 - Veritas", guestAccess: true },
+    },
     // ==================== 🔥 后台管理系统 (Admin) ====================
     {
       path: "/admin",
@@ -168,7 +173,7 @@ const router = createRouter({
   },
 });
 
-// ==================== 🛡️ 全局前置守卫 (升级版) ====================
+// ==================== 🛡️ 全局前置守卫 ====================
 router.beforeEach(async (to, from, next) => {
   console.log(`🔄 路由跳转: ${from.path} -> ${to.path}`);
 
@@ -177,32 +182,28 @@ router.beforeEach(async (to, from, next) => {
     document.title = to.meta.title;
   }
 
-  // 2. 获取用户状态 (使用 Pinia 更准确)
+  // 2. 获取 Store 和 Token
   const userStore = useUserStore();
   const token = localStorage.getItem("token");
 
-  // 如果有 token 但 store 里没用户，尝试恢复一下 (防止刷新丢失)
+  // 【关键优化】如果 Store 里没用户但有 Token，必须等待恢复状态
+  // 在 cpolar 穿透环境下，网络较慢，这一步的 await 至关重要
   if (token && !userStore.user) {
     try {
       await userStore.checkLoginStatus();
     } catch (e) {
       console.error("恢复登录状态失败", e);
+      // 如果 Token 失效，清理并去登录页（可选）
     }
   }
 
   const isLoggedIn = !!token;
-
-  // 🔥 核心修改：判断是否正在切换账号
   const isSwitchingAccount =
     sessionStorage.getItem("isSwitchingAccount") === "true";
 
   // 3. 防止已登录用户访问登录/注册页
   if (to.meta.preventIfLoggedIn && isLoggedIn) {
-    // 如果正在切换账号，允许进入登录页，不进行拦截
-    if (isSwitchingAccount && to.path === "/login") {
-      return next();
-    }
-
+    if (isSwitchingAccount && to.path === "/login") return next();
     message.info("您已登录，无需重复操作");
     return next("/");
   }
@@ -212,30 +213,31 @@ router.beforeEach(async (to, from, next) => {
     return next();
   }
 
-  // 5. 检查是否需要登录 (requiresAuth)
+  // 5. 检查是否需要登录
   if (to.meta.requiresAuth) {
     if (!isLoggedIn) {
       message.warning("请先登录");
-      // 保存当前路径，登录后跳转回来
-      if (to.path !== "/login") {
+      if (to.path !== "/login")
         sessionStorage.setItem("redirectPath", to.fullPath);
-      }
       return next("/login");
     }
 
-    // 6. 检查角色权限 (requiresRole) -> 比如后台管理
+    // 6. 【核心修正】正确检查角色权限
     if (to.meta.requiresRole) {
-      if (userRole !== to.meta.requiresRole) {
+      // 👈 这里改为从 userStore.user 获取真正的角色
+      const currentUserRole = userStore.user?.role;
+
+      if (currentUserRole !== to.meta.requiresRole) {
         console.warn(
-          `🚫 权限不足: 需要 ${to.meta.requiresRole}, 当前 ${userRole}`
+          `🚫 权限不足: 需要 ${to.meta.requiresRole}, 当前 ${currentUserRole}`
         );
-        message.error("您没有权限访问此区域！");
-        return next("/"); // 踢回首页
+        message.error("您没有管理员权限，无法访问后台！");
+        return next("/"); // 拦截并踢回首页
       }
     }
   }
 
-  // 7. 通行
+  // 7. 顺利通过
   next();
 });
 

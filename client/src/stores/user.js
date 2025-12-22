@@ -16,27 +16,24 @@ export const useUserStore = defineStore("user", () => {
     ttl: 2 * 60 * 1000, // 缓存2分钟
   };
 
-  // 修改：现在接收 token 和 userData
-  const login = (userData, userToken) => {
+ // 🔥🔥🔥 新增：setUser 方法，解决报错 🔥🔥🔥
+  const setUser = (userData) => {
     user.value = userData;
+    if (userData) {
+      localStorage.setItem("user", JSON.stringify(userData));
+      localStorage.setItem("username", userData.username);
+    } else {
+      localStorage.removeItem("user");
+      localStorage.removeItem("username");
+    }
+  };
+
+  const login = (userData, userToken) => {
+    setUser(userData); // 使用新定义的 setUser
     token.value = userToken;
-
-    // 存储到 localStorage
     localStorage.setItem("token", userToken);
-    localStorage.setItem("user", JSON.stringify(userData));
-    localStorage.setItem("username", userData.username);
     localStorage.setItem("isLoggedIn", "true");
-
     console.log("✅ 用户登录成功:", userData.username);
-
-    // 🔥 关键：立即触发响应式更新
-    // 不需要额外操作，因为 user.value 和 token.value 已经是响应式的
-    // 但可以添加一个微任务确保更新
-    Promise.resolve().then(() => {
-      console.log("🔄 用户状态已更新");
-    });
-
-    // 登录成功后自动获取地理位置
     getLocation();
   };
 
@@ -346,6 +343,7 @@ export const useUserStore = defineStore("user", () => {
     location,
     isLoadingLocation,
     isLoggedIn,
+    setUser, // 👈 必须在这里导出！
     login,
     logout,
     checkLoginStatus,

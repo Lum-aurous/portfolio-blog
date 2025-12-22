@@ -431,11 +431,21 @@ onMounted(async () => {
 
   // 初始化登录状态并静默刷新资料
   const authStatus = AuthManager.checkAuthStatus()
-  if (authStatus.isLoggedIn && authStatus.isTokenValid) {
-    if (!userStore.user) userStore.login(authStatus.user, authStatus.token)
-    userStore.refreshUserInfo()
-  } else {
-    await userStore.checkLoginStatus()
+  if (authStatus.isLoggedIn) {
+    // 1. 先尝试从本地缓存立即恢复，保证 UI 不闪烁
+    if (!userStore.user) {
+      console.log('📦 正在从本地恢复用户信息...');
+      userStore.setUser(authStatus.user);
+    }
+
+    // 2. 关键：在穿透环境下，强制同步服务器最新的角色信息
+    try {
+      console.log('📡 正在同步服务器权限...');
+      await userStore.refreshUserInfo();
+      console.log('✅ 同步成功，当前角色:', userStore.user?.role);
+    } catch (err) {
+      console.error('❌ 同步用户信息失败 (可能是穿透网络超时):', err);
+    }
   }
 
   // 绑定全局事件
@@ -885,35 +895,35 @@ onUnmounted(() => {
 
 /* 2. 统一悬停效果：实现你想要的绿色光影 */
 .dropdown-item:hover {
-    /* 背景微绿 */
-    background: rgba(66, 184, 131, 0.08) !important;
-    /* 文字变绿 */
-    color: #42b883 !important;
-    /* 关键：统一添加绿色外发光 (box-shadow) */
-    box-shadow: 0 0 15px rgba(66, 184, 131, 0.2);
-    /* 也可以使用 filter 实现更有质感的光晕 */
-    filter: drop-shadow(0 0 2px rgba(66, 184, 131, 0.3));
-    /* 向右微动，增加灵动感 */
-    transform: translateX(5px);
-    /* 如果想要那种边框发光感 */
-    border-color: rgba(66, 184, 131, 0.2);
+  /* 背景微绿 */
+  background: rgba(66, 184, 131, 0.08) !important;
+  /* 文字变绿 */
+  color: #42b883 !important;
+  /* 关键：统一添加绿色外发光 (box-shadow) */
+  box-shadow: 0 0 15px rgba(66, 184, 131, 0.2);
+  /* 也可以使用 filter 实现更有质感的光晕 */
+  filter: drop-shadow(0 0 2px rgba(66, 184, 131, 0.3));
+  /* 向右微动，增加灵动感 */
+  transform: translateX(5px);
+  /* 如果想要那种边框发光感 */
+  border-color: rgba(66, 184, 131, 0.2);
 }
 
 /* 3. 特殊处理：退出登录项使用红色光影 */
 .dropdown-item.sign-out:hover {
-    background: rgba(255, 95, 86, 0.08) !important;
-    color: #ff5f56 !important;
-    box-shadow: 0 0 15px rgba(255, 95, 86, 0.2);
-    filter: drop-shadow(0 0 2px rgba(255, 95, 86, 0.3));
-    border-color: rgba(255, 95, 86, 0.2);
+  background: rgba(255, 95, 86, 0.08) !important;
+  color: #ff5f56 !important;
+  box-shadow: 0 0 15px rgba(255, 95, 86, 0.2);
+  filter: drop-shadow(0 0 2px rgba(255, 95, 86, 0.3));
+  border-color: rgba(255, 95, 86, 0.2);
 }
 
 /* 4. 确保图标也跟着变色 */
 .dropdown-item:hover .menu-icon {
-    opacity: 1;
-    color: inherit;
-    /* 让图标也带一点点光晕 */
-    filter: drop-shadow(0 0 3px currentColor);
+  opacity: 1;
+  color: inherit;
+  /* 让图标也带一点点光晕 */
+  filter: drop-shadow(0 0 3px currentColor);
 }
 
 

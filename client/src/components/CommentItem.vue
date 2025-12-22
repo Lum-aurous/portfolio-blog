@@ -1,6 +1,9 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, inject } from 'vue'
 import { useUserStore } from '@/stores/user.js'
+
+// 🔥 接收来自 ArticleDetail 的广播函数
+const triggerLightbox = inject('triggerLightbox')
 
 // 定义组件名称，用于递归调用
 defineOptions({
@@ -15,13 +18,36 @@ const props = defineProps({
     depth: {
         type: Number,
         default: 0
-    }
+    },
+    articleAuthorId: [Number, String] // 🔥 接收博主 ID
 })
+
+// 1. 判断该评论者是不是文章作者
+const isArticleAuthor = computed(() => {
+    // 1. 获取评论者的 ID (请确认后端返回的是 commenter_id 还是 user_id)
+    const commenterId = props.comment.commenter_id || props.comment.user_id;
+    
+    // 2. 对比外部传进来的文章作者 ID (props.articleAuthorId)
+    return Number(commenterId) === Number(props.articleAuthorId);
+})
+
+// 2. 作者是否赞过（直接用后端传来的布尔值）
+const isAuthorLiked = computed(() => props.comment.author_liked)
 
 const emit = defineEmits(['reply', 'like', 'dislike', 'delete'])
 const userStore = useUserStore()
-const currentUser = computed(() => userStore.user || {})
-const isAdmin = computed(() => userStore.user?.role === 'admin')
+
+// 🔥 核心权限判断：是否可以显示删除按钮
+const canDelete = computed(() => {
+    const user = userStore.user;
+    if (!user) return false;
+
+    // 管理员直接放行
+    if (user.role === 'admin') return true;
+
+    // 🔥 修改这里：用当前登录的唯一 username，比对评论对象的唯一 author_username
+    return user.username === props.comment.author_username;
+})
 
 // 状态：是否展开子评论
 const isExpanded = ref(false)
@@ -83,17 +109,23 @@ const toggleReplies = () => {
                 <!-- 用户信息和时间 -->
                 <div class="comment-header">
                     <span class="comment-author">@{{ comment.nickname }}</span>
+
+                    <span v-if="isArticleAuthor" class="author-text-green">作者</span>
+
                     <span class="comment-time">{{ formatRelativeTime(comment.created_at) }}</span>
                 </div>
 
-                <!-- 评论正文 -->
                 <div class="comment-text">
                     {{ comment.content }}
+                    <div v-if="isAuthorLiked" class="author-liked-italic">
+                        <span class="heart-icon">❤️</span> 作者赞过
+                    </div>
                 </div>
 
                 <!-- 图片展示 -->
                 <div v-if="comment.images?.length" class="comment-images">
-                    <img v-for="(img, i) in comment.images" :key="i" :src="img" class="comment-image" />
+                    <img v-for="(img, i) in comment.images" :key="i" :src="img" class="comment-image"
+                        @click="triggerLightbox(img)" title="点击查看大图" />
                 </div>
 
                 <!-- 操作按钮 -->
@@ -126,8 +158,7 @@ const toggleReplies = () => {
                     </button>
 
                     <!-- 删除按钮 -->
-                    <button v-if="isAdmin || currentUser.username === comment.nickname" class="delete-btn"
-                        @click="emit('delete', comment.id)">
+                    <button v-if="canDelete" class="delete-btn" @click="emit('delete', comment.id)">
                         <svg viewBox="0 0 24 24" width="16" height="16">
                             <path fill="currentColor"
                                 d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" />
@@ -152,7 +183,8 @@ const toggleReplies = () => {
                     <!-- 回复列表 -->
                     <div v-show="isExpanded" class="replies-list">
                         <CommentItem v-for="reply in comment.replies" :key="reply.id" :comment="reply"
-                            :depth="depth + 1" @reply="(c) => emit('reply', c)" @like="(c) => emit('like', c)"
+                            :article-author-id="props.articleAuthorId" :depth="depth + 1"
+                            @reply="(c) => emit('reply', c)" @like="(c) => emit('like', c)"
                             @dislike="(c) => emit('dislike', c)" @delete="(id) => emit('delete', id)" />
                     </div>
                 </div>
@@ -468,5 +500,117 @@ const toggleReplies = () => {
     .comment-item-wrapper {
         margin-bottom: 6px;
     }
+}
+
+/* 作者标签：名字旁边的 */
+.author-text-green {
+    color: #48cbb6;
+    /* 还原图二的青绿色 */
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 8px;
+    font-family: "Kaiti", "STKaiti", serif;
+    /* 增加一点人文气息 */
+}
+
+/* “作者赞过”：内容下方的 */
+.author-liked-italic {
+    color: #82cc9d;
+    /* 还原图一的淡绿色 */
+    font-size: 13px;
+    font-style: italic;
+    /* 必须是斜体 */
+    margin-top: 6px;
+    font-family: "Kaiti", "STKaiti", serif;
+}
+
+.heart-icon {
+    display: inline-block;
+    color: #ff5f7e;
+    /* 既然是作者的爱心，可以用粉红色 */
+    font-size: 10px;
+    margin-right: 2px;
+}
+
+/* 灯箱遮罩层 */
+.lightbox-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.9);
+    /* 深色背景 */
+    z-index: 30000;
+    /* 确保在所有弹窗之上 */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: zoom-out;
+    backdrop-filter: blur(10px);
+}
+
+/* 内容容器 */
+.lightbox-content {
+    position: relative;
+    max-width: 90vw;
+    max-height: 90vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* 图片本体 */
+.lightbox-image {
+    max-width: 100%;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+    animation: zoom-in 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+/* 关闭按钮 */
+.lightbox-close-btn {
+    position: fixed;
+    top: 20px;
+    right: 30px;
+    background: rgba(255, 255, 255, 0.1);
+    border: none;
+    color: white;
+    font-size: 30px;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: 0.3s;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.lightbox-close-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: rotate(90deg);
+}
+
+/* 进场动画 */
+@keyframes zoom-in {
+    from {
+        transform: scale(0.8);
+        opacity: 0;
+    }
+
+    to {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+.fade-enter-active,
+.fade-leave-active {
+    transition: opacity 0.3s;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+    opacity: 0;
 }
 </style>

@@ -2,9 +2,10 @@
 import { onMounted, ref, computed, watch, nextTick } from 'vue'
 import { useWallpaperStore } from '@/stores/wallpaper'
 import Navbar from '@/components/Navbar.vue'
+import Footer from '@/components/Footer.vue' // 🔥 引入页脚
 import ToastManager from '@/components/ToastManager.vue'
 import { useUserStore } from '@/stores/user.js'
-import { useRoute } from 'vue-router' // 🔥 引入 useRoute
+import { useRoute } from 'vue-router'
 import { api } from '@/utils/api'
 
 const route = useRoute() // 🔥 获取路由实例
@@ -133,6 +134,15 @@ const checkDailyWallpaperUpdate = () => {
   }
 };
 
+const showGlobalUI = computed(() => {
+  // 1. 排除后台路径
+  if (route.path.startsWith('/admin')) return false;
+  // 2. 检查路由元信息中是否显式要求隐藏
+  if (route.meta.hideFooter) return false;
+  
+  return true;
+});
+
 // ==================== 3. 生命周期 ====================
 onMounted(async () => {
   const observer = new MutationObserver(() => {
@@ -182,7 +192,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
       :class="{ 'background-loaded': imageLoaded }">
     </div>
 
-    <Navbar v-if="showNavbar" />
+    <Navbar v-if="showGlobalUI" />
 
     <main class="main-content">
       <router-view v-slot="{ Component, route }">
@@ -192,12 +202,16 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
       </router-view>
     </main>
 
+    <Footer v-if="showGlobalUI" />
+
     <transition name="fade">
       <div v-if="!isAppReady" class="loading-overlay" :class="{ 'dark-loading': isSystemDark }">
         <div class="loading-spinner"></div>
         <p class="loading-text">正在唤醒世界...</p>
       </div>
     </transition>
+
+
   </div>
 </template>
 

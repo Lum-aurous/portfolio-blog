@@ -3,9 +3,14 @@ import axios from "axios";
 import { message } from "./message.js";
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || "http://localhost:3000/api",
-  timeout: 10000,
-  withCredentials: true, // 确保发送凭据
+  // 🔥 核心修改：改为相对路径。
+  // 这样无论域名是 localhost 还是 cpolar，它都会自动请求当前域名下的 /api
+  baseURL: import.meta.env.VITE_API_BASE_URL || "/api", 
+  
+  // 🔥 优化：内网穿透带宽低，上传大图容易超时，建议把 10s 改为 30s 或更高
+  timeout: 60000, // 👈 将超时时间延长到 60 秒
+  
+  withCredentials: true,
   headers: {
     "Content-Type": "application/json",
   },

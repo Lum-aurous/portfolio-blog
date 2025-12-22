@@ -1,15 +1,12 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch, provide } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user.js'
 import { message } from '@/utils/message.js'
 import { api } from '@/utils/api'
-import MarkdownIt from 'markdown-it'
-import 'github-markdown-css/github-markdown-light.css'
 import html2canvas from 'html2canvas'
 import CommentItem from '@/components/CommentItem.vue'
 
-const md = new MarkdownIt({ html: true, linkify: true, breaks: true })
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
@@ -36,6 +33,36 @@ const userColumns = ref([])
 const isCreatingInModal = ref(false) // 🔥 新增：是否处于"创建模式"
 const newColumnData = ref({ name: '', description: '' }) // 🔥 新增：快捷创建表单
 const isSubmitting = ref(false)
+
+// 🔥 新增：图片预览（灯箱）逻辑
+const isLightboxOpen = ref(false)
+const lightboxUrl = ref('')
+
+const openLightbox = (url) => {
+    // 1. 如果 url 是缩略图（比如带 thumb_ 的），可以尝试正则替换获取原图
+    // 如果你的后端已经是直接存的原图地址，则直接赋值
+    lightboxUrl.value = getProxyUrl(url)
+
+    isLightboxOpen.value = true
+
+    // 2. 锁定网页滚动
+    document.body.style.overflow = 'hidden'
+}
+
+const closeLightbox = () => {
+    isLightboxOpen.value = false
+    document.body.style.overflow = 'auto'
+}
+
+const handleEsc = (e) => {
+    if (e.key === 'Escape' && isLightboxOpen.value) {
+        closeLightbox()
+    }
+}
+
+
+// 🔥 核心：将打开函数“广播”给所有子孙组件
+provide('triggerLightbox', openLightbox)
 
 // 🔥 侧边栏显隐 & 进度逻辑
 const showSidebar = ref(true)
@@ -316,12 +343,6 @@ const totalCommentCount = computed(() => {
     return countAllComments(comments.value)
 })
 
-// Markdown 渲染
-const renderedContent = computed(() => {
-    if (!article.value || !article.value.content) return ''
-    return md.render(article.value.content)
-})
-
 const formatDate = (dateStr) => {
     if (!dateStr) return ''
     const date = new Date(dateStr)
@@ -382,8 +403,48 @@ const fetchComments = async () => {
     }
 }
 
+/**
+ * 前端图片压缩工具 (Canvas版)
+ */
+const compressImage = (file, { quality = 0.6, maxWidth = 1000 } = {}) => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (e) => {
+            const img = new Image();
+            img.src = e.target.result;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+                if (width > maxWidth) {
+                    height = (maxWidth / width) * height;
+                    width = maxWidth;
+                }
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                canvas.toBlob((blob) => {
+                    if (blob) {
+                        const compressedFile = new File([blob], file.name, {
+                            type: 'image/jpeg',
+                            lastModified: Date.now(),
+                        });
+                        resolve(compressedFile);
+                    } else {
+                        reject(new Error('压缩失败'));
+                    }
+                }, 'image/jpeg', quality);
+            };
+        };
+        reader.onerror = (err) => reject(err);
+    });
+};
+
 const replyTarget = ref(null)
 
+// 提交评论
 const submitComment = async () => {
     if (!isLoggedIn.value) return message.error('您还没有登录,不可进行评论！!')
 
@@ -395,17 +456,34 @@ const submitComment = async () => {
 
     try {
         let imageUrls = []
+
+        // 🔥 核心优化：如果选择了图片，先进行并行压缩
         if (selectedImages.value.length) {
+            message.info(`正在优化 ${selectedImages.value.length} 张图片...`);
+
+            // 使用 Promise.all 并行压缩，速度更快
+            const compressedFiles = await Promise.all(
+                selectedImages.value.map(img =>
+                    compressImage(img.file, { quality: 0.5, maxWidth: 1200 })
+                )
+            );
+
             const formData = new FormData()
-            selectedImages.value.forEach(i => formData.append('images', i.file))
+            compressedFiles.forEach(file => formData.append('images', file))
+
+            console.log('📡 开始上传压缩后的评论图片...');
             const uploadRes = await api.post('/upload/comment-images', formData, {
-                headers: { 'Content-Type': 'multipart/form-data' }
+                headers: { 'Content-Type': 'multipart/form-data' },
+                // 针对多图上传，可以单独给这个请求设置超长超时
+                timeout: 120000
             })
+
             if (uploadRes.data.success) {
                 imageUrls = uploadRes.data.data.urls
             }
         }
 
+        // 提交评论主体
         const payload = {
             article_id: parseInt(route.params.id),
             content: commentContent.value,
@@ -416,20 +494,22 @@ const submitComment = async () => {
         const res = await api.post('/comments', payload)
 
         if (res.data.success) {
-            message.success('发送成功！')
+            message.success('🎉 评论成功！')
             commentContent.value = ''
             selectedImages.value = []
-
-            if (replyTarget.value) {
-                expandedReplies.value.add(replyTarget.value.rootId)
-            }
-
+            if (replyTarget.value) expandedReplies.value.add(replyTarget.value.rootId)
             cancelReply()
             fetchComments()
             api.post(`/articles/${route.params.id}/update-comments-count`)
         }
     } catch (e) {
-        message.error('评论失败: ' + (e.response?.data?.message || e.message))
+        console.error('评论流程出错:', e);
+        const errorMsg = e.response?.data?.message || e.message;
+        if (e.code === 'ECONNABORTED') {
+            message.error('❌ 上传超时，请减少图片数量或压缩后上传');
+        } else {
+            message.error('评论失败: ' + errorMsg)
+        }
     } finally {
         isSubmitting.value = false
     }
@@ -463,25 +543,47 @@ const handleReply = (comment) => {
 const handleAction = async (comment, action) => {
     if (!isLoggedIn.value) return message.warning('请登录后参与互动')
 
-    const originalState = { liked: comment.is_liked, disliked: comment.is_disliked, count: comment.like_count }
+    // 记录原始状态用于失败回滚
+    const originalState = {
+        liked: comment.is_liked,
+        disliked: comment.is_disliked,
+        count: comment.like_count,
+        authorLiked: comment.author_liked // 🔥 记录这个状态
+    }
 
     if (action === 'like') {
         if (comment.is_liked) {
+            // 取消点赞逻辑
             comment.is_liked = false
             comment.like_count--
+
+            // 🔥 新增：如果当前用户是博主，取消赞时立即隐藏“作者赞过”
+            if (Number(currentUser.value.id) === Number(article.value.author_id)) {
+                comment.author_liked = false
+            }
         } else {
+            // 点赞逻辑
             comment.is_liked = true
             comment.like_count++
             if (comment.is_disliked) comment.is_disliked = false
+
+            // 🔥 新增：如果当前用户是博主，点赞时立即显示“作者赞过”
+            if (Number(currentUser.value.id) === Number(article.value.author_id)) {
+                comment.author_liked = true
+            }
         }
     } else if (action === 'dislike') {
         if (comment.is_disliked) {
             comment.is_disliked = false
         } else {
             comment.is_disliked = true
+            // 🔥 如果作者改点“踩”，也要立刻同步取消“作者赞过”的显示
             if (comment.is_liked) {
                 comment.is_liked = false
                 comment.like_count--
+            }
+            if (Number(currentUser.value.id) === Number(article.value.author_id)) {
+                comment.author_liked = false
             }
         }
     }
@@ -489,7 +591,9 @@ const handleAction = async (comment, action) => {
     try {
         await api.post(`/comments/${comment.id}/action`, { action })
     } catch (e) {
+        // 如果后端报错，回滚所有状态
         Object.assign(comment, originalState)
+        comment.author_liked = originalState.authorLiked // 🔥 回滚作者赞过状态
         message.error('操作失败')
     }
 }
@@ -518,16 +622,6 @@ watch(commentContent, (newVal) => {
     }
 })
 
-// 版权信息
-const copyrightInfo = ref('')
-const fetchCopyright = async () => {
-    const defaultText = `1. 本网站部分内容可能来源于网络,仅供大家学习与参考，如有侵权，请联系站长进行删除处理。\n2. 本网站一切内容不代表本站立场，并不代表本站赞同其观点和对其真实性负责。\n3. 版权&许可请详阅 版权声明`
-    copyrightInfo.value = defaultText
-}
-
-// 🔥 1. 新增版权弹窗相关的响应式变量
-const showCopyrightModal = ref(false);
-const copyrightDetailMD = ref(''); // 存储从后端拿到的 Markdown 原文
 
 // 🔥 1. 新增一个将十六进制颜色转换为 RGB 的工具函数
 const hexToRgb = (hex) => {
@@ -543,26 +637,6 @@ const contentStyle = computed(() => ({
     '--highlight-color-rgb': hexToRgb(highlightColor.value)
 }));
 
-// 🔥 4. 获取版权说明书的方法
-const handleShowCopyrightManual = async () => {
-    try {
-        // 🔥 这里的 key 必须和后端白名单、数据库中的 key 完全一致
-        const res = await api.get('/configs/copyright_detail');
-        if (res.data.success) {
-            copyrightDetailMD.value = res.data.data;
-            showCopyrightModal.value = true;
-        }
-    } catch (err) {
-        // 如果后端返回 400，会走到这里
-        console.error("加载版权详情失败:", err);
-        message.error('无法加载版权说明书');
-    }
-};
-
-// 🔥 5. 渲染说明书内容的计算属性
-const renderedCopyright = computed(() => {
-    return md.render(copyrightDetailMD.value || '');
-});
 
 // 订阅功能
 const isSubscribed = ref(false)
@@ -693,9 +767,9 @@ const scrollToComments = () => {
 onMounted(() => {
     fetchArticle()
     fetchComments()
-    fetchCopyright()
     window.scrollTo(0, 0)
     document.addEventListener('click', closeEmojiPicker)
+    window.addEventListener('keydown', handleEsc)
 
     // 监听滚动和窗口大小变化
     window.addEventListener('scroll', handleSmartSidebar, { passive: true })
@@ -711,6 +785,7 @@ onUnmounted(() => {
     document.removeEventListener('click', closeEmojiPicker)
     window.removeEventListener('scroll', handleSmartSidebar)
     window.removeEventListener('resize', handleSmartSidebar)
+    window.removeEventListener('keydown', handleEsc)
     if (rafId) cancelAnimationFrame(rafId)
 })
 </script>
@@ -724,9 +799,11 @@ onUnmounted(() => {
                     <svg class="progress-circle" viewBox="0 0 44 44">
                         <circle class="progress-circle-bg" cx="22" cy="22" r="20"></circle>
                         <circle class="progress-circle-bar" cx="22" cy="22" r="20" :style="{
-                            strokeDashoffset: 125.6 - (125.6 * scrollPercent) / 100,
+                            // 🔥 添加逻辑保护：如果 scrollPercent 是 NaN 或 0，给个默认值 125.6 (即进度为0)
+                            strokeDashoffset: (isNaN(scrollPercent) || !scrollPercent) ? 125.6 : (125.6 - (125.6 * scrollPercent) / 100),
                             stroke: progressColor
-                        }"></circle>
+                        }">
+                        </circle>
                     </svg>
                     <span class="percent-text" :style="{ color: progressColor }">
                         {{ scrollPercent }}<small>%</small>
@@ -814,21 +891,6 @@ onUnmounted(() => {
                     文章最后更新于 {{ formatFullTime(article.updated_at || article.created_at) }}
                 </div>
 
-                <div class="copyright-box">
-                    <p>
-                        <strong>作者：</strong>
-                        {{ isLoggedIn ? (currentUser.nickname || currentUser.username) : (article.author_name ||
-                            'Veritas') }}
-                    </p>
-                    <span v-for="(line, idx) in copyrightInfo.split('\n').slice(0, 2)" :key="idx"
-                        style="display:block; margin-bottom: 4px;">
-                        {{ line }}
-                    </span>
-                    <p style="margin-top: 8px;">
-                        3. 版权&许可请详阅 <span class="copyright-link-btn" @click="handleShowCopyrightManual">版权声明</span>
-                    </p>
-                </div>
-
                 <div class="action-buttons-row">
                     <button class="btn-large btn-like" :class="{ active: isLiked }" @click="handleLike">
                         <span class="icon">{{ isLiked ? '❤️' : '🤍' }}</span>
@@ -899,8 +961,9 @@ onUnmounted(() => {
                     </div>
                     <div class="comments-list">
                         <CommentItem v-for="comment in comments" :key="comment.id" :comment="comment" :depth="0"
-                            @reply="handleReply" @like="(c) => handleAction(c, 'like')"
-                            @dislike="(c) => handleAction(c, 'dislike')" @delete="deleteComment" />
+                            :article-author-id="article.author_id" @reply="handleReply"
+                            @like="(c) => handleAction(c, 'like')" @dislike="(c) => handleAction(c, 'dislike')"
+                            @delete="deleteComment" />
 
                         <div v-if="comments.length === 0" class="empty-state">
                             暂无评论，快来抢沙发~
@@ -1029,15 +1092,14 @@ onUnmounted(() => {
             </div>
         </Teleport>
 
-        <Teleport to="body">
-            <Transition name="fade-zoom">
-                <div v-if="showCopyrightModal" class="art-paper-overlay" @click="showCopyrightModal = false">
-                    <div class="art-paper-container" @click.stop>
-                        <div class="close-paper-btn" @click="showCopyrightModal = false">✕</div>
 
-                        <div class="art-paper-content">
-                            <div class="markdown-body" v-html="renderedCopyright"></div>
-                        </div>
+
+        <Teleport to="body">
+            <Transition name="fade">
+                <div v-if="isLightboxOpen" class="lightbox-overlay" @click="closeLightbox">
+                    <div class="lightbox-content">
+                        <img :src="lightboxUrl" class="lightbox-image" @click.stop alt="预览大图" />
+                        <button class="lightbox-close-btn" @click="closeLightbox">✕</button>
                     </div>
                 </div>
             </Transition>
@@ -1327,17 +1389,6 @@ onUnmounted(() => {
     color: #999;
     margin-top: 40px;
     text-align: left;
-}
-
-.copyright-box {
-    background: #eef7fe;
-    border-left: 3px solid #42b983;
-    padding: 20px;
-    border-radius: 4px;
-    margin-top: 30px;
-    color: #333;
-    font-size: 0.9rem;
-    line-height: 1.8;
 }
 
 .action-buttons-row {
@@ -1786,7 +1837,7 @@ textarea:disabled {
     z-index: 99;
 }
 
-/* ==================== 🔥 终极版：垂直升空火箭 ==================== */
+/* ==================== 🔥 垂直升空火箭 ==================== */
 
 /* 1. 按钮容器 */
 .tool-btn.rocket-btn {
@@ -1816,11 +1867,10 @@ textarea:disabled {
     display: flex;
     justify-content: center;
     align-items: center;
-    /* 🔥 核心修正：因为原图标是向右上方(45度)的，我们逆时针转45度，让它笔直朝上 */
-    transform: rotate(-45deg);
+    /* 🔥 修改：从 -45deg 改为 0deg，让它笔直向上 */
+    transform: rotate(0deg);
     transition: transform 0.4s ease;
     transform-style: preserve-3d;
-    /* 保留子元素的 3D 效果 */
 }
 
 /* 3. 火箭图标本体 */
@@ -1828,7 +1878,6 @@ textarea:disabled {
     width: 28px;
     height: 28px;
     filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1));
-    /* 给火箭本体加一点投影，增加悬浮感 */
 }
 
 /* ========== 状态 A: 待机/悬停 ========== */
@@ -1888,26 +1937,26 @@ textarea:disabled {
 /* 待机浮动 */
 @keyframes floating-idle {
     0% {
-        transform: rotate(-45deg) translateY(0);
+        /* 🔥 修改：保持 0deg */
+        transform: rotate(0deg) translateY(0);
     }
 
     100% {
-        transform: rotate(-45deg) translateY(-4px);
+        /* 🔥 修改：保持 0deg */
+        transform: rotate(0deg) translateY(-4px);
     }
-
-    /* 垂直轻微浮动 */
 }
 
 /* 🔥 发射：垂直旋转直插云霄 (Drill Effect) */
 @keyframes rocket-drilling {
     0% {
-        /* 起始：修正角度 + 0度旋转 */
-        transform: rotate(-45deg) rotateY(0deg);
+        /* 🔥 修改：起始角度设为 0deg */
+        transform: rotate(0deg) rotateY(0deg);
     }
 
     100% {
-        /* 结束：修正角度 + 360度旋转 (绕着垂直中轴线转) */
-        transform: rotate(-45deg) rotateY(360deg);
+        /* 🔥 修改：结束角度设为 0deg，旋转 360 度 */
+        transform: rotate(0deg) rotateY(360deg);
     }
 }
 
@@ -2705,7 +2754,8 @@ textarea:disabled {
     margin-bottom: 0;
     padding: 0 20px;
     position: relative;
-    transition: all 0.5s ease; /* 增加整体切换时的过渡感 */
+    transition: all 0.5s ease;
+    /* 增加整体切换时的过渡感 */
 }
 
 .preface-content {
@@ -2723,7 +2773,8 @@ textarea:disabled {
     /* 🔥 联动字体颜色：紧跟主题高亮色 */
     color: var(--highlight-color);
     font-style: italic;
-    font-family: "Kaiti", "STKaiti", serif; /* 使用更具文学气息的字体 */
+    font-family: "Kaiti", "STKaiti", serif;
+    /* 使用更具文学气息的字体 */
     margin: 0;
     text-align: justify;
     transition: color 0.5s ease;
@@ -2741,7 +2792,8 @@ textarea:disabled {
 .dashed-line.preface-gap {
     margin-top: 20px;
     margin-bottom: 30px;
-    border-top: 1px dashed rgba(var(--highlight-color-rgb), 0.3); /* 虚线也带一点主题色调 */
+    border-top: 1px dashed rgba(var(--highlight-color-rgb), 0.3);
+    /* 虚线也带一点主题色调 */
     transition: border-color 0.5s ease;
 }
 
@@ -2758,8 +2810,15 @@ textarea:disabled {
     transition: color 0.5s ease;
 }
 
-.quote-left { top: -5px; left: 10px; }
-.quote-right { bottom: -35px; right: 10px; }
+.quote-left {
+    top: -5px;
+    left: 10px;
+}
+
+.quote-right {
+    bottom: -35px;
+    right: 10px;
+}
 
 /* 🔥 联动底部短下划线 */
 .preface-divider {
@@ -2770,7 +2829,8 @@ textarea:disabled {
     margin: 25px auto 0;
     border-radius: 10px;
     opacity: 0.8;
-    box-shadow: 0 2px 10px rgba(var(--highlight-color-rgb), 0.2); /* 增加淡淡的同色系投影 */
+    box-shadow: 0 2px 10px rgba(var(--highlight-color-rgb), 0.2);
+    /* 增加淡淡的同色系投影 */
     transition: all 0.5s ease;
 }
 
@@ -2778,214 +2838,72 @@ textarea:disabled {
     margin-top: 0;
 }
 
-/* 艺术纸 Modal 覆盖层 */
-.art-paper-overlay {
+/* 1. 遮罩层：全屏铺满，背景加深 */
+.lightbox-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
-    backdrop-filter: blur(8px);
-    z-index: 20000;
+    background: rgba(0, 0, 0, 0.9);
+    z-index: 99999;
     display: flex;
     justify-content: center;
     align-items: center;
-}
-
-/* 罗马纸/艺术纸容器 */
-.art-paper-container {
-    width: 90%;
-    max-width: 600px;
-    max-height: 80vh;
-    background-color: #fcfaf2;
-    /* 纸张米黄色 */
-    background-image:
-        radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 100%),
-        url('https://www.transparenttextures.com/patterns/papyrus.png');
-    /* 纸张纹理 */
-    padding: 50px 40px;
-    border-radius: 4px;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.15), inset 0 0 100px rgba(220, 180, 120, 0.1);
-    position: relative;
-    overflow-y: auto;
-    border: 1px solid #e8dcc4;
-}
-
-/* 纸张装饰边缘（可选） */
-.art-paper-container::before {
-    content: '';
-    position: absolute;
-    top: 10px;
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-    border: 1px solid rgba(180, 140, 90, 0.2);
-    pointer-events: none;
-}
-
-/* 艺术字体排版 */
-.art-paper-content {
-    /* 推荐使用 楷体 或 寻找专门的手写字体 webfont */
-    font-family: "Kaiti", "STKaiti", "Dancing Script", cursive;
-    color: #4a3c28;
-    line-height: 2;
-    font-size: 1.15rem;
-}
-
-/* 深度选择器处理 Markdown 渲染出的标签 */
-.art-paper-content :deep(h1) {
-    text-align: center;
-    color: #8b5a2b;
-    margin-bottom: 30px;
-    font-size: 1.8rem;
-}
-
-.art-paper-content :deep(h3) {
-    color: #d2a679;
-    border-bottom: 1px dashed #d2a679;
-    display: inline-block;
-    margin-top: 20px;
-}
-
-/* 🔥 关键优化：漂亮颜色的波浪下划线 */
-.art-paper-content :deep(del) {
-    text-decoration: none;
-    /* 去掉原有的删除线 */
-    text-decoration: underline wavy #ff7e5f;
-    /* 橙红色波浪线 */
-    color: #e67e22;
-    font-weight: bold;
-    padding: 0 4px;
-}
-
-/* 关闭按钮 */
-.close-paper-btn {
-    position: absolute;
-    top: 20px;
-    right: 20px;
-    font-size: 24px;
-    color: #8b5a2b;
-    cursor: pointer;
-    opacity: 0.6;
-    transition: 0.3s;
-}
-
-.close-paper-btn:hover {
-    opacity: 1;
-    transform: rotate(90deg);
-}
-
-/* 自定义滚动条样式 */
-.art-paper-container::-webkit-scrollbar {
-    width: 4px;
-}
-
-.art-paper-container::-webkit-scrollbar-thumb {
-    background: #d2a679;
-    border-radius: 10px;
-}
-
-/* 版权点击按钮样式 */
-.copyright-link-btn {
-    color: #42b983;
-    font-weight: bold;
-    cursor: pointer;
-    text-decoration: underline;
-    transition: all 0.3s;
-}
-
-.copyright-link-btn:hover {
-    color: #ff7e5f;
-}
-
-/* 艺术纸 Overlay */
-.art-paper-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    cursor: zoom-out;
+    /* 提示用户：点这里可以退出 */
     backdrop-filter: blur(10px);
-    z-index: 20000;
+}
+
+/* 2. 图片容器 */
+.lightbox-content {
+    position: relative;
     display: flex;
     justify-content: center;
     align-items: center;
+    max-width: 95vw;
+    max-height: 95vh;
 }
 
-/* 艺术纸（罗马纸/羊皮纸）容器 */
-.art-paper-container {
-    width: 90%;
-    max-width: 650px;
-    max-height: 85vh;
-    background-color: #fcfaf2;
-    /* 暖纸色 */
-    /* 纸张纹理 + 渐变阴影 */
-    background-image:
-        radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 100%),
-        url('https://www.transparenttextures.com/patterns/papyrus.png');
-    padding: 60px 50px;
+/* 3. 核心：图片本体样式 */
+.lightbox-image {
+    /* 🔥 关键逻辑 */
+    max-width: 100%;
+    /* 绝不超出浏览器宽度 */
+    max-height: 95vh;
+    /* 绝不超出浏览器高度（留5%余量） */
+    width: auto;
+    /* 保持图片原有的宽度比例 */
+    height: auto;
+    /* 保持图片原有的高度比例 */
+
+    object-fit: contain;
+    /* 确保图片完整显示，不被裁剪 */
     border-radius: 4px;
-    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.2), inset 0 0 100px rgba(220, 180, 120, 0.15);
-    position: relative;
-    overflow-y: auto;
-    border: 1px solid #e8dcc4;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+
+    /* 进场动画：轻微放大弹出 */
+    animation: lightbox-zoom 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* 纸张内容排版 */
-.art-paper-content {
-    /* 这里你可以引入专门的 WebFont，或者使用常见的楷体 */
-    font-family: "Kaiti", "STKaiti", "Microsoft YaHei", serif;
-    color: #4a3c28;
-    line-height: 2.2;
-}
-
-.art-paper-content :deep(h1) {
-    text-align: center;
-    color: #8b5a2b;
-    font-size: 2rem;
-    margin-bottom: 40px;
-    border: none !important;
-}
-
-.art-paper-content :deep(h3) {
-    color: #d2a679;
-    border-bottom: 2px dashed rgba(210, 166, 121, 0.3);
-    padding-bottom: 5px;
-    margin-top: 30px;
-}
-
-/* 🔥 亮点：波浪线强调样式（对应 MD 的 ~~文字~~） */
-.art-paper-content :deep(del) {
-    text-decoration: none;
-    background: linear-gradient(to right, rgba(255, 126, 95, 0.1), rgba(255, 126, 95, 0.05));
-    border-bottom: 2px wavy #ff7e5f;
-    /* 橙红色波浪 */
-    color: #e67e22;
-    font-weight: bold;
-    padding: 0 4px;
-}
-
-.close-paper-btn {
+/* 关闭按钮位置微调 */
+.lightbox-close-btn {
     position: absolute;
-    top: 25px;
-    right: 25px;
-    font-size: 24px;
-    color: #8b5a2b;
+    top: -40px;
+    right: 0;
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 32px;
     cursor: pointer;
-    opacity: 0.5;
-    transition: 0.3s;
+    background: none;
+    border: none;
 }
 
-.close-paper-btn:hover {
-    opacity: 1;
-    transform: rotate(90deg);
-}
+@keyframes lightbox-zoom {
+    from {
+        transform: scale(0.9);
+        opacity: 0;
+    }
 
-/* 进场动画 */
-.fade-zoom-enter-active,
-.fade-zoom-leave-active {
-    transition: all 0.4s ease;
-}
-
-.fade-zoom-enter-from,
-.fade-zoom-leave-to {
-    opacity: 0;
-    transform: scale(0.9) translateY(20px);
+    to {
+        transform: scale(1);
+        opacity: 1;
+    }
 }
 </style>

@@ -1,13 +1,13 @@
 <script setup>
 import { ref, onMounted, computed, onUnmounted, watch, nextTick } from 'vue'
-import { useRouter, useRoute } from 'vue-router' // 🔥 修正：从这里引入 useRoute
+import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user.js'
 import { Country, State, City } from 'country-state-city'
 import { message } from '@/utils/message.js'
 import { api } from '@/utils/api'
 
 const router = useRouter()
-const route = useRoute() // 🔥 修正：正确初始化 route 实例
+const route = useRoute() // 
 const userStore = useUserStore()
 
 const activeTab = ref('personal')

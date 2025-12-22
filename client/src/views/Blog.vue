@@ -1103,11 +1103,6 @@ onUnmounted(() => {
 
             </section>
         </main>
-
-        <footer class="page-footer">
-            <p>Designed with ❤️ by {{ profile.name }}</p>
-            <p>© 2025 Veritas Blog. All Rights Reserved.</p>
-        </footer>
     </div>
     <Transition name="zoom">
         <div v-if="isPreviewVisible" class="preview-overlay" @click="closePreview">
@@ -2357,14 +2352,6 @@ onUnmounted(() => {
     padding: 40px;
     font-size: 1.1rem;
     grid-column: 1 / -1;
-}
-
-.page-footer {
-    text-align: center;
-    padding: 40px;
-    background: #2c3e50;
-    color: rgba(255, 255, 255, 0.6);
-    margin-top: 60px;
 }
 
 @media (max-width: 900px) {

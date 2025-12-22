@@ -142,66 +142,34 @@ if (!fs.existsSync("logs")) {
 }
 
 // ==========================================
-// 🔥 CORS 配置
-// ==========================================
-// const corsOptions = {
-//   origin: function (origin, callback) {
-//     const allowedOrigins = process.env.ALLOWED_ORIGINS
-//       ? process.env.ALLOWED_ORIGINS.split(",")
-//       : ["http://localhost:5173"];
-
-//     const cpolarRegex = /^https?:\/\/[a-z0-9-]+\.cpolar\.(cn|io)$/;
-
-//     if (
-//       !origin ||
-//       allowedOrigins.includes(origin) ||
-//       cpolarRegex.test(origin)
-//     ) {
-//       callback(null, true);
-//     } else {
-//       logger.warn(`❌ CORS 拒绝: ${origin}`);
-//       callback(new Error("Not allowed by CORS"));
-//     }
-//   },
-//   credentials: true,
-// };
-
-// app.use(cors(corsOptions));
-// app.options(/.*/, cors(corsOptions));
-
-// ==========================================
-// 🔥 CORS 配置 - 修复版
-// ==========================================
-// ==========================================
-// 🔥 CORS 配置
+// 🔥 CORS 配置 - 修正版
 // ==========================================
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(",")
-      : ["http://localhost:5173", "http://localhost:3000"];
+      : ["http://localhost:5173", "http://localhost:5174"];
 
-    // 🔥 自动允许所有 cpolar 域名
-    const cpolarRegex = /^https?:\/\/[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)*\.cpolar\.(cn|io)(:\d+)?$/;
-    
+    // 🚀 优化后的正则：支持多级子域名，如 xxx.r7.cpolar.cn 或 xxx.cpolar.io
+    const cpolarRegex = /^https?:\/\/([a-z0-9-]+\.)+cpolar\.(cn|io|top)$/;
+
     if (
       !origin ||
       allowedOrigins.includes(origin) ||
-      cpolarRegex.test(origin) ||
-      origin.includes('.cpolar.') ||
-      origin.includes('localhost')
+      cpolarRegex.test(origin)
     ) {
       callback(null, true);
     } else {
+      // 调试：如果还是报错，这行日志能帮你看到究竟是哪个地址被拒了
       logger.warn(`❌ CORS 拒绝: ${origin}`);
       callback(new Error("Not allowed by CORS"));
     }
   },
   credentials: true,
-  optionsSuccessStatus: 200
 };
 
 app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 // ==========================================
 // 🔥 优化5: 请求体解析（添加限制）
@@ -2883,9 +2851,9 @@ app.get("/api/current-user", authenticateToken, async (req, res) => {
     const userId = req.user.id;
 
     const [results] = await dbPool.query(
-      `SELECT id, username, role, avatar, banner, nickname, email, phone, created_at 
+      `SELECT id, username, role, avatar, banner, nickname, email, phone, gender, birthday, created_at 
        FROM users 
-       WHERE id = ?`,
+       WHERE id = ?`, // 👈 这里也建议补全字段
       [userId]
     );
 
@@ -3228,8 +3196,10 @@ app.post(
 app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
   try {
     const id = req.params.id;
+    const currentUsername = req.user.username; // 从 JWT 中解析出的当前登录用户名
+    const currentUserRole = req.user.role; // 从 JWT 中解析出的当前登录角色
 
-    // 查询评论
+    // 1. 先查出这条评论到底是谁发的
     const [comments] = await dbPool.query(
       "SELECT nickname FROM comments WHERE id = ?",
       [id]
@@ -3239,25 +3209,29 @@ app.delete("/api/comments/:id", authenticateToken, async (req, res) => {
       return apiResponse.error(res, "评论不存在", 404);
     }
 
-    const comment = comments[0];
-
-    // 检查权限：只有评论作者或管理员可以删除
-    if (comment.nickname !== req.user.username && req.user.role !== "admin") {
-      return apiResponse.error(res, "无权删除此评论", 403);
+    const commentOwner = comments[0].nickname; // 数据库里存的作者账号名
+    // 2. 核心权限判断
+    // 如果 【当前用户不是作者】 且 【当前用户不是管理员】，则拒绝操作
+    if (commentOwner !== currentUsername && currentUserRole !== "admin") {
+      logger.warn(
+        `🚫 非法删除尝试: 用户 ${currentUsername} 试图删除 ${commentOwner} 的评论`
+      );
+      return apiResponse.error(res, "权限不足，您只能删除自己的评论", 403);
     }
 
+    // 3. 执行删除
     await dbPool.query("DELETE FROM comments WHERE id = ?", [id]);
 
-    logger.info(`评论删除成功: ID=${id}, 操作者=${req.user.username}`);
+    logger.info(`🗑️ 评论删除成功: ID=${id}, 操作者=${currentUsername}`);
     apiResponse.success(res, "评论已删除");
   } catch (err) {
     logger.error("删除评论失败:", err);
-    apiResponse.error(res, "删除失败");
+    apiResponse.error(res, "服务器繁忙，删除失败");
   }
 });
 
 // ==========================================
-// 🔥 获取评论列表（修复版）
+// 🔥 获取评论列表
 // ==========================================
 app.get("/api/comments", async (req, res) => {
   try {
@@ -3279,20 +3253,29 @@ app.get("/api/comments", async (req, res) => {
       }
     }
 
-    // 2. 查询所有评论（平铺数据）
+    // 2. 查询所有评论（修正版 SQL）
     const [rows] = await dbPool.query(
       `
-      SELECT 
-        c.*, 
-        u.avatar, 
-        u.nickname as user_nickname,
-        (SELECT COUNT(*) FROM comment_interactions WHERE comment_id = c.id AND action_type = 1) as like_count,
-        (SELECT action_type FROM comment_interactions WHERE comment_id = c.id AND user_id = ?) as current_action
-      FROM comments c 
-      LEFT JOIN users u ON c.nickname = u.username 
-      WHERE c.article_id = ?
-      ORDER BY c.created_at ASC 
-      `,
+  SELECT 
+    c.*, 
+    u.avatar, 
+    u.nickname as user_nickname,
+    u.id as commenter_id, -- 🔥 新增：查出评论者的用户ID，方便前端比对
+    a.author_id as article_author_id, -- 🔥 新增：直接查出所属文章的作者ID
+    (SELECT COUNT(*) FROM comment_interactions WHERE comment_id = c.id AND action_type = 1) as like_count,
+    (SELECT action_type FROM comment_interactions WHERE comment_id = c.id AND user_id = ?) as current_action, -- 👈 这里补上逗号
+    
+    -- 🔥 检查文章作者是否点赞
+    (SELECT COUNT(*) FROM comment_interactions ci 
+     JOIN articles a2 ON a2.id = c.article_id 
+     WHERE ci.comment_id = c.id AND ci.user_id = a2.author_id AND ci.action_type = 1) as author_liked
+     
+  FROM comments c 
+  LEFT JOIN users u ON c.nickname = u.username 
+  LEFT JOIN articles a ON c.article_id = a.id -- 🔥 新增：关联文章表
+  WHERE c.article_id = ?
+  ORDER BY c.created_at ASC 
+  `,
       [currentUserId, article_id]
     );
 
@@ -3319,14 +3302,11 @@ app.get("/api/comments", async (req, res) => {
       return {
         id: row.id,
         parent_id: row.parent_id || null,
-
-        // 🔥 核心修复：优先使用 users 表里的 nickname (用户昵称)，如果没有才用 c.nickname (用户名)
-        // 这样前端看到的是 "Big"，但后台关联用的是 "user_7qxtgi"
+        // 这个用于给用户看（可能是“大帅哥”）
         nickname: row.user_nickname || row.nickname || "匿名用户",
-
-        // 现在因为 JOIN 成功了，avatar 就能取到了
-        avatar:
-          row.avatar || "https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg",
+        // 🔥 新增：这个用于给程序逻辑比对（只能是 "user_12345"）
+        author_username: row.nickname,
+        avatar: row.avatar || "...",
         content: row.content || "",
         images: images,
         created_at: row.created_at,
@@ -3335,6 +3315,10 @@ app.get("/api/comments", async (req, res) => {
         is_disliked: row.current_action === -1,
         replies: [],
         level: 0,
+        author_username: row.nickname, // 发评人的 username
+        commenter_id: row.commenter_id, // 🔥 发评人的 ID
+        article_author_id: row.article_author_id, // 🔥 文章作者的 ID
+        author_liked: !!row.author_liked, // 转换成布尔值
       };
     });
 
@@ -3469,10 +3453,24 @@ app.get("/api/user/profile", async (req, res) => {
     const { username } = req.query;
     if (!username) return apiResponse.error(res, "缺少用户名参数", 400);
 
-    // 1. 获取用户基础资料 (加上 banner 字段 👈)
+    // 1. 获取用户基础资料 - 补全了 email, phone, gender, birthday
     const [userResults] = await dbPool.query(
-      `SELECT id, username, nickname, avatar, banner, region, bio, social_link, role, created_at 
-       FROM users WHERE username = ?`,
+      `SELECT 
+    id, 
+    username, 
+    nickname, 
+    email,     -- 补上
+    phone,     -- 补上
+    gender,    -- 补上
+    birthday,  -- 补上
+    avatar, 
+    banner, 
+    region, 
+    bio, 
+    social_link, 
+    role, 
+    created_at 
+   FROM users WHERE username = ?`,
       [username]
     );
 
@@ -4654,9 +4652,7 @@ app.get("/api/proxy-image", async (req, res) => {
   }
 });
 
-app.options("/api/proxy-image", (req, res) =>
-  res.sendStatus(200)
-);
+app.options("/api/proxy-image", (req, res) => res.sendStatus(200));
 
 // ==========================================
 // 静态文件服务

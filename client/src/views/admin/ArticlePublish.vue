@@ -36,35 +36,101 @@ const pageTitle = computed(() => isEditMode.value ? '✍️ 编辑文章' : '�
 // 2. 核心逻辑
 // =========================
 
+/**
+ * 前端图片压缩工具
+ * @param {File} file 原始文件
+ * @param {Object} options 压缩选项 (质量, 最大宽度)
+ */
+const compressImage = (file, { quality = 0.7, maxWidth = 1200 } = {}) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.src = e.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        // 计算缩放比例
+        if (width > maxWidth) {
+          height = (maxWidth / width) * height;
+          width = maxWidth;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // 将 canvas 转为 Blob
+        canvas.toBlob((blob) => {
+          if (blob) {
+            // 将 Blob 转回 File 对象，保持原始文件名
+            const compressedFile = new File([blob], file.name, {
+              type: 'image/jpeg',
+              lastModified: Date.now(),
+            });
+            resolve(compressedFile);
+          } else {
+            reject(new Error('Canvas 压缩失败'));
+          }
+        }, 'image/jpeg', quality);
+      };
+    };
+    reader.onerror = (error) => reject(error);
+  });
+};
+
 // 触发文件选择
 const triggerUpload = () => { fileInput.value.click() }
 
 // 处理上传
 const handleFileUpload = async (event) => {
-    const file = event.target.files[0]
-    if (!file) return
-    if (file.size > 5 * 1024 * 1024) return message.warning('图片大小不能超过 5MB')
+    let file = event.target.files[0];
+    if (!file) return;
 
-    isUploading.value = true
-    const formData = new FormData()
-    formData.append('image', file)
+    isUploading.value = true;
+    console.log(`原图大小: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
 
     try {
+        // 🔥 如果文件大于 500KB，执行压缩
+        if (file.size > 500 * 1024) {
+            console.log('⚡ 正在进行前端压缩...');
+            file = await compressImage(file, {
+                quality: 0.6, // 压缩质量 0.6 是肉眼难辨的平衡点
+                maxWidth: 1600 // 封面图不需要超过 1600px 宽度
+            });
+            console.log(`压缩后大小: ${(file.size / 1024).toFixed(2)} KB`);
+        }
+
+        const formData = new FormData();
+        formData.append('image', file);
+
+        // 🔥 注意：这里要确保你的 api.js 里的 timeout 足够大（比如 60000）
         const res = await api.post('/upload', formData, {
             headers: { 'Content-Type': 'multipart/form-data' }
-        })
+        });
+
         if (res.data.success) {
-            form.cover_image = res.data.data.url
-            message.success('✅ 封面上传成功！')
+            form.cover_image = res.data.data.url;
+            message.success('✅ 封面上传成功！');
         }
     } catch (error) {
-        console.error(error)
-        message.error('❌ 图片上传失败')
+        console.error('上传失败详情:', error);
+        // cpolar 环境下经常出现的错误提示
+        if (error.code === 'ECONNABORTED') {
+          message.error('❌ 上传超时，请尝试更小的图片');
+        } else {
+          message.error('❌ 上传失败，请检查穿透隧道是否正常');
+        }
     } finally {
-        isUploading.value = false
-        event.target.value = ''
+        isUploading.value = false;
+        event.target.value = ''; // 清空 input 方便下次选择同名文件
     }
-}
+};
 
 // 🔥 获取文章详情 (编辑模式专用)
 const fetchArticleDetails = async (id) => {
@@ -125,8 +191,12 @@ const submitArticle = async () => {
 const getPreviewUrl = (path) => {
     if (!path) return ''
     if (path.startsWith('http') || path.startsWith('data:')) return path
-    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000'
-    const host = apiBase.replace(/\/api\/?$/, '')
+    
+    // 🔥 核心修改：动态获取当前页面的 host (包含协议、域名和端口)
+    // 这样在 cpolar 下它就是 http://xxx.cpolar.cn/uploads/...
+    // 在本地它就是 http://localhost:3000/uploads/...
+    const host = window.location.origin;
+    
     const cleanPath = path.startsWith('/') ? path : '/' + path
     return `${host}${cleanPath}`
 }
