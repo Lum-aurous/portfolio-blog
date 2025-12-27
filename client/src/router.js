@@ -12,6 +12,11 @@ import Register from "./views/Register.vue";
 import Profile from "./views/Profile.vue";
 import Account from "./views/Account.vue";
 
+const Travel = () => import("./views/Travel.vue");
+const Guestbook = () => import("./views/Guestbook.vue"); // 懒加载
+const RecordLayout = () => import("./views/RecordLayout.vue");
+const Contact = () => import("./views/Contact.vue");
+const Toolkit = () => import("./views/Toolkit.vue");
 const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -36,6 +41,48 @@ const router = createRouter({
       name: "ColumnDetail",
       component: () => import("@/views/ColumnDetail.vue"), // 稍后创建这个文件
       props: true, // 开启 props 传参，让组件直接接收 id
+    },
+    {
+      path: "/travel",
+      name: "Travel",
+      component: Travel,
+      meta: { title: "Veritas - 游记", guestAccess: true }, // 允许游客访问
+    },
+    {
+      path: "/comments", // 对应 Navbar 里的路径
+      name: "Guestbook",
+      component: Guestbook,
+      meta: { title: "Veritas - 留言板", guestAccess: true },
+    },
+    {
+      path: "/records/:type",
+      name: "RecordCategory",
+      component: RecordLayout,
+      meta: {
+        title: "Veritas - 记录", // 默认标题，组件内会动态修改
+        guestAccess: true,
+      },
+      // 路由守卫：校验参数是否合法，防止乱输
+      beforeEnter: (to, from, next) => {
+        const validTypes = ["life", "media", "study", "travel", "resources"];
+        if (validTypes.includes(to.params.type)) {
+          next();
+        } else {
+          next("/404"); // 或者重定向回首页 next('/')
+        }
+      },
+    },
+    {
+      path: "/contact",
+      name: "Contact",
+      component: Contact,
+      meta: { title: "Veritas - 联系我", guestAccess: true },
+    },
+    {
+      path: "/toolkit",
+      name: "Toolkit",
+      component: Toolkit,
+      meta: { title: "Veritas - 百宝箱", guestAccess: true },
     },
 
     // ==================== 用户系统 ====================

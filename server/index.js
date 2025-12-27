@@ -1913,7 +1913,7 @@ function formatDateTime(dateStr) {
 }
 
 // ==========================================
-// ✅ 全模态作品流接口：修复统计逻辑中的关联缺失
+// ✅ 全模态作品流接口：支持 location & continent 筛选
 // ==========================================
 app.get("/api/articles", async (req, res) => {
   try {
@@ -1921,41 +1921,59 @@ app.get("/api/articles", async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const category = req.query.category || "";
     const keyword = req.query.keyword || "";
-    const author = req.query.author || ""; // 🔑 个人主页传来的用户名
+    const author = req.query.author || ""; // 个人主页传来的用户名
+    const location = req.query.location || ""; // 📍 游记地点筛选
+    const continent = req.query.continent || ""; // 🌍 七大洲筛选
 
     const offset = (page - 1) * limit;
 
     // ✅ 升级：支持 文章 + 视频 + 音频 的三路联合
+    // 🔥 关键修改：为所有表补齐 location 和 continent 字段 (视频音频暂为 NULL)
     const baseUnionSql = `
-  SELECT id, title, summary, category, cover_image, views, created_at, author_id, 'article' AS work_type, NULL AS video_url, NULL AS audio_url FROM articles
-  UNION ALL
-  SELECT id, title, description AS summary, category, cover_url AS cover_image, views, created_at, user_id AS author_id, 'video' AS work_type, video_url, NULL AS audio_url FROM videos
-  UNION ALL
-  SELECT id, title, description AS summary, category, cover_url AS cover_image, views, created_at, user_id AS author_id, 'audio' AS work_type, NULL AS video_url, audio_url FROM audios
-`;
+      SELECT id, title, summary, category, cover_image, views, created_at, author_id, 'article' AS work_type, NULL AS video_url, NULL AS audio_url, location, continent FROM articles
+      UNION ALL
+      SELECT id, title, description AS summary, category, cover_url AS cover_image, views, created_at, user_id AS author_id, 'video' AS work_type, video_url, NULL AS audio_url, NULL AS location, NULL AS continent FROM videos
+      UNION ALL
+      SELECT id, title, description AS summary, category, cover_url AS cover_image, views, created_at, user_id AS author_id, 'audio' AS work_type, NULL AS video_url, audio_url, NULL AS location, NULL AS continent FROM audios
+    `;
 
     // 1. 构建过滤条件
     let whereClause = "WHERE 1=1";
     let filterParams = [];
 
+    // 分类筛选 (排除特殊标记)
     if (category && category !== "latest" && category !== "all") {
       whereClause += " AND combined.category = ?";
       filterParams.push(category);
     }
 
+    // 关键词搜索 (标题或摘要)
     if (keyword) {
       whereClause += " AND (combined.title LIKE ? OR combined.summary LIKE ?)";
       filterParams.push(`%${keyword}%`, `%${keyword}%`);
     }
 
+    // 作者筛选 (用于个人主页)
     if (author) {
       // 🔑 这里的 u.username 依赖于下方的 LEFT JOIN
       whereClause += " AND u.username = ?";
       filterParams.push(author);
     }
 
-    // 2. 统计总数：🔥 关键修复点 🔥
-    // 统计总数的 SQL 也必须包含 LEFT JOIN users u，否则 WHERE 里的 u.username 会报错
+    // 🔥 新增：具体地点筛选 (用于游记页面卡片点击)
+    if (location && location !== "全部足迹") {
+      whereClause += " AND combined.location = ?";
+      filterParams.push(location);
+    }
+
+    // 🔥🔥 新增：七大洲筛选 (用于游记页面导航条)
+    if (continent && continent !== "全部足迹") {
+      whereClause += " AND combined.continent = ?";
+      filterParams.push(continent);
+    }
+
+    // 2. 统计总数
+    // 统计 SQL 必须包含 LEFT JOIN users u，否则 WHERE 里的 u.username 会报错
     const countSql = `
       SELECT COUNT(*) as total 
       FROM (${baseUnionSql}) AS combined 
@@ -1972,14 +1990,19 @@ app.get("/api/articles", async (req, res) => {
         u.nickname as author_name, 
         u.avatar as author_avatar,
         u.username as author_username,
-        IF(combined.work_type = 'video', 
-           (SELECT COUNT(*) FROM video_likes WHERE video_id = combined.id),
-           (SELECT COUNT(*) FROM article_likes WHERE article_id = combined.id)
-        ) as likes,
-        IF(combined.work_type = 'video', 
-           (SELECT COUNT(*) FROM video_favorites WHERE video_id = combined.id),
-           (SELECT COUNT(*) FROM article_favorites WHERE article_id = combined.id)
-        ) as favorites,
+        -- 动态统计点赞数
+        CASE 
+          WHEN combined.work_type = 'video' THEN (SELECT COUNT(*) FROM video_likes WHERE video_id = combined.id)
+          WHEN combined.work_type = 'audio' THEN (SELECT COUNT(*) FROM audio_likes WHERE audio_id = combined.id)
+          ELSE (SELECT COUNT(*) FROM article_likes WHERE article_id = combined.id)
+        END as likes,
+        -- 动态统计收藏数
+        CASE 
+          WHEN combined.work_type = 'video' THEN (SELECT COUNT(*) FROM video_favorites WHERE video_id = combined.id)
+          WHEN combined.work_type = 'audio' THEN (SELECT COUNT(*) FROM audio_favorites WHERE audio_id = combined.id)
+          ELSE (SELECT COUNT(*) FROM article_favorites WHERE article_id = combined.id)
+        END as favorites,
+        -- 动态统计评论数
         (SELECT COUNT(*) FROM comments WHERE article_id = combined.id AND work_type = combined.work_type) as comments
       FROM (${baseUnionSql}) AS combined
       LEFT JOIN users u ON combined.author_id = u.id
@@ -3976,13 +3999,13 @@ app.get("/api/user/profile", async (req, res) => {
 
     // 2. 实时聚合统计 (🔥 核心修改：增加 categoryCount 统计)
     const [
-      [articleStats],   // 原创数、总阅读、总评论
+      [articleStats], // 原创数、总阅读、总评论
       [followerResult], // 粉丝数
-      [followingResult],// 关注数
-      [totalLikesRes],  // 累计获赞
-      [totalFavsRes],   // 累计被收藏
-      [categoryRes],    // 🔥 新增：统计该作者用过多少个不同的分类
-      [settingResult],  // 导航配置
+      [followingResult], // 关注数
+      [totalLikesRes], // 累计获赞
+      [totalFavsRes], // 累计被收藏
+      [categoryRes], // 🔥 新增：统计该作者用过多少个不同的分类
+      [settingResult], // 导航配置
     ] = await Promise.all([
       dbPool.query(
         "SELECT COUNT(*) as originalCount, SUM(views) as totalViews, SUM(comments) as totalComments FROM articles WHERE author_id = ?",
@@ -5509,6 +5532,78 @@ app.get("/api/user/following", authenticateToken, async (req, res) => {
   } catch (err) {
     logger.error("获取关注列表失败:", err);
     apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
+// 🌍 游记专属接口
+// ==========================================
+
+// 1. 获取游记 Banner (随机取一张风景壁纸)
+app.get("/api/travel/banner", async (req, res) => {
+  try {
+    // 优先从 global_wallpapers 取，没有就兜底
+    const [rows] = await dbPool.query(
+      "SELECT url FROM global_wallpapers ORDER BY RAND() LIMIT 1"
+    );
+    const url =
+      rows.length > 0
+        ? rows[0].url
+        : "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800";
+    apiResponse.success(res, "获取成功", { url });
+  } catch (err) {
+    console.error(err);
+    apiResponse.success(res, "使用默认图", {
+      url: "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800",
+    });
+  }
+});
+
+// 2. 自动获取热门地点 (用于生成筛选按钮)
+app.get("/api/travel/locations", async (req, res) => {
+  try {
+    // 统计 category='游记' 的文章中，location 字段不为空的，按出现次数排序
+    const sql = `
+      SELECT location, COUNT(*) as count 
+      FROM articles 
+      WHERE category = '游记' AND location IS NOT NULL AND location != ''
+      GROUP BY location 
+      ORDER BY count DESC 
+      LIMIT 8
+    `;
+    const [rows] = await dbPool.query(sql);
+
+    // 格式化返回：把 '全部足迹' 放在第一个
+    const locations = [{ name: "全部足迹", count: 999 }];
+    rows.forEach((row) => {
+      locations.push({ name: row.location, count: row.count });
+    });
+
+    apiResponse.success(res, "获取地点成功", locations);
+  } catch (err) {
+    logger.error("获取地点失败:", err);
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
+// 📨 联系我接口
+// ==========================================
+app.post("/api/contact", async (req, res) => {
+  try {
+    const { name, email, subject, content } = req.body;
+
+    if (!name || !email || !content) {
+      return apiResponse.error(res, "请填写完整信息");
+    }
+
+    const sql = `INSERT INTO messages (name, email, subject, content) VALUES (?, ?, ?, ?)`;
+    await dbPool.query(sql, [name, email, subject, content]);
+
+    apiResponse.success(res, "消息发送成功！我会尽快回复您。");
+  } catch (err) {
+    logger.error("发送消息失败:", err);
+    apiResponse.error(res, "发送失败，请稍后重试");
   }
 });
 

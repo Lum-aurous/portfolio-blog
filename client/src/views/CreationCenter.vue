@@ -930,6 +930,10 @@ watch(
 onMounted(() => {
     fetchCategories()
     fetchUserColumns()
+    // 🔥 自动选中分类
+    if (route.query.category) {
+        articleForm.value.category = route.query.category;
+    }
 })
 </script>
 
@@ -1040,7 +1044,7 @@ onMounted(() => {
                                 </button>
                                 <button class="med-publish-btn" @click="submitArticle" :disabled="isSubmitting">
                                     <span>{{ isSubmitting ? '处理中...' : (isEditing ? 'SAVE / 保存修改' : 'PUBLISH / 立即发布')
-                                    }}</span>
+                                        }}</span>
                                 </button>
                             </div>
                         </div>
@@ -1141,7 +1145,7 @@ onMounted(() => {
                                 </button>
                                 <button class="med-publish-btn" @click="submitShort" :disabled="isSubmitting">
                                     <span>{{ isSubmitting ? '定格中...' : (isEditing ? 'SAVE / 保存修改' : 'SHARE / 分享此刻')
-                                    }}</span>
+                                        }}</span>
                                 </button>
                             </div>
                         </div>
@@ -1250,7 +1254,7 @@ onMounted(() => {
                                 <button class="med-publish-btn" @click="submitVideo"
                                     :disabled="isSubmitting || isUploading">
                                     <span>{{ isSubmitting ? '处理中...' : (isEditing ? 'SAVE / 保存修改' : 'EXHIBIT / 立即发布')
-                                    }}</span>
+                                        }}</span>
                                 </button>
                             </div>
                         </div>
@@ -1349,7 +1353,7 @@ onMounted(() => {
                                 <button class="med-publish-btn" @click="submitAudio"
                                     :disabled="isSubmitting || isAudioUploading">
                                     <span>{{ isSubmitting ? '刻录中...' : (isEditing ? 'SAVE / 保存修改' : 'RELEASE / 立即发行')
-                                    }}</span>
+                                        }}</span>
                                 </button>
                             </div>
                         </div>
@@ -1460,7 +1464,7 @@ onMounted(() => {
                                 <button class="page-btn" :disabled="socialPagination.current === 1"
                                     @click="changeSocialPage(socialPagination.current - 1)">←</button>
                                 <span class="page-info">{{ socialPagination.current }} / {{ socialPagination.totalPages
-                                    }}</span>
+                                }}</span>
                                 <button class="page-btn"
                                     :disabled="socialPagination.current === socialPagination.totalPages"
                                     @click="changeSocialPage(socialPagination.current + 1)">→</button>
