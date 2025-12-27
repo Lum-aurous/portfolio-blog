@@ -22,6 +22,12 @@ const siteStats = ref({
     categoryCount: 0,
     totalViews: 0
 })
+// 🔥 新增：存储当前登录用户的个人统计数据
+const userPersonalStats = ref({
+    articleCount: 0,
+    categoryCount: 0,
+    totalViews: 0
+})
 const videoRefs = ref(new Map()); // 存储视频引用
 const audioRefs = ref(new Map()); // 🔥 新增：存储音频引用
 const playingIds = ref(new Set()) // 存储正在播放的 Key
@@ -43,29 +49,39 @@ const getFullAvatarUrl = (path) => {
 };
 
 const profile = computed(() => {
-    const statsData = {
+    // 默认使用全站数据 (访客模式)
+    let statsData = {
         articlesCount: siteStats.value.articleCount || 0,
         categoryCount: siteStats.value.categoryCount || 0,
         visits: siteStats.value.totalViews || 0
     }
 
     if (userStore.user && userStore.user.username) {
+        // 🔥🔥🔥 核心：如果已登录，覆盖为【个人数据】
+        statsData = {
+            articlesCount: userPersonalStats.value.articleCount,
+            categoryCount: userPersonalStats.value.categoryCount,
+            visits: userPersonalStats.value.totalViews
+        }
+
         return {
             isLogin: true,
             name: userStore.user.nickname || userStore.user.username,
             title: userStore.user.bio || '全栈开发者 / 追梦人',
-            avatar: getFullAvatarUrl(userStore.user.avatar),
-            github: userStore.user.social_link || 'https://github.com',
-            ...statsData
+            // Use safe accessor for avatar
+            avatar: getFullAvatarUrl(userStore.user?.avatar),
+            github: userStore.user.social_link || '',
+            ...statsData // 展开覆盖
         }
     } else {
+        // 访客模式
         return {
             isLogin: false,
             name: '访客',
             title: '登录以解锁更多功能',
             avatar: defaultAvatar,
             github: '#',
-            ...statsData
+            ...statsData // 使用全站数据
         }
     }
 })
@@ -327,17 +343,41 @@ const fetchArticles = async (categoryName = '', isLoadMore = false, isSilent = f
 
             // 数据处理逻辑
             const processedList = list.map(item => {
-                if (!item.work_type) item.work_type = item.video_url ? 'video' : 'article';
+                // 1. 确定作品类型 (如果后端没返回 work_type，根据字段推断)
+                // 注意：这里我们增加了对 'short' (图文) 的判断逻辑
+                if (!item.work_type) {
+                    if (item.video_url) item.work_type = 'video';
+                    else if (item.audio_url) item.work_type = 'audio';
+                    // 如果内容里全是图片引用，或者标题是“图文”，可以推断为 short，但最好后端直接存了 work_type
+                    // 这里假设后端已经正确存入了 'short' 类型，或者我们根据 category === 'short' 来判断
+                }
+
+                // 2. 视频路径处理 (保持不变)
                 if (item.work_type === 'video' && item.video_url) {
                     if (!item.video_url.startsWith('http') && !item.video_url.startsWith('/')) {
                         item.video_url = '/' + item.video_url;
                     }
                 }
-                // 🔑 统一封面字段名：兼容 cover 和 cover_image
+
+                // 🔥🔥🔥 核心修改开始：针对图文 (short) 提取第一张图作为封面 🔥🔥🔥
+                if (item.work_type === 'short' || item.category === '图文') { // 兼容一下分类名
+                    // 如果本身没有设置封面，尝试从 content 中提取 Markdown 图片
+                    if (!item.cover_image && !item.cover && item.content) {
+                        // 匹配 ![...](url) 格式
+                        const imgMatch = item.content.match(/!\[.*?\]\((.*?)\)/);
+                        if (imgMatch && imgMatch[1]) {
+                            item.cover_image = imgMatch[1]; // 提取第一张图的 URL
+                        }
+                    }
+                }
+                // 🔥🔥🔥 核心修改结束 🔥🔥🔥
+
+                // 3. 统一封面字段 (保持不变)
                 return {
                     ...item,
                     displayCover: item.cover_image || item.cover,
-                    cover_image: item.cover_image || item.cover, // 确保 ArticleItem 能读到
+                    cover: item.cover_image || item.cover, // 重点：这里会被上面的逻辑更新
+                    cover_image: item.cover_image || item.cover,
                     comments: item.comments || 0,
                     views: item.views || 0
                 };
@@ -395,40 +435,44 @@ const goToDetail = (item) => {
 
 // ✅ 修正路径处理函数
 const getProxyUrl = (url) => {
-    // 🔥 核心修复：更精准的无效值判断
-    if (!url) return null;
-
-    // 转为字符串并去除空白
-    const urlStr = String(url).trim();
-
-    // 过滤明确的无效值
-    if (urlStr === '' || urlStr === 'null' || urlStr === 'undefined') return null;
-
-    // 已经是 data URI，直接返回
-    if (urlStr.startsWith('data:')) return urlStr;
-
-    // 🔥 优化：判断是否需要代理
-    if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
-        // 白名单：这些域名的图片不需要代理（根据实际情况调整）
-        const trustedDomains = [
-            'images.unsplash.com',
-            'picsum.photos',
-            // 如果你的服务器域名也在这里，可以添加
-        ];
-
-        const needsProxy = !trustedDomains.some(domain => urlStr.includes(domain));
-
-        if (needsProxy) {
-            // 需要代理的外链图片
-            return `/api/proxy-image?url=${encodeURIComponent(urlStr)}`;
-        }
-
-        // 可信域名，直接返回
-        return urlStr;
+    // 1. Strict null/undefined check
+    if (!url || url === 'null' || url === 'undefined' || typeof url !== 'string') {
+        // Return a default placeholder immediately
+        return 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&h=200';
     }
 
-    // 相对路径：确保以 / 开头
-    return urlStr.startsWith('/') ? urlStr : `/${urlStr}`;
+    const urlStr = url.trim();
+    if (urlStr === '') return 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&h=200';
+
+    // 2. Data URIs (Base64) - return as is
+    if (urlStr.startsWith('data:')) return urlStr;
+
+    // 3. Local Uploads (start with /uploads or just /)
+    // We want to serve these directly from the backend static file server, NOT the proxy.
+    if (urlStr.startsWith('/') || urlStr.startsWith('uploads/')) {
+        const isDev = import.meta.env.VITE_APP_ENV === 'development';
+        const apiBase = isDev ? 'http://localhost:3000' : window.location.origin;
+
+        // Ensure it starts with /
+        const cleanPath = urlStr.startsWith('/') ? urlStr : `/${urlStr}`;
+
+        // Return absolute URL for local resources
+        return `${apiBase}${cleanPath}`;
+    }
+
+    // 4. External URLs (http/https)
+    if (urlStr.startsWith('http')) {
+        // Optional: List of trusted domains to bypass proxy (for performance)
+        const trustedDomains = ['images.unsplash.com', 'w.wallhaven.cc'];
+        if (trustedDomains.some(domain => urlStr.includes(domain))) {
+            return urlStr;
+        }
+        // Otherwise, use proxy to avoid mixed content or CORS issues
+        return `/api/proxy-image?url=${encodeURIComponent(urlStr)}`;
+    }
+
+    // Fallback
+    return urlStr;
 }
 
 // ==================== 7. 统计与公告 ====================
@@ -656,6 +700,29 @@ const togglePlay = async (item, suffix, event) => {
 
 const handleVideoEnd = (item, suffix) => { playingIds.value.delete(getUniqueKey(item, suffix)); };
 
+// 🔥 新增：获取当前登录用户的个人统计
+const fetchUserPersonalStats = async () => {
+    // 只有登录了才查
+    if (!userStore.user || !userStore.user.username) return;
+
+    try {
+        const res = await api.get('/user/profile', {
+            params: { username: userStore.user.username }
+        });
+
+        if (res.data.success) {
+            const data = res.data.data.stats;
+            userPersonalStats.value = {
+                articleCount: data.originalCount || 0,
+                categoryCount: data.categoryCount || 0, // 后端刚加的字段
+                totalViews: data.totalViews || 0
+            };
+        }
+    } catch (error) {
+        console.error('❌ 获取个人统计失败:', error);
+    }
+}
+
 // 🔥 监听路由：只要路由回到 /blog（或者是你的首页路径），就重新拉取数据
 watch(() => router.currentRoute.value.path, (newPath) => {
     if (newPath === '/blog' || newPath === '/') {
@@ -673,12 +740,26 @@ watch(activeCategory, (newCategory) => {
     nextTick(() => { scrollToContent() })
 })
 
+watch(() => userStore.user, (newUser) => {
+    if (newUser && newUser.username) { 
+        fetchUserPersonalStats(); // 登录时获取个人数据
+    } else {
+        // 登出时重置为0 (或者重置为全站数据，看你需求)
+        // 如果想回退到 siteStats，可以在这里重新 fetchSiteStats() 或者直接用 computed 处理
+        userPersonalStats.value = { articleCount: 0, categoryCount: 0, totalViews: 0 };
+    }
+})
+
 onMounted(async () => {
     if (!userStore.user && localStorage.getItem('token')) await userStore.checkLoginStatus()
     initWallpapers(); fetchSiteStats(); fetchHotArticles(); fetchCategories();
     fetchArticles(); fetchLatestComments(); fetchLatestNotice(); fetchTags(); fetchFriendLinks(); startTyping();
     setTimeout(() => { isSidebarReady.value = true }, 400)
     statsTimer = setInterval(() => { refreshAllData() }, 30000)
+    // 🔥 如果已登录，获取个人数据
+    if (userStore.user) {
+        fetchUserPersonalStats();
+    }
 })
 
 onUnmounted(() => {
@@ -959,6 +1040,9 @@ onUnmounted(() => {
                                         <template v-else-if="article.cover">
                                             <img :src="getProxyUrl(article.cover)" @click="goToDetail(article)"
                                                 style="cursor:pointer" @error="article.cover = null">
+                                            <div v-if="article.work_type === 'short'" class="type-badge-icon">
+                                                📸 图文
+                                            </div>
                                         </template>
                                         <template v-else>
                                             <div class="text-only-cover" @click="goToDetail(article)"
@@ -1067,6 +1151,9 @@ onUnmounted(() => {
                                 <template v-else-if="article.cover">
                                     <img :src="getProxyUrl(article.cover)" @click="goToDetail(article)"
                                         style="cursor:pointer" @error="article.cover = null">
+                                    <div v-if="article.work_type === 'short'" class="type-badge-icon">
+                                        📸 图文
+                                    </div>
                                 </template>
 
                                 <template v-else>
@@ -2996,5 +3083,26 @@ onUnmounted(() => {
     to {
         transform: rotate(360deg);
     }
+}
+
+/* 🔥 新增：图文作品角标样式 */
+.type-badge-icon {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 4px 8px;
+    border-radius: 4px;
+    backdrop-filter: blur(4px);
+    font-weight: 600;
+    pointer-events: none;
+    /* 让鼠标事件穿透 */
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    z-index: 5;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
 }
 </style>

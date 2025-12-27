@@ -68,11 +68,15 @@ const formatNumber = (num) => {
         <div class="article-thumb-v2">
             <div v-if="data.work_type === 'video' && data.video_url" class="media-container" @click.stop>
                 <video :src="getFullImageUrl(data.video_url)" controls preload="metadata" class="item-media"
-                    :poster="getFullImageUrl(data.cover_image)"></video>
+                    :poster="getFullImageUrl(data.cover_image)">
+                </video>
             </div>
 
-            <img v-else-if="data.cover_image" :src="getFullImageUrl(data.cover_image)" class="item-media" loading="lazy"
-                alt="cover">
+            <div v-else-if="data.cover_image" class="image-cover-wrapper">
+                <img :src="getFullImageUrl(data.cover_image)" class="item-media" loading="lazy" alt="cover">
+                <div v-if="data.work_type === 'audio'" class="type-badge audio">🎵</div>
+                <div v-if="data.work_type === 'short'" class="type-badge short">📸</div>
+            </div>
 
             <div v-else class="artistic-text-cover">
                 <div class="quote-mark">“</div>
@@ -196,6 +200,41 @@ const formatNumber = (num) => {
     background: #000;
     /* 视频背景通常用黑色 */
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+}
+
+/* 🔥 新增：封面图容器 */
+.image-cover-wrapper {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+/* 🔥 新增：类型角标 */
+.type-badge {
+    position: absolute;
+    bottom: 5px;
+    right: 5px;
+    width: 24px;
+    height: 24px;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    color: #fff;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.type-badge.audio {
+    background: rgba(106, 90, 205, 0.8);
+    /* 紫色 */
+}
+
+.type-badge.short {
+    background: rgba(66, 184, 131, 0.8);
+    /* 绿色 */
 }
 
 .media-container {

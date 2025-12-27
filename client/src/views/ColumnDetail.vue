@@ -17,25 +17,58 @@ const showEditModal = ref(false);
 const editForm = ref({ name: '', description: '' });
 const isSaving = ref(false);
 
-// ==================== 🛠️ 通用数据清洗函数 (与 Profile.vue 保持一致) ====================
+// ==================== 🛠️ 通用数据清洗函数 (增强版) ====================
 const sanitizeItem = (item) => {
-  let type = item.work_type || 'article';
-  // 智能推断类型
-  if (!item.work_type) {
-    if (item.audio_url) type = 'audio';
-    else if (item.video_url) type = 'video';
+  // 1. 基础类型判断
+  let type = item.work_type;
+
+  // 如果后端没返回 type，尝试推断
+  if (!type) {
+    if (item.video_url) type = 'video';
+    else if (item.audio_url) type = 'audio';
+    else type = 'article'; // 默认为文章
   }
 
-  // 统一封面字段
-  const cover = item.cover_image || item.cover || item.cover_url || item.poster;
+  // 2. 统一封面字段 (兼容各种后端命名)
+  let cover = item.cover_image || item.cover || item.cover_url || item.poster;
 
+  // 🔥🔥🔥 核心修复：图文作品封面自动提取 🔥🔥🔥
+  // 专栏里的作品也可能是图文，必须把这个逻辑加上
+  if ((type === 'short' || !cover) && item.content) {
+    // 匹配 Markdown 图片语法 ![...](url)
+    const imgMatch = item.content.match(/!\[.*?\]\((.*?)\)/);
+    if (imgMatch && imgMatch[1]) {
+      cover = imgMatch[1]; // 提取第一张图
+
+      // 如果原本被误判为 article，这里修正为 short
+      if (type === 'article') type = 'short';
+    }
+  }
+
+  // 3. 视频路径修正 (防止缺少前斜杠)
+  if (type === 'video' && item.video_url) {
+    if (!item.video_url.startsWith('http') && !item.video_url.startsWith('/')) {
+      item.video_url = '/' + item.video_url;
+    }
+  }
+
+  // 4. 返回清洗后的标准化对象
   return {
     ...item,
-    work_type: type,
-    cover_image: cover,
-    views: item.views || 0,
-    comments: item.comments || 0,
-    likes: item.likes || 0
+    // 专栏列表接口返回的 id 是作品本身的 id，entry_id 是关联表的 id
+    // ArticleItem 需要的是作品 id
+    id: item.id,
+    entry_id: item.entry_id, // 保留关联ID用于移除操作
+    title: item.title,
+    summary: item.summary || item.description || '',
+    work_type: type, // 修正后的类型
+    cover_image: cover, // 修正后的封面
+    // 确保数值存在，不为 null
+    views: Number(item.views || 0),
+    comments: Number(item.comments || 0),
+    likes: Number(item.likes || 0),
+    favorites: Number(item.favorites || 0),
+    created_at: item.created_at
   };
 }
 

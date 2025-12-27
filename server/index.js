@@ -19,12 +19,14 @@ const helmet = require("helmet"); // 🔥 新增：安全头
 const app = express();
 
 // ==========================================
-// 🔥 优化1: 启用 Helmet 安全防护
+// 🔥 优化1: 启用 Helmet 安全防护 (修正跨域资源策略)
 // ==========================================
 app.use(
   helmet({
-    contentSecurityPolicy: false, // 关闭 CSP，因为有前端资源
-    crossOriginEmbedderPolicy: false, // 允许跨域嵌入
+    contentSecurityPolicy: false, // 关闭 CSP
+    crossOriginEmbedderPolicy: false,
+    // 🔥🔥🔥 核心修复：允许跨域加载资源（图片/视频）🔥🔥🔥
+    crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
 
@@ -117,10 +119,16 @@ const ensureDirectories = () => {
 ensureDirectories();
 
 // ==========================================
-// 🔥 优化4: 静态资源优化（缓存控制）
+// 🔥 优化4: 静态资源优化（缓存控制 + 跨域头）
 // ==========================================
 app.use(
   "/api/uploads",
+  (req, res, next) => {
+    // 🔥 强制允许跨域，解决 ERR_BLOCKED_BY_RESPONSE.NotSameOrigin
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    next();
+  },
   express.static(path.join(__dirname, "uploads"), {
     maxAge: "7d",
     etag: true,
@@ -238,11 +246,32 @@ const dbPool = mysql.createPool({
   charset: "utf8mb4",
 });
 
-// 测试数据库连接
+// 测试数据库连接 & 自动修复表结构
 (async () => {
   try {
     const connection = await dbPool.getConnection();
     logger.info("✅ 数据库连接池创建成功！");
+
+    // 🔥🔥🔥 自动修复：检查并添加缺失的 work_type 字段 🔥🔥🔥
+    try {
+      // 检查 articles 表是否有 work_type 列
+      const [columns] = await connection.query(
+        "SHOW COLUMNS FROM articles LIKE 'work_type'"
+      );
+      if (columns.length === 0) {
+        logger.warn(
+          "⚠️ 检测到 articles 表缺失 work_type 字段，正在自动修复..."
+        );
+        await connection.query(
+          "ALTER TABLE articles ADD COLUMN work_type VARCHAR(20) DEFAULT 'article'"
+        );
+        logger.info("✅ work_type 字段添加成功！");
+      }
+    } catch (dbErr) {
+      logger.error("❌ 自动修复表结构失败:", dbErr);
+    }
+    // 🔥🔥🔥 修复结束 🔥🔥🔥
+
     connection.release();
     initializeWallpaperSystem();
   } catch (err) {
@@ -1160,17 +1189,17 @@ app.get("/api/articles/hot", async (req, res) => {
   }
 });
 
-// 1. 获取互动状态 (点赞、收藏)
 // ==========================================
-// ✅ 详情获取接口：彻底解决 views/likes 丢失导致的 0 和 -1 灵异 Bug
+// ✅ 详情获取接口：完全体优化版
+// 包含：类型隔离、互动数据精准统计、以及【封面自动补全机制】
 // ==========================================
 app.get("/api/articles/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { type } = req.query;
+    const { type } = req.query; // 前端传来的类型 (article/video/audio)
 
     let sql = "";
-    // 1. 根据类型精准切表
+    // 1. 根据类型选择对应的表进行查询
     if (type === "video") {
       sql = `SELECT v.*, v.user_id AS author_id, u.nickname AS author_name, u.avatar AS author_avatar, 
              u.username AS author_username, v.description AS content, v.cover_url AS cover_image
@@ -1180,8 +1209,9 @@ app.get("/api/articles/:id", async (req, res) => {
              u.username AS author_username, a.description AS content, a.cover_url AS cover_image
              FROM audios a LEFT JOIN users u ON a.user_id = u.id WHERE a.id = ?`;
     } else {
+      // 默认为文章 (article)
       sql = `SELECT a.*, u.nickname AS author_name, u.avatar AS author_avatar, u.username AS author_username,
-             a.content, a.cover_image, a.views
+             a.content, a.cover_image
              FROM articles a LEFT JOIN users u ON a.author_id = u.id WHERE a.id = ?`;
     }
 
@@ -1190,10 +1220,32 @@ app.get("/api/articles/:id", async (req, res) => {
     if (results.length > 0) {
       const item = results[0];
 
-      // 2. 🔥 核心修正：精准提取互动数据（无论什么类型，都必须填满这三个坑）
+      // ==================================================================================
+      // 🔥🔥🔥 核心补救逻辑：如果封面为空，但内容有图，临时提取第一张图作为封面传给前端 🔥🔥🔥
+      // ==================================================================================
+      if ((!item.cover_image || item.cover_image === "") && item.content) {
+        // 1. 尝试匹配 Markdown 图片语法 ![...](url)
+        const mdMatch = item.content.match(/!\[.*?\]\((.*?)\)/);
+        if (mdMatch && mdMatch[1]) {
+          item.cover_image = mdMatch[1];
+          // 如果此时 work_type 是空的，顺便帮前端标记为图文
+          if (!item.work_type) item.work_type = "short";
+        }
+        // 2. 如果没匹配到，尝试匹配 HTML <img> 标签 (兼容富文本)
+        else {
+          const htmlMatch = item.content.match(/<img[^>]+src="([^">]+)"/);
+          if (htmlMatch && htmlMatch[1]) {
+            item.cover_image = htmlMatch[1];
+          }
+        }
+      }
+      // ==================================================================================
+
+      // 2. 统计互动数据 (点赞/收藏) - 严格根据类型查表
       let likeTable = "article_likes",
         favTable = "article_favorites",
         idField = "article_id";
+
       if (type === "video") {
         likeTable = "video_likes";
         favTable = "video_favorites";
@@ -1204,27 +1256,29 @@ app.get("/api/articles/:id", async (req, res) => {
         idField = "audio_id";
       }
 
-      const [likeRes] = await dbPool.query(
-        `SELECT COUNT(*) as count FROM ${likeTable} WHERE ${idField} = ?`,
-        [id]
-      );
-      const [favRes] = await dbPool.query(
-        `SELECT COUNT(*) as count FROM ${favTable} WHERE ${idField} = ?`,
-        [id]
-      );
+      // 并行查询提高效率
+      const [likeRes, favRes, commentRes] = await Promise.all([
+        dbPool.query(
+          `SELECT COUNT(*) as count FROM ${likeTable} WHERE ${idField} = ?`,
+          [id]
+        ),
+        dbPool.query(
+          `SELECT COUNT(*) as count FROM ${favTable} WHERE ${idField} = ?`,
+          [id]
+        ),
+        dbPool.query(
+          "SELECT COUNT(*) as total FROM comments WHERE article_id = ? AND work_type = ?",
+          [id, type || "article"]
+        ),
+      ]);
 
-      // 🔑 显式注入所有统计数值，绝不让前端拿 undefined
-      item.likes = likeRes[0].count || 0;
-      item.favorites = favRes[0].count || 0;
-      item.views = item.views || 0; // 确保浏览量存在
+      // 3. 赋值统计数据 (确保为数字，防止前端出现 undefined)
+      item.likes = likeRes[0][0].count || 0;
+      item.favorites = favRes[0][0].count || 0;
+      item.comments = commentRes[0][0].total || 0;
+      item.views = item.views || 0;
 
-      // 3. 统计评论
-      const [commentCount] = await dbPool.query(
-        "SELECT COUNT(*) as total FROM comments WHERE article_id = ? AND work_type = ?",
-        [id, type || "article"]
-      );
-      item.comments = commentCount[0].total;
-
+      // 4. 返回完整数据
       apiResponse.success(res, "获取详情成功", item);
     } else {
       apiResponse.error(res, "内容已失踪", 404);
@@ -1956,13 +2010,13 @@ app.get("/api/articles", async (req, res) => {
 // ==========================================
 app.get("/api/articles/search", async (req, res) => {
   try {
-    const { q } = req.query; 
+    const { q } = req.query;
 
     if (!q || q.trim() === "") {
       return apiResponse.error(res, "搜索关键词不能为空", 400);
     }
 
-    const keyword = `%${q.trim()}%`; 
+    const keyword = `%${q.trim()}%`;
 
     // 构建统一查询视图
     const baseSql = `
@@ -2152,98 +2206,50 @@ app.get("/api/tags/cloud", async (req, res) => {
   }
 });
 
-// 🔥获取详情接口
-// ==========================================
-// ✅ 详情获取接口：彻底修复 likes/favorites 丢失导致的 -1 Bug
-// ==========================================
-app.get("/api/articles/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { type } = req.query;
-
-    let sql = "";
-    // 1. 根据类型选择对应的表
-    if (type === "video") {
-      sql = `SELECT v.*, v.user_id AS author_id, u.nickname AS author_name, u.avatar AS author_avatar, 
-             u.username AS author_username, v.description AS content, v.cover_url AS cover_image
-             FROM videos v LEFT JOIN users u ON v.user_id = u.id WHERE v.id = ?`;
-    } else if (type === "audio") {
-      sql = `SELECT a.*, a.user_id AS author_id, u.nickname AS author_name, u.avatar AS author_avatar, 
-             u.username AS author_username, a.description AS content, a.cover_url AS cover_image
-             FROM audios a LEFT JOIN users u ON a.user_id = u.id WHERE a.id = ?`;
-    } else {
-      sql = `SELECT a.*, u.nickname AS author_name, u.avatar AS author_avatar, u.username AS author_username,
-             a.content, a.cover_image
-             FROM articles a LEFT JOIN users u ON a.author_id = u.id WHERE a.id = ?`;
-    }
-
-    const [results] = await dbPool.query(sql, [id]);
-
-    if (results.length > 0) {
-      const item = results[0];
-
-      // 2. 🔥 核心修复：根据类型，精准去各自的互动表查出真实数字
-      let likeTable = "article_likes",
-        favTable = "article_favorites",
-        idField = "article_id";
-      if (type === "video") {
-        likeTable = "video_likes";
-        favTable = "video_favorites";
-        idField = "video_id";
-      } else if (type === "audio") {
-        likeTable = "audio_likes";
-        favTable = "audio_favorites";
-        idField = "audio_id";
-      }
-
-      const [likeRes] = await dbPool.query(
-        `SELECT COUNT(*) as count FROM ${likeTable} WHERE ${idField} = ?`,
-        [id]
-      );
-      const [favRes] = await dbPool.query(
-        `SELECT COUNT(*) as count FROM ${favTable} WHERE ${idField} = ?`,
-        [id]
-      );
-
-      // 🔑 必须显式赋值！否则前端拿到的就是 0 或 undefined
-      item.likes = likeRes[0].count || 0;
-      item.favorites = favRes[0].count || 0;
-
-      // 3. 统计评论（带 work_type 隔离）
-      const [commentCount] = await dbPool.query(
-        "SELECT COUNT(*) as total FROM comments WHERE article_id = ? AND work_type = ?",
-        [id, type || "article"]
-      );
-      item.comments = commentCount[0].total;
-
-      apiResponse.success(res, "获取详情成功", item);
-    } else {
-      apiResponse.error(res, "内容已失踪", 404);
-    }
-  } catch (err) {
-    logger.error("查询详情出错:", err);
-    apiResponse.error(res, "服务器内部错误");
-  }
-});
-
 // 🔥 发布文章接口（需要认证和管理员权限）
 app.post("/api/articles", authenticateToken, requireAdmin, async (req, res) => {
   const connection = await dbPool.getConnection();
   try {
     await connection.beginTransaction(); // 🔥 开启事务
 
-    const { title, summary, content, category, cover_image, column_id } =
+    let { title, summary, content, category, cover_image, column_id } =
       req.body;
     const authorId = req.user.id;
 
-    // 1. 存入文章主表
+    // 🔥🔥🔥 核心修复 1：定义 work_type 变量，默认为 article
+    let work_type = "article";
+
+    // ============================================================
+    // 🔥🔥🔥 核心优化：自动提取封面 + 自动判断类型 🔥🔥🔥
+    // ============================================================
+    if (!cover_image && content) {
+      // 1. 匹配 Markdown 图片
+      const mdMatch = content.match(/!\[.*?\]\((.*?)\)/);
+      if (mdMatch && mdMatch[1]) {
+        cover_image = mdMatch[1];
+        work_type = "short"; // ✅ 提取到图片，类型自动升级为图文
+        console.log(`🖼️ [后端智能] 已自动提取封面并标记为图文: ${cover_image}`);
+      }
+      // 2. 匹配 HTML 图片
+      else {
+        const htmlMatch = content.match(/<img[^>]+src="([^">]+)"/);
+        if (htmlMatch && htmlMatch[1]) {
+          cover_image = htmlMatch[1];
+          work_type = "short"; // ✅ 提取到图片，类型自动升级为图文
+          console.log(`🖼️ [后端智能] 已自动提取HTML封面并标记为图文`);
+        }
+      }
+    }
+    // ============================================================
+
+    // 🔥🔥🔥 核心修复 2：SQL 语句必须包含 work_type 字段！
     const [articleResult] = await connection.query(
-      "INSERT INTO articles (title, summary, content, category, cover_image, author_id) VALUES (?, ?, ?, ?, ?, ?)",
-      [title, summary, content, category, cover_image, authorId]
+      "INSERT INTO articles (title, summary, content, category, cover_image, author_id, work_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [title, summary, content, category, cover_image, authorId, work_type]
     );
     const newArticleId = articleResult.insertId;
 
-    // 2. 🔥 建立专栏关联 (如果用户选了专栏)
+    // 2. 建立专栏关联
     if (column_id) {
       await connection.query(
         "INSERT INTO column_articles (column_id, article_id) VALUES (?, ?)",
@@ -2251,12 +2257,12 @@ app.post("/api/articles", authenticateToken, requireAdmin, async (req, res) => {
       );
     }
 
-    await connection.commit(); // ✅ 全部成功，提交
+    await connection.commit();
     apiResponse.success(res, "发布成功", { id: newArticleId }, 201);
   } catch (err) {
-    await connection.rollback(); // ❌ 失败回滚
+    await connection.rollback();
     logger.error("文章发布事务失败:", err);
-    apiResponse.error(res, "发布失败，请检查数据结构");
+    apiResponse.error(res, "发布失败: " + err.message); // 返回具体错误信息
   } finally {
     connection.release();
   }
@@ -2282,7 +2288,8 @@ app.put(
 
     try {
       const articleId = req.params.id;
-      const { title, summary, content, category, cover_image } = req.body;
+      // 使用 let 允许修改
+      let { title, summary, content, category, cover_image } = req.body;
       const authorId = req.user.id; // 当前登录用户
 
       // 1. 首先检查文章是否存在且属于当前用户
@@ -2306,6 +2313,20 @@ app.put(
       // 3. 记录更新前的时间（用于日志）
       const oldUpdateTime = existingArticle[0].updated_at;
 
+      // ============================================================
+      // 🔥🔥🔥 核心优化：更新时如果封面为空，再次尝试提取 🔥🔥🔥
+      // ============================================================
+      if (!cover_image && content) {
+        const mdMatch = content.match(/!\[.*?\]\((.*?)\)/);
+        if (mdMatch && mdMatch[1]) {
+          cover_image = mdMatch[1];
+        } else {
+          const htmlMatch = content.match(/<img[^>]+src="([^">]+)"/);
+          if (htmlMatch && htmlMatch[1]) cover_image = htmlMatch[1];
+        }
+      }
+      // ============================================================
+
       // 4. 更新文章内容
       // 注意：updated_at 字段会自动更新（ON UPDATE CURRENT_TIMESTAMP）
       const [result] = await dbPool.query(
@@ -2322,12 +2343,12 @@ app.put(
       // 5. 获取更新后的文章信息
       const [updatedArticle] = await dbPool.query(
         `SELECT 
-          a.*, 
-          u.nickname AS author_name, 
-          u.avatar AS author_avatar 
-        FROM articles a 
-        LEFT JOIN users u ON a.author_id = u.id 
-        WHERE a.id = ?`,
+           a.*, 
+           u.nickname AS author_name, 
+           u.avatar AS author_avatar 
+         FROM articles a 
+         LEFT JOIN users u ON a.author_id = u.id 
+         WHERE a.id = ?`,
         [articleId]
       );
 
@@ -2756,6 +2777,184 @@ app.delete(
       apiResponse.success(res, "文章删除成功");
     } catch (err) {
       logger.error("删除文章失败:", err);
+      apiResponse.error(res, "删除失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 补全：修改视频接口
+// ==========================================
+app.put(
+  "/api/videos/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const videoId = req.params.id;
+      const userId = req.user.id;
+      const { title, description, cover_url, category, video_url } = req.body;
+
+      // 1. 验证归属
+      const [exists] = await dbPool.query(
+        "SELECT id FROM videos WHERE id = ? AND user_id = ?",
+        [videoId, userId]
+      );
+      if (exists.length === 0 && req.user.role !== "admin") {
+        return apiResponse.error(res, "无权修改或视频不存在", 403);
+      }
+
+      // 2. 执行更新 (注意：这里允许修改视频链接，万一用户填错了想换一个)
+      await dbPool.query(
+        "UPDATE videos SET title = ?, description = ?, cover_url = ?, category = ?, video_url = ? WHERE id = ?",
+        [title, description, cover_url, category, video_url, videoId]
+      );
+
+      logger.info(`📝 视频更新成功: ID=${videoId}`);
+      apiResponse.success(res, "视频信息已更新");
+    } catch (err) {
+      logger.error("更新视频失败:", err);
+      apiResponse.error(res, "更新失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 补全：修改音频接口
+// ==========================================
+app.put(
+  "/api/audios/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const audioId = req.params.id;
+      const userId = req.user.id;
+      const { title, description, cover_url, category, audio_url } = req.body;
+
+      // 1. 验证归属
+      const [exists] = await dbPool.query(
+        "SELECT id FROM audios WHERE id = ? AND user_id = ?",
+        [audioId, userId]
+      );
+      if (exists.length === 0 && req.user.role !== "admin") {
+        return apiResponse.error(res, "无权修改或音频不存在", 403);
+      }
+
+      // 2. 执行更新
+      await dbPool.query(
+        "UPDATE audios SET title = ?, description = ?, cover_url = ?, category = ?, audio_url = ? WHERE id = ?",
+        [title, description, cover_url, category, audio_url, audioId]
+      );
+
+      logger.info(`📝 音频更新成功: ID=${audioId}`);
+      apiResponse.success(res, "音频信息已更新");
+    } catch (err) {
+      logger.error("更新音频失败:", err);
+      apiResponse.error(res, "更新失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 补全：删除视频接口
+// ==========================================
+app.delete(
+  "/api/videos/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const videoId = req.params.id;
+      const userId = req.user.id;
+
+      // 1. 检查视频是否存在
+      const [existing] = await dbPool.query(
+        "SELECT user_id FROM videos WHERE id = ?",
+        [videoId]
+      );
+      if (existing.length === 0)
+        return apiResponse.error(res, "视频不存在", 404);
+
+      // 2. 权限检查
+      if (existing[0].user_id !== userId && req.user.role !== "admin") {
+        return apiResponse.error(res, "无权删除", 403);
+      }
+
+      // 3. 级联删除关联数据
+      await Promise.all([
+        dbPool.query(
+          "DELETE FROM comments WHERE work_type = 'video' AND article_id = ?",
+          [videoId]
+        ),
+        dbPool.query("DELETE FROM video_likes WHERE video_id = ?", [videoId]),
+        dbPool.query("DELETE FROM video_favorites WHERE video_id = ?", [
+          videoId,
+        ]),
+        dbPool.query("DELETE FROM column_articles WHERE video_id = ?", [
+          videoId,
+        ]),
+      ]);
+
+      // 4. 删除本体
+      await dbPool.query("DELETE FROM videos WHERE id = ?", [videoId]);
+
+      logger.info(`🗑️ 视频删除成功: ID=${videoId}`);
+      apiResponse.success(res, "删除成功");
+    } catch (err) {
+      logger.error("删除视频失败:", err);
+      apiResponse.error(res, "删除失败");
+    }
+  }
+);
+
+// ==========================================
+// 🔥 补全：删除音频接口
+// ==========================================
+app.delete(
+  "/api/audios/:id",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const audioId = req.params.id;
+      const userId = req.user.id;
+
+      // 1. 检查音频是否存在
+      const [existing] = await dbPool.query(
+        "SELECT user_id FROM audios WHERE id = ?",
+        [audioId]
+      );
+      if (existing.length === 0)
+        return apiResponse.error(res, "音频不存在", 404);
+
+      // 2. 权限检查
+      if (existing[0].user_id !== userId && req.user.role !== "admin") {
+        return apiResponse.error(res, "无权删除", 403);
+      }
+
+      // 3. 级联删除关联数据
+      await Promise.all([
+        dbPool.query(
+          "DELETE FROM comments WHERE work_type = 'audio' AND article_id = ?",
+          [audioId]
+        ),
+        dbPool.query("DELETE FROM audio_likes WHERE audio_id = ?", [audioId]),
+        dbPool.query("DELETE FROM audio_favorites WHERE audio_id = ?", [
+          audioId,
+        ]),
+        dbPool.query("DELETE FROM column_articles WHERE audio_id = ?", [
+          audioId,
+        ]),
+      ]);
+
+      // 4. 删除本体
+      await dbPool.query("DELETE FROM audios WHERE id = ?", [audioId]);
+
+      logger.info(`🗑️ 音频删除成功: ID=${audioId}`);
+      apiResponse.success(res, "删除成功");
+    } catch (err) {
+      logger.error("删除音频失败:", err);
       apiResponse.error(res, "删除失败");
     }
   }
@@ -3339,14 +3538,15 @@ app.post(
         return apiResponse.error(res, "请选择图片", 400);
       }
 
-      // 生成图片URL数组
+      // 🔥 修复：统一返回相对路径，确保前端能正确拼接
       const urls = files.map((file) => {
-        // 返回相对路径，前端可以通过静态资源访问
-        const relativePath = file.path.replace(/\\/g, "/");
-        return `/uploads/${path.basename(relativePath)}`;
+        const fileName = file.filename; // 直接使用 multer 生成的文件名
+        return `/uploads/${fileName}`; // 返回统一格式：/uploads/xxx.jpg
       });
 
-      logger.info(`评论图片上传成功: ${urls.length} 张图片`);
+      logger.info(
+        `📸 评论图片上传成功: ${urls.length} 张, 用户ID=${req.user.id}`
+      );
       apiResponse.success(res, "图片上传成功", { urls });
     } catch (err) {
       logger.error("评论图片上传失败:", err);
@@ -3365,10 +3565,10 @@ app.post(
     // 强制转换 ID 为数字
     body("article_id").toInt().isInt().withMessage("作品ID无效"),
 
-    // ✅ 修复：验证器增加 "audio" 类型
+    // ✅✅✅ 核心修复：这里必须加上 "short"，否则图文作品无法评论！
     body("type")
       .optional()
-      .isIn(["article", "video", "audio"])
+      .isIn(["article", "video", "audio", "short"])
       .withMessage("作品类型无效"),
 
     // 内容与图片二选一验证
@@ -3774,14 +3974,15 @@ app.get("/api/user/profile", async (req, res) => {
     const user = userResults[0];
     const userId = user.id;
 
-    // 2. 实时聚合统计 (核心修改：从 likes 和 favorites 表中统计该作者获得的总数)
+    // 2. 实时聚合统计 (🔥 核心修改：增加 categoryCount 统计)
     const [
-      [articleStats], // 原创数、总阅读、总评论 (来自 articles 表)
+      [articleStats],   // 原创数、总阅读、总评论
       [followerResult], // 粉丝数
-      [followingResult], // 关注数
-      [totalLikesRes], // 🔥 累计获赞数 (跨表统计)
-      [totalFavsRes], // 🔥 累计被收藏数 (跨表统计)
-      [settingResult], // 导航配置
+      [followingResult],// 关注数
+      [totalLikesRes],  // 累计获赞
+      [totalFavsRes],   // 累计被收藏
+      [categoryRes],    // 🔥 新增：统计该作者用过多少个不同的分类
+      [settingResult],  // 导航配置
     ] = await Promise.all([
       dbPool.query(
         "SELECT COUNT(*) as originalCount, SUM(views) as totalViews, SUM(comments) as totalComments FROM articles WHERE author_id = ?",
@@ -3795,14 +3996,17 @@ app.get("/api/user/profile", async (req, res) => {
         "SELECT COUNT(*) as total FROM follows WHERE follower_id = ?",
         [userId]
       ),
-      // 统计所有属于该作者的文章在 article_likes 表中的总行数
       dbPool.query(
         "SELECT COUNT(*) as total FROM article_likes WHERE article_id IN (SELECT id FROM articles WHERE author_id = ?)",
         [userId]
       ),
-      // 统计所有属于该作者的文章在 article_favorites 表中的总行数
       dbPool.query(
         "SELECT COUNT(*) as total FROM article_favorites WHERE article_id IN (SELECT id FROM articles WHERE author_id = ?)",
+        [userId]
+      ),
+      // 🔥🔥🔥 新增这行 SQL 🔥🔥🔥
+      dbPool.query(
+        "SELECT COUNT(DISTINCT category) as count FROM articles WHERE author_id = ?",
         [userId]
       ),
       dbPool.query("SELECT nav_config FROM user_settings WHERE user_id = ?", [
@@ -3819,8 +4023,9 @@ app.get("/api/user/profile", async (req, res) => {
         followingCount: followingResult[0].total || 0,
         totalViews: articleStats[0].totalViews || 0,
         totalComments: articleStats[0].totalComments || 0,
-        totalLikes: totalLikesRes[0].total || 0, // 🔥 现在的数字是真实的了
-        totalFavorites: totalFavsRes[0].total || 0, // 🔥 现在的数字是真实的了
+        totalLikes: totalLikesRes[0].total || 0,
+        totalFavorites: totalFavsRes[0].total || 0,
+        categoryCount: categoryRes[0].count || 0, // 🔥 将分类数加入返回数据
       },
       navConfig: settingResult.length > 0 ? settingResult[0].nav_config : null,
     };
@@ -5049,24 +5254,99 @@ app.post("/api/videos", authenticateToken, async (req, res) => {
   }
 });
 
-// 4. 获取我的作品列表 (文章 + 视频)
+// ==========================================
+// 🔥 终极版：获取我的作品列表 (全字段补全 + 统计逻辑修正)
+// ==========================================
 app.get("/api/user/my-works", authenticateToken, async (req, res) => {
   const userId = req.user.id;
+  const type = req.query.type || "article";
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const offset = (page - 1) * limit;
+
   try {
-    const [articles] = await dbPool.query(
-      "SELECT id, title, created_at, 'article' as type FROM articles WHERE author_id = ?",
-      [userId]
-    );
-    const [videos] = await dbPool.query(
-      "SELECT id, title, created_at, 'video' as type FROM videos WHERE user_id = ?",
-      [userId]
-    );
-    const combined = [...articles, ...videos].sort(
-      (a, b) => b.created_at - a.created_at
-    );
-    apiResponse.success(res, "获取作品成功", combined);
+    let sql = "";
+    let countSql = "";
+    let params = [userId, limit, offset];
+    let countParams = [userId];
+
+    // 1. 视频 (关键修复：添加 video_url，修正统计表名)
+    if (type === "video") {
+      sql = `
+        SELECT 
+          videos.id, videos.title, videos.description as summary, videos.cover_url as cover_image, videos.video_url, videos.views, videos.created_at, videos.category, 'video' as work_type,
+          u.nickname as author_name, u.username as author_username, u.avatar as author_avatar,
+          (SELECT COUNT(*) FROM video_likes WHERE video_id = videos.id) as likes,
+          (SELECT COUNT(*) FROM video_favorites WHERE video_id = videos.id) as favorites,
+          (SELECT COUNT(*) FROM comments WHERE article_id = videos.id AND work_type = 'video') as comments
+        FROM videos 
+        LEFT JOIN users u ON videos.user_id = u.id
+        WHERE videos.user_id = ? 
+        ORDER BY videos.created_at DESC 
+        LIMIT ? OFFSET ?`;
+
+      countSql = `SELECT COUNT(*) as total FROM videos WHERE user_id = ?`;
+    }
+    // 2. 音频 (关键修复：添加 audio_url，修正统计表名)
+    else if (type === "audio") {
+      sql = `
+        SELECT 
+          audios.id, audios.title, audios.description as summary, audios.cover_url as cover_image, audios.audio_url, audios.views, audios.created_at, audios.category, 'audio' as work_type,
+          u.nickname as author_name, u.username as author_username, u.avatar as author_avatar,
+          (SELECT COUNT(*) FROM audio_likes WHERE audio_id = audios.id) as likes,
+          (SELECT COUNT(*) FROM audio_favorites WHERE audio_id = audios.id) as favorites,
+          (SELECT COUNT(*) FROM comments WHERE article_id = audios.id AND work_type = 'audio') as comments
+        FROM audios 
+        LEFT JOIN users u ON audios.user_id = u.id
+        WHERE audios.user_id = ? 
+        ORDER BY audios.created_at DESC 
+        LIMIT ? OFFSET ?`;
+
+      countSql = `SELECT COUNT(*) as total FROM audios WHERE user_id = ?`;
+    }
+    // 3. 文章/图文
+    else {
+      let typeCondition = "";
+      if (type === "short") {
+        typeCondition =
+          "AND (articles.work_type = 'short' OR (articles.work_type = 'article' AND articles.cover_image IS NOT NULL AND articles.cover_image != ''))";
+      } else {
+        typeCondition =
+          "AND (articles.work_type = 'article' OR articles.work_type IS NULL) AND (articles.cover_image IS NULL OR articles.cover_image = '')";
+      }
+
+      sql = `
+        SELECT 
+          articles.id, articles.title, articles.summary, articles.cover_image, articles.views, articles.created_at, articles.category, articles.work_type, articles.content,
+          u.nickname as author_name, u.username as author_username, u.avatar as author_avatar,
+          (SELECT COUNT(*) FROM article_likes WHERE article_id = articles.id) as likes,
+          (SELECT COUNT(*) FROM article_favorites WHERE article_id = articles.id) as favorites,
+          (SELECT COUNT(*) FROM comments WHERE article_id = articles.id AND work_type = articles.work_type) as comments
+        FROM articles 
+        LEFT JOIN users u ON articles.author_id = u.id
+        WHERE articles.author_id = ? ${typeCondition} 
+        ORDER BY articles.created_at DESC 
+        LIMIT ? OFFSET ?`;
+
+      countSql = `SELECT COUNT(*) as total FROM articles WHERE author_id = ? ${typeCondition}`;
+    }
+
+    const [rows] = await dbPool.query(sql, params);
+    const [countResult] = await dbPool.query(countSql, countParams);
+    const total = countResult[0].total;
+
+    apiResponse.success(res, "获取作品成功", {
+      list: rows,
+      pagination: {
+        current: page,
+        pageSize: limit,
+        total: total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (err) {
-    apiResponse.error(res, "获取作品失败");
+    logger.error("获取作品失败:", err);
+    apiResponse.error(res, "获取作品失败: " + err.message);
   }
 });
 
@@ -5142,10 +5422,110 @@ app.post("/api/audios", authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 静态文件服务
+// 🔥 社交列表接口 (粉丝 & 关注)
+// ==========================================
+
+// 1. 获取我的粉丝列表
+app.get("/api/user/followers", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 12; // 卡片布局每页多一点
+    const offset = (page - 1) * limit;
+
+    // 查询粉丝列表 (关联 users 表获取粉丝的详细信息)
+    // 并且统计粉丝的粉丝数(fans_count)和关注数(follow_count)
+    const sql = `
+      SELECT 
+        u.id, u.username, u.nickname, u.avatar, u.bio,
+        (SELECT COUNT(*) FROM follows WHERE following_id = u.id) as fans_count,
+        (SELECT COUNT(*) FROM follows WHERE follower_id = u.id) as follow_count,
+        -- 判断我是否也关注了他 (互关)
+        (SELECT COUNT(*) FROM follows WHERE follower_id = ? AND following_id = u.id) as is_following
+      FROM follows f
+      JOIN users u ON f.follower_id = u.id
+      WHERE f.following_id = ?
+      ORDER BY f.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const countSql = `SELECT COUNT(*) as total FROM follows WHERE following_id = ?`;
+
+    const [rows] = await dbPool.query(sql, [userId, userId, limit, offset]);
+    const [countResult] = await dbPool.query(countSql, [userId]);
+    const total = countResult[0].total;
+
+    apiResponse.success(res, "获取粉丝列表成功", {
+      list: rows,
+      pagination: {
+        current: page,
+        pageSize: limit,
+        total: total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (err) {
+    logger.error("获取粉丝列表失败:", err);
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// 2. 获取我关注的人列表
+app.get("/api/user/following", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 12;
+    const offset = (page - 1) * limit;
+
+    const sql = `
+      SELECT 
+        u.id, u.username, u.nickname, u.avatar, u.bio,
+        (SELECT COUNT(*) FROM follows WHERE following_id = u.id) as fans_count,
+        (SELECT COUNT(*) FROM follows WHERE follower_id = u.id) as follow_count,
+        1 as is_following -- 我关注列表里的人，肯定是我关注的
+      FROM follows f
+      JOIN users u ON f.following_id = u.id
+      WHERE f.follower_id = ?
+      ORDER BY f.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const countSql = `SELECT COUNT(*) as total FROM follows WHERE follower_id = ?`;
+
+    const [rows] = await dbPool.query(sql, [userId, limit, offset]);
+    const [countResult] = await dbPool.query(countSql, [userId]);
+    const total = countResult[0].total;
+
+    apiResponse.success(res, "获取关注列表成功", {
+      list: rows,
+      pagination: {
+        current: page,
+        pageSize: limit,
+        total: total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (err) {
+    logger.error("获取关注列表失败:", err);
+    apiResponse.error(res, "获取失败");
+  }
+});
+
+// ==========================================
+// 🔥 静态文件服务 - 添加 CORS 支持
 // ==========================================
 app.use(
   "/uploads",
+  (req, res, next) => {
+    // 🔥 关键：为静态资源添加 CORS 响应头
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+
+    next();
+  },
   express.static("uploads", {
     maxAge: "1d",
     index: false,

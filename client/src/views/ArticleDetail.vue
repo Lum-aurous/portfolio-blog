@@ -6,9 +6,13 @@ import { message } from '@/utils/message.js'
 import { api } from '@/utils/api'
 import html2canvas from 'html2canvas'
 import CommentItem from '@/components/CommentItem.vue'
+import MarkdownIt from 'markdown-it'
+import 'github-markdown-css/github-markdown-light.css'
 
 const route = useRoute()
 const router = useRouter()
+// 3. 初始化解析器 (配置要和创作中心保持一致，支持 html 标签)
+const md = new MarkdownIt({ html: true, linkify: true, breaks: true })
 const userStore = useUserStore()
 const article = ref(null)
 const comments = ref([])
@@ -34,9 +38,11 @@ const isCreatingInModal = ref(false) // 🔥 新增：是否处于"创建模式"
 const newColumnData = ref({ name: '', description: '' }) // 🔥 新增：快捷创建表单
 const isSubmitting = ref(false)
 
-// 🔥 必须定义这个，否则页面会报错
+// 🔥 使用 md.render 将文本转为 HTML
 const renderedContent = computed(() => {
-    return article.value?.content || ''
+    const rawContent = article.value?.content || ''
+    // 这里的 render 方法会将 ![图片](url) 自动转换为 <img src="url"> 标签
+    return md.render(rawContent)
 })
 
 // ✅ 1. 定义一个安全的当前页面 URL（用于二维码）
@@ -440,11 +446,11 @@ const changeHighlightColor = (theme) => {
 }
 
 // 获取文章
+
 const fetchArticle = async () => {
     loading.value = true
     try {
-        // 1. 尝试从 URL 获取 type，如果没有，先暂时默认为 article
-        // (这是为了应对刷新页面时 query 参数可能丢失的情况)
+        // 1. 尝试从 URL 获取 type
         let requestType = route.query.type || 'article'
 
         const res = await api.get(`/articles/${route.params.id}`, {
@@ -453,40 +459,59 @@ const fetchArticle = async () => {
 
         if (res.data.success) {
             const serverData = res.data.data
-            article.value = serverData
+            article.value = serverData // 🔥 先赋值给响应式对象
 
-            // 🔥🔥🔥 核心修复 A：类型自动修正逻辑
-            // 数据回来后，根据内容特征（audio_url/video_url）强制修正内存中的 work_type
-            // 这样后续的评论和点赞操作都能拿到正确的类型
+            // ==================== 🔥🔥🔥 核心类型判断与封面修复逻辑 (合并版) ====================
+
+            // A. 优先判断：如果后端直接明确了类型，或者具备音视频特征
             if (serverData.work_type) {
-                // 如果后端直接给了 work_type，直接用
-            } else if (serverData.audio_url) {
-                article.value.work_type = 'audio'
+                // 后端有值，直接信赖后端，不做修改
             } else if (serverData.video_url) {
                 article.value.work_type = 'video'
+            } else if (serverData.audio_url) {
+                article.value.work_type = 'audio'
             } else {
-                article.value.work_type = 'article'
-            }
+                // B. 次级判断：既不是视频也不是音频，可能是 'short' 或 'article'
+                // 此时尝试从内容中提取封面，并据此判断是否为图文
 
-            // 2. 更新页面显示的计数
+                // 如果没有封面，或者是为了确认 short 类型
+                if (!article.value.cover_image && article.value.content) {
+                    // 正则匹配 Markdown 图片
+                    const imgMatch = article.value.content.match(/!\[.*?\]\((.*?)\)/);
+
+                    if (imgMatch && imgMatch[1]) {
+                        // 📸 找到了图片！
+                        article.value.cover_image = imgMatch[1]; // 自动设为封面
+                        article.value.work_type = 'short';       // 判定为图文
+                    } else {
+                        // 📄 没找到图片，那就是纯文章
+                        article.value.work_type = 'article';
+                    }
+                } else {
+                    // 有封面但前面没判断出类型的，默认为文章
+                    // (或者如果原本就是 short 但已有封面，这里保持 short 需要后端配合，
+                    //  但在前端兜底逻辑里，没音视频且没经过上面提取逻辑的，暂归为 article)
+                    //  为了保险，如果此时 work_type 还是空的，给个默认值
+                    if (!article.value.work_type) article.value.work_type = 'article';
+                }
+            }
+            // ==================== 逻辑结束 ====================
+
+            // 2. 更新计数
             likeCount.value = Number(serverData.likes || 0)
             favoriteCount.value = Number(serverData.favorites || 0)
 
-            // 3. 增加浏览量 (使用修正后的类型)
-            // 注意：这里使用了 currentWorkType 计算属性，它现在已经指向了正确的值
+            // 3. 增加浏览量 (这里 currentWorkType 依赖于上面 article.value.work_type 的正确性)
             api.post(`/articles/${route.params.id}/view`, { type: currentWorkType.value })
                 .then(() => {
-                    // 视觉上立即 +1
                     article.value.views = (article.value.views || 0) + 1
                 })
                 .catch(err => console.warn('统计失败:', err))
 
-            // 🔥🔥🔥 核心修复 B：严格的执行顺序
-            // 只有当文章类型确定后，才去拉取评论列表
-            // 这样 fetchComments() 内部读取到的 currentWorkType 才是 'audio'，从而查到正确的评论
+            // 4. 获取评论 (必须在类型确定后执行)
             fetchComments()
 
-            // 4. 最后查询互动状态 (点赞/收藏高亮)
+            // 5. 获取互动状态
             nextTick(() => {
                 fetchInteractionStatus()
             })
@@ -498,6 +523,8 @@ const fetchArticle = async () => {
         loading.value = false
     }
 }
+
+// 获取评论
 const fetchComments = async () => {
     try {
         const res = await api.get('/comments', {
@@ -841,11 +868,23 @@ const downloadCard = async () => {
 
 const getProxyUrl = (url) => {
     if (!url) return ''
+
+    // 1. 如果是相对路径，或者是 data:base64，直接返回
     if (url.startsWith('/uploads') || url.startsWith('data:') || url.startsWith('/api')) {
         return url
     }
+
+    // 🔥 2. 核心优化：如果是指向咱们自己服务器的绝对路径，也不要走代理！
+    // 比如 http://localhost:3000/uploads/xxx.jpg
     const isDev = import.meta.env.VITE_APP_ENV === 'development'
     const apiBase = isDev ? import.meta.env.VITE_API_TARGET : window.location.origin
+
+    // 如果 URL 包含了我们的 API 基础地址（比如 localhost:3000），说明是自家资源
+    if (url.includes('localhost:3000') || (apiBase && url.includes(apiBase))) {
+        return url;
+    }
+
+    // 3. 只有真正的“外站”图片（如 unsplash, wallhaven）才走代理
     return `${apiBase}/api/proxy-image?url=${encodeURIComponent(url)}`
 }
 
@@ -871,16 +910,19 @@ const scrollToComments = () => {
 
 // 1. 识别内容的媒体类型
 const contentMediaType = computed(() => {
-    // 逻辑：优先判断视频，其次音频，再看有没有封面
-    if (article.value?.video_url) return 'video';
-    if (article.value?.audio_url) return 'audio';
-    if (article.value?.cover_image) return 'standard';
-    return 'text-only'; // 什么都没有，就是纯文本
+    if (!article.value) return 'text-only';
+    if (article.value.video_url) return 'video';
+    if (article.value.audio_url) return 'audio';
+
+    // 🔥 只要有封面（不管是手动传的还是自动提取的），就视为 standard 模式
+    if (article.value.cover_image || article.value.work_type === 'short') {
+        return 'standard';
+    }
+
+    return 'text-only';
 });
 
 // 2. 增强背景样式：如果是音视频，给背景加一个深度模糊，营造氛围感
-
-// ✅ 优化后的背景逻辑：使用 getProxyUrl 确保相对路径和跨域图片都能正常显示
 const heroBgStyle = computed(() => {
     const type = contentMediaType.value;
 
@@ -891,17 +933,30 @@ const heroBgStyle = computed(() => {
         };
     }
 
-    // 🔑 核心修正：使用 getProxyUrl 包装原始封面路径
-    const rawUrl = article.value?.cover_image || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg';
-    const finalUrl = getProxyUrl(rawUrl);
+    let rawUrl = article.value?.cover_image;
+    if (!rawUrl && article.value?.content) {
+        const match = article.value.content.match(/!\[.*?\]\((.*?)\)/);
+        if (match) rawUrl = match[1];
+    }
+    if (!rawUrl) rawUrl = defaultAuthorAvatar;
 
-    const isMedia = ['video', 'audio'].includes(type);
+    const finalUrl = getProxyUrl(rawUrl);
+    const isMedia = ['video', 'audio', 'standard'].includes(type);
 
     return {
         backgroundImage: `url(${finalUrl})`,
-        filter: isMedia ? 'blur(40px) brightness(0.8) saturate(1.2)' : 'none',
-        transform: isMedia ? 'scale(1.15)' : 'none',
-        transition: 'all 1s ease'
+
+        // 🔥🔥🔥 核心修改点：大幅降低或移除模糊 🔥🔥🔥
+        // 方案 A (推荐)：完全清晰，只稍微压暗一点点亮度，保证白色标题可见
+        filter: isMedia ? 'brightness(0.85)' : 'none',
+
+        // 方案 B (可选)：保留极轻微的磨砂感
+        // filter: isMedia ? 'blur(3px) brightness(0.8)' : 'none',
+
+        transform: isMedia ? 'scale(1.05)' : 'none', // 稍微放大一点点防止边缘露白即可
+        transition: 'all 1s ease',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center 30%' // 🔥 优化：焦点稍微上移，通常人物脸部或主体在图片中上部
     };
 });
 
@@ -920,15 +975,23 @@ const musicalNotes = ref([
 ])
 
 // ✅ 新增：多重校验作品类型，确保评论和互动发送正确的标识
+// ✅ 修改后：加入 short 类型支持
 const currentWorkType = computed(() => {
-    if (!article.value) return 'article'; // 防止空指针
-    // 1. 优先信赖后端返回的显式字段
+    if (!article.value) return 'article';
+
+    // 1. 优先信赖后端
     if (article.value.work_type) return article.value.work_type;
-    // 2. 其次看 URL
+
+    // 2. 其次看 URL 参数
     if (route.query.type) return route.query.type;
-    // 3. 最后根据特征推断
+
+    // 3. 特征推断
     if (article.value.audio_url) return 'audio';
     if (article.value.video_url) return 'video';
+
+    // 🔥 新增：如果内容里包含 markdown 图片语法，大概率是图文
+    if (/!\[.*?\]\(.*?\)/.test(article.value.content)) return 'short';
+
     return 'article';
 });
 
@@ -962,6 +1025,18 @@ onMounted(() => {
     nextTick(() => {
         setTimeout(handleSmartSidebar, 800) // 等待 Markdown 渲染完毕后再检测
     })
+
+    // 🔥🔥 新增：给 markdown-body 绑定点击事件，实现正文图片点击放大
+    const contentBox = document.querySelector('.markdown-body')
+    if (contentBox) {
+        contentBox.addEventListener('click', (e) => {
+            // 如果点击的是图片
+            if (e.target.tagName === 'IMG') {
+                e.stopPropagation(); // 阻止冒泡
+                openLightbox(e.target.src); // 调用你现有的灯箱函数
+            }
+        })
+    }
 })
 
 onUnmounted(() => {
@@ -1035,7 +1110,6 @@ onUnmounted(() => {
                 </div>
 
                 <template v-else>
-
                     <div v-if="contentMediaType === 'audio'" class="media-preview-aside">
                         <div class="media-box audio">
                             <img :src="article.cover_image || defaultAvatar" class="media-poster">
@@ -1419,11 +1493,49 @@ onUnmounted(() => {
     background: transparent !important;
 }
 
-/* 如果希望 Markdown 正文里的加粗字体也跟着变色，添加这个： */
-.markdown-body :deep(strong) {
-    color: var(--highlight-color);
-    font-weight: bold;
-    transition: color 0.3s ease;
+/* ==================== 📸 图文详情页专属优化 ==================== */
+
+/* 1. 优化 Markdown 内部图片的显示 */
+.markdown-body :deep(img) {
+    display: block;
+    max-width: 100%;
+    /* 绝不超出容器 */
+    margin: 20px auto;
+    /* 上下留白，居中 */
+    border-radius: 8px;
+    /* 精致圆角 */
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    /* 悬浮感阴影 */
+    cursor: zoom-in;
+    /* 鼠标放上去变成放大镜 */
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* 2. 图片悬停微交互 */
+.markdown-body :deep(img):hover {
+    transform: scale(1.01);
+    /* 微微放大 */
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+}
+
+/* 3. 优化文字排版，让图文混排更舒服 */
+.markdown-body :deep(p) {
+    line-height: 1.8;
+    /* 增加行高，阅读不累 */
+    margin-bottom: 1.5em;
+    /* 段落间距 */
+    font-size: 1.05rem;
+    color: #4a4a4a;
+}
+
+/* 4. 引用块样式优化 (图文里常用的配文风格) */
+.markdown-body :deep(blockquote) {
+    border-left: 4px solid var(--highlight-color);
+    background: rgba(var(--highlight-color-rgb), 0.05);
+    padding: 15px 20px;
+    color: #666;
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
 }
 
 .article-page {

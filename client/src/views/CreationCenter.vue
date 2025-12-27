@@ -1,346 +1,554 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router' // 确保引入了 useRoute
 import { api } from '@/utils/api'
 import { message } from '@/utils/message.js'
 import MarkdownIt from 'markdown-it'
 import 'github-markdown-css/github-markdown-light.css'
+import ArticleItem from '@/components/ArticleItem.vue'
 
 const router = useRouter()
+const route = useRoute()
 const md = new MarkdownIt({ html: true, linkify: true, breaks: true })
 
 // ==================== 状态管理 ====================
 const activeTab = ref('article')
 const isSubmitting = ref(false)
-const sysCategories = ref([]) // 公共频道数据
-const userColumns = ref([])    // 个人专栏数据
+const sysCategories = ref([])
+const userColumns = ref([])
 const showNewColumnModal = ref(false);
 const newColumnName = ref('');
-const newColumnDesc = ref(''); // 🔥 新增：专栏描述状态
-// ✅ 1. 优化后的表单结构（增加摘要）
+const newColumnDesc = ref('');
+
+// 文章表单
 const articleForm = ref({
     title: '',
-    summary: '',     // 🔥 必须添加，否则后端验证不通过
+    summary: '',
     content: '',
     category: '',
     column_id: null,
     cover_image: ''
 })
 
-// 2. 获取公共频道 (sys_categories 表)
+// 🔥 新增：图文表单 (专门用于 activeTab === 'short')
+const shortForm = ref({
+    title: '',
+    summary: '',
+    content: '', // 最终也会转为 markdown
+    category: '',
+    column_id: null,
+    images: [] // 暂存上传的图片列表
+})
+
+// ==================== 数据获取 ====================
 const fetchCategories = async () => {
     try {
         const res = await api.get('/categories')
         if (res.data.success) {
-            sysCategories.value = res.data.data // 存入对象数组 [{name, icon...}]
-            // 默认选中第一个
+            sysCategories.value = res.data.data
             if (sysCategories.value.length > 0) {
+                // 初始化所有表单的分类
                 articleForm.value.category = sysCategories.value[0].name
+                shortForm.value.category = sysCategories.value[0].name
+                videoForm.value.category = sysCategories.value[0].name
+                audioForm.value.category = sysCategories.value[0].name
             }
         }
-    } catch (err) {
-        console.error("加载频道失败:", err)
-    }
+    } catch (err) { console.error("加载频道失败:", err) }
 }
 
-// 3. 获取我的专栏列表 (从后端简单接口获取)
 const fetchUserColumns = async () => {
     try {
         const res = await api.get('/user/columns/simple')
         if (res.data.success) {
-            userColumns.value = res.data.data // [{id, name}]
+            userColumns.value = res.data.data
         }
-    } catch (err) {
-        console.error("加载专栏失败:", err)
-    }
+    } catch (err) { console.error("加载专栏失败:", err) }
 }
 
-// 4. 处理专栏切换
-// ✅ 检查：确保 handleColumnChange 包含了 audio 分支
+// ==================== 专栏管理 ====================
 const handleColumnChange = () => {
     let currentColumnId;
-
-    // 💡 自动识别当前处于哪个创作模式并读取对应表单的 ID
-    if (activeTab.value === 'article') {
-        currentColumnId = articleForm.value.column_id;
-    } else if (activeTab.value === 'video') {
-        currentColumnId = videoForm.value.column_id;
-    } else if (activeTab.value === 'audio') {
-        currentColumnId = audioForm.value.column_id; // 🔥 确保这一行存在
-    }
+    if (activeTab.value === 'article') currentColumnId = articleForm.value.column_id;
+    else if (activeTab.value === 'video') currentColumnId = videoForm.value.column_id;
+    else if (activeTab.value === 'audio') currentColumnId = audioForm.value.column_id;
+    else if (activeTab.value === 'short') currentColumnId = shortForm.value.column_id; // 🔥 图文模式
 
     if (currentColumnId === '__new_column__') {
         showNewColumnModal.value = true;
-
-        // 🔑 立即重置该表单的 ID，防止关闭弹窗后下拉框依然卡在“开启新专栏”这一项上
+        // 重置选中项
         if (activeTab.value === 'article') articleForm.value.column_id = null;
         else if (activeTab.value === 'video') videoForm.value.column_id = null;
-        else if (activeTab.value === 'audio') audioForm.value.column_id = null; // 🔥 确保这一行存在
+        else if (activeTab.value === 'audio') audioForm.value.column_id = null;
+        else if (activeTab.value === 'short') shortForm.value.column_id = null;
     }
 }
 
-// 6. 确认建立新专栏
-// ✅ 检查：确保 confirmAddColumn 包含了 audio 的自动回填
 const confirmAddColumn = async () => {
     if (!newColumnName.value.trim()) return message.warning('请输入专栏名称');
-
     try {
         const res = await api.post('/columns', {
             name: newColumnName.value,
-            description: newColumnDesc.value // 我们之前优化的描述字段
+            description: newColumnDesc.value
         });
-
         if (res.data.success) {
             const newId = res.data.data.id;
-            message.success('新专栏已开启，描述已同步');
+            message.success('新专栏已开启');
+            await fetchUserColumns();
 
-            await fetchUserColumns(); // 重新拉取最新的专栏列表
+            // 自动选中
+            if (activeTab.value === 'article') articleForm.value.column_id = newId;
+            else if (activeTab.value === 'video') videoForm.value.column_id = newId;
+            else if (activeTab.value === 'audio') audioForm.value.column_id = newId;
+            else if (activeTab.value === 'short') shortForm.value.column_id = newId; // 🔥 图文
 
-            // 🔥 核心回填逻辑：根据当前 activeTab 自动选中新创建的专栏
-            if (activeTab.value === 'article') {
-                articleForm.value.column_id = newId;
-            } else if (activeTab.value === 'video') {
-                videoForm.value.column_id = newId;
-            } else if (activeTab.value === 'audio') {
-                audioForm.value.column_id = newId; // 👈 确保音频也能自动“钩中”新专栏
-            }
-
-            // 关闭并清空弹窗
             showNewColumnModal.value = false;
             newColumnName.value = '';
             newColumnDesc.value = '';
         }
-    } catch (err) {
-        message.error('创建失败: ' + err.message);
-    }
+    } catch (err) { message.error('创建失败: ' + err.message); }
 }
 
+// ==================== 📝 文章发布逻辑 ====================
 const renderedPreview = computed(() => md.render(articleForm.value.content || '*灵感实时预览...*'))
-const isSuccess = ref(false) // 是否发布成功，用于触发火漆印章动画
+const isSuccess = ref(false)
 
 const submitArticle = async () => {
+    // 1. 基础校验
     if (!articleForm.value.title.trim()) return message.warning('标题不可留白');
     if (!articleForm.value.content.trim()) return message.warning('请挥洒你的思绪');
 
-    // 自动兜底摘要
+    // 2. 自动生成摘要
     if (!articleForm.value.summary.trim()) {
         articleForm.value.summary = articleForm.value.content.substring(0, 80).replace(/[#*`>]/g, '') + '...';
     }
 
     isSubmitting.value = true;
     try {
-        const res = await api.post('/articles', articleForm.value);
-        if (res.data.success) {
-            // 🔥 第一步：标记成功，开始动画流程
-            isSuccess.value = true;
+        let res;
+        // 🔥 分支逻辑：编辑 vs 发布
+        if (isEditing.value) {
+            res = await api.put(`/articles/${currentEditingId.value}`, articleForm.value);
+        } else {
+            res = await api.post('/articles', articleForm.value);
+        }
 
-            // 🔥 第二步：等待 1.5 秒（留给印章落下和信封飞出的时间），再跳转
+        if (res.data.success) {
+            isSuccess.value = true;
             setTimeout(() => {
-                message.success('✨ 灵感已封缄寄出！');
-                router.push('/blog');
-            }, 1800);
+                message.success(isEditing.value ? '📝 修改已保存！' : '✨ 灵感已封缄寄出！');
+
+                if (isEditing.value) {
+                    resetForm();        // 重置表单
+                    activeTab.value = 'works'; // 编辑完跳回列表
+                } else {
+                    router.push('/blog'); // 新发布跳去博客页
+                }
+                isSuccess.value = false;
+            }, 1500);
         }
     } catch (err) {
-        message.error('封缄失败，请检查笔墨与网络');
+        message.error(isEditing.value ? '修改失败' : '发布失败');
         isSubmitting.value = false;
     }
 }
 
-/**
-    视频发布
- */
+// ==================== 📸 图文发布逻辑 (新功能) ====================
+const shortImagesInput = ref(null)
+// 🔥 新增：绑定右侧文本域的 DOM 元素，用于获取光标位置
+const shortContentRef = ref(null)
 
-// 🎬 视频表单状态
+// 批量上传图片并插入到编辑器
+const handleShortImagesUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+
+    console.log('📸 准备上传图片:', files.length, '张');
+
+    if (shortForm.value.images.length + files.length > 9) {
+        return message.warning('一次最多只能上传 9 张图片哦');
+    }
+
+    const formData = new FormData();
+    files.forEach(file => {
+        formData.append('images', file);
+    });
+
+    isSubmitting.value = true;
+    try {
+        const res = await api.post('/upload/comment-images', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+        });
+
+        if (res.data.success) {
+            const urls = res.data.data.urls;
+
+            // 拼接完整 URL
+            const isDev = import.meta.env.VITE_APP_ENV === 'development';
+            const apiBase = isDev ? 'http://localhost:3000' : window.location.origin;
+            const fullUrls = urls.map(url => `${apiBase}${url}`);
+
+            // 1. 追加到本地左侧图片列表
+            shortForm.value.images.push(...fullUrls);
+
+            // 2. 🔥 核心优化：生成 Markdown 并精准插入到光标位置
+            let imageMarkdown = '';
+            fullUrls.forEach(url => {
+                // 不再默认加前置换行符，而是根据插入位置决定
+                imageMarkdown += `![图片](${url})\n`;
+            });
+
+            const textarea = shortContentRef.value;
+            const currentContent = shortForm.value.content || '';
+
+            if (!textarea) {
+                // 如果找不到输入框（极少情况），默认追加到最后
+                shortForm.value.content = currentContent + imageMarkdown;
+            } else {
+                // 获取光标位置 (selectionStart)
+                const startPos = textarea.selectionStart;
+                const endPos = textarea.selectionEnd;
+
+                // 智能处理换行：
+                // 如果光标不在开头，且光标前一个字符不是换行符，我们给图片前面补一个换行，避免和文字粘连
+                const needPrefixNewLine = startPos > 0 && currentContent.charAt(startPos - 1) !== '\n';
+                const finalInsertText = (needPrefixNewLine ? '\n' : '') + imageMarkdown;
+
+                // ✂️ 字符串手术： 前半段 + 图片代码 + 后半段
+                const newContent =
+                    currentContent.substring(0, startPos) +
+                    finalInsertText +
+                    currentContent.substring(endPos, currentContent.length);
+
+                shortForm.value.content = newContent;
+
+                // 🎉 体验优化：上传完后，自动把光标移到图片代码的后面，方便用户继续打字
+                // nextTick 确保数据更新到 DOM 后再调整光标
+                setTimeout(() => {
+                    const newCursorPos = startPos + finalInsertText.length;
+                    textarea.focus();
+                    textarea.setSelectionRange(newCursorPos, newCursorPos);
+                }, 0);
+            }
+
+            message.success(`📸 成功添加 ${urls.length} 张图片`);
+
+            // 3. 设置封面逻辑 (保持不变)
+            if (!shortForm.value.cover_image && fullUrls.length > 0) {
+                shortForm.value.cover_image = fullUrls[0];
+            }
+        }
+    } catch (err) {
+        console.error('❌ 上传失败:', err);
+        message.error('图片上传失败: ' + (err.response?.data?.message || err.message));
+    } finally {
+        isSubmitting.value = false;
+        e.target.value = '';
+    }
+}
+
+// 🔥 优化后的删除逻辑：同步删除 Markdown 中的内容
+const removeShortImage = (index) => {
+    // 1. 获取要删除的图片 URL
+    const urlToRemove = shortForm.value.images[index];
+
+    if (urlToRemove) {
+        // 2. 构造正则，匹配 Markdown 图片语法: ![任意描述](具体URL)
+        // 这里的 escape 用来处理 URL 中可能存在的特殊符号，防止正则报错
+        const escapedUrl = urlToRemove.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // 匹配 ![...](url) 以及后面可能紧跟的一个换行符(\n?)，避免删除后留下空行
+        const regex = new RegExp(`!\\[.*?\\]\\(${escapedUrl}\\)\\n?`, 'g');
+
+        // 3. 替换内容
+        shortForm.value.content = shortForm.value.content.replace(regex, '');
+        console.log('🗑️ 已同步移除 Markdown 内容中的图片引用');
+    }
+
+    // 4. 原有的数组移除逻辑
+    shortForm.value.images.splice(index, 1);
+
+    // 5. 封面图重置逻辑 (保持不变)
+    if (shortForm.value.images.length > 0) {
+        if (!shortForm.value.images.includes(shortForm.value.cover_image)) {
+            shortForm.value.cover_image = shortForm.value.images[0];
+        }
+    } else {
+        shortForm.value.cover_image = '';
+    }
+}
+
+// 提交图文
+const submitShort = async () => {
+    // 1. 基础校验
+    if (!shortForm.value.title.trim()) return message.warning('📸 请给这组图文起个标题');
+    if (!shortForm.value.content.trim() && shortForm.value.images.length === 0) {
+        return message.warning('📝 请添加一些文字描述或图片');
+    }
+
+    // 2. 封面兜底逻辑：如果没有手动设置封面，自动用第一张图
+    // 注意：如果是编辑模式，可能已经有封面了，所以要判断 cover_image 是否为空
+    if (!shortForm.value.cover_image && shortForm.value.images.length > 0) {
+        shortForm.value.cover_image = shortForm.value.images[0];
+    }
+
+    // 3. 自动生成摘要
+    if (!shortForm.value.summary.trim()) {
+        const plainText = shortForm.value.content.replace(/!\[.*?\]\(.*?\)/g, '[图片]');
+        shortForm.value.summary = plainText.substring(0, 80).trim() + '...';
+    }
+
+    isSubmitting.value = true;
+    try {
+        // 构造 Payload
+        const payload = {
+            title: shortForm.value.title,
+            summary: shortForm.value.summary,
+            content: shortForm.value.content, // Markdown 内容
+            category: shortForm.value.category,
+            column_id: shortForm.value.column_id,
+            cover_image: shortForm.value.cover_image || null
+        };
+
+        let res;
+        // 🔥 分支逻辑
+        if (isEditing.value) {
+            // 图文本质上存储在 articles 表，所以调用 articles 的更新接口
+            res = await api.put(`/articles/${currentEditingId.value}`, payload);
+        } else {
+            res = await api.post('/articles', payload);
+        }
+
+        if (res.data.success) {
+            isSuccess.value = true;
+            setTimeout(() => {
+                message.success(isEditing.value ? '📸 修改已保存！' : '📸 图文故事已定格！');
+
+                if (isEditing.value) {
+                    resetForm();
+                    activeTab.value = 'works';
+                } else {
+                    router.push('/blog');
+                }
+                isSuccess.value = false;
+            }, 1500);
+        }
+    } catch (err) {
+        console.error('操作失败:', err);
+        message.error('操作失败: ' + (err.response?.data?.message || err.message));
+        isSubmitting.value = false;
+    }
+}
+
+// 🔥 新增：记录当前正在被拖拽的图片索引
+const dragStartIndex = ref(null);
+
+// 🔥 新增：开始拖拽
+const handleDragStart = (index) => {
+    dragStartIndex.value = index;
+    console.log('✊ 开始拖拽第', index, '张图片');
+};
+
+// 🔥 新增：放置图片 (核心逻辑：交换数组位置 + 交换 Markdown 文本内容)
+const handleDrop = (dropIndex) => {
+    const dragIndex = dragStartIndex.value;
+
+    // 如果位置没变，或者没抓到东西，直接返回
+    if (dragIndex === null || dragIndex === dropIndex) return;
+
+    const images = shortForm.value.images;
+    const urlDrag = images[dragIndex];
+    const urlDrop = images[dropIndex];
+
+    console.log(`🔄 交换图片: 从 [${dragIndex}] 拖到了 [${dropIndex}]`);
+
+    // 1. 【Markdown 同步交换】(高难度动作)
+    // 我们需要在文本中找到这两张图片的引用，并交换它们的位置
+    // 构造精确的 Markdown 图片语法字符串
+    // 注意：这里假设用户没有修改图片的 alt 描述 "![图片]"，如果用户改了描述，单纯匹配 URL 也可以
+    // 为了稳健，我们直接在全文内容中交换 URL 字符串
+
+    // ⚠️ 警告：直接 replace 会有先后顺序问题，所以我们用一个中间占位符
+    const placeholder = '___TEMP_PLACEHOLDER___';
+
+    // 先把内容里的 urlDrop 换成 占位符
+    let newContent = shortForm.value.content.split(urlDrop).join(placeholder);
+    // 再把 urlDrag 换成 urlDrop
+    newContent = newContent.split(urlDrag).join(urlDrop);
+    // 最后把 占位符 换成 urlDrag
+    newContent = newContent.split(placeholder).join(urlDrag);
+
+    shortForm.value.content = newContent;
+
+    // 2. 【数组重排】
+    // 移动元素：先删除原来的，再插入到新位置
+    const [movedItem] = shortForm.value.images.splice(dragIndex, 1);
+    shortForm.value.images.splice(dropIndex, 0, movedItem);
+
+    // 3. 【封面逻辑重置】
+    // 始终确保数组的第一张是封面 (符合直觉)
+    if (shortForm.value.images.length > 0) {
+        shortForm.value.cover_image = shortForm.value.images[0];
+    }
+
+    // 重置拖拽状态
+    dragStartIndex.value = null;
+    message.success('排序已更新');
+};
+
+
+// 🔥 核心交互闭环：监听 Markdown 内容变化，反向同步删除左侧图片列表
+// 当用户在编辑器里手动删除了 ![图片](url) 代码时，左侧对应的图片预览也应该消失
+watch(() => shortForm.value.content, (newContent) => {
+    // 1. 如果列表本来就是空的，不需要处理
+    if (shortForm.value.images.length === 0) return;
+
+    // 2. 使用正则提取文本中目前所有的图片 URL
+    // 匹配格式：![...](url)
+    const regex = /!\[.*?\]\((.*?)\)/g;
+    const currentUrlsInText = new Set();
+    let match;
+
+    while ((match = regex.exec(newContent)) !== null) {
+        // match[1] 就是括号里的 url
+        currentUrlsInText.add(match[1]);
+    }
+
+    // 3. 过滤 images 数组
+    // 逻辑：保留那些【在文本中依然存在】的图片
+    const survivingImages = shortForm.value.images.filter(img => currentUrlsInText.has(img));
+
+    // 4. 只有当数量不一致时（说明有图片被删了），才更新数组，避免死循环
+    if (survivingImages.length !== shortForm.value.images.length) {
+        console.log('✂️ 监测到文本中删除了图片代码，同步移除左侧列表');
+        shortForm.value.images = survivingImages;
+
+        // 5. 再次检查封面逻辑 (如果封面图正好被删了，重置它)
+        if (shortForm.value.images.length > 0) {
+            if (!shortForm.value.images.includes(shortForm.value.cover_image)) {
+                shortForm.value.cover_image = shortForm.value.images[0];
+            }
+        } else {
+            shortForm.value.cover_image = '';
+        }
+    }
+});
+
+
+
+// ==================== 🎬 视频发布逻辑 (保持不变) ====================
 const videoForm = ref({
-    title: '',
-    description: '',
-    video_url: '',
-    cover_url: '',
-    category: '',
-    column_id: null
+    title: '', description: '', video_url: '', cover_url: '', category: '', column_id: null
 })
-
-// 上传进度控制
 const uploadProgress = ref(0);
 const isUploading = ref(false);
-
-// 视频预览
-const videoPreview = ref(null);
-const videoCoverPreview = ref(null);
-
-// 引用文件输入框
 const videoInput = ref(null)
 const coverInput = ref(null)
 
-// 1. 🎬 视频素材上传逻辑
 const onVideoFileChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    if (!['video/mp4', 'video/quicktime'].includes(file.type)) return message.error('仅支持 MP4/MOV');
+    if (file.size > 500 * 1024 * 1024) return message.error('文件过大');
 
-    // 💡 1. 检查文件类型 (保持原有逻辑)
-    if (!['video/mp4', 'video/quicktime'].includes(file.type)) {
-        return message.error('仅支持 MP4 或 MOV 格式的影片');
-    }
-
-    // 🔥 2. 新增：检查文件体积 (与后端 500MB 保持一致)
-    const maxSize = 500 * 1024 * 1024; // 500MB
-    if (file.size > maxSize) {
-        return message.error(`该影片太沉重了（超过500MB），请压缩后再试`);
-    }
-
-    // 💡 3. 执行上传逻辑 (保持原有逻辑)
     const formData = new FormData();
     formData.append('video', file);
-
     isUploading.value = true;
     uploadProgress.value = 0;
 
     try {
         videoForm.value.video_url = URL.createObjectURL(file);
-
-        // 💡 关键修改：显式指定 headers 为空，让浏览器自动计算 multipart/form-data 和 boundary
         const res = await api.post('/upload/video', formData, {
-            headers: {
-                'Content-Type': undefined // 👈 这一行非常关键，它能强迫 Axios 重新计算 Content-Type
-            },
-            onUploadProgress: (p) => {
-                uploadProgress.value = Math.round((p.loaded * 100) / p.total);
-            }
+            headers: { 'Content-Type': undefined },
+            onUploadProgress: (p) => { uploadProgress.value = Math.round((p.loaded * 100) / p.total); }
         });
-
         if (res.data.success) {
             videoForm.value.video_url = res.data.data.url;
-            message.success('🎬 映画素材已成功存入制片厂库');
+            message.success('🎬 素材已入库');
         }
-    } catch (err) {
-        // 💡 调试日志：捕获具体报错
-        console.error("❌ 上传响应状态:", err.response?.status);
-        console.error("❌ 上传错误数据:", err.response?.data);
-
-        message.error(err.response?.data?.message || '素材载入失败，请检查网络或文件大小');
-        videoForm.value.video_url = '';
-    } finally {
-        isUploading.value = false;
-    }
+    } catch (err) { message.error('上传失败'); videoForm.value.video_url = ''; }
+    finally { isUploading.value = false; }
 };
 
-// 2. 🎨 视频封面（海报）上传逻辑
 const onCoverFileChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-
     const formData = new FormData();
-    formData.append('image', file); // 💡 使用通用上传接口的 "image" 字段
-
+    formData.append('image', file);
     try {
         const res = await api.post('/upload', formData);
         if (res.data.success) {
             videoForm.value.cover_url = res.data.data.url;
-            message.success('✨ 艺术海报已就绪');
+            message.success('✨ 海报已就绪');
         }
-    } catch (err) {
-        message.error('海报上传失败');
-    }
+    } catch (err) { message.error('海报上传失败'); }
 };
 
-// 发布视频提交
 const submitVideo = async () => {
+    // 1. 基础校验
     if (!videoForm.value.title.trim()) return message.warning('请命名您的作品');
     if (!videoForm.value.video_url) return message.warning('请上传灵感视频');
 
     isSubmitting.value = true;
     try {
-        const res = await api.post('/videos', videoForm.value);
+        let res;
+        // 🔥 分支逻辑
+        if (isEditing.value) {
+            // 编辑模式：调用 PUT
+            res = await api.put(`/videos/${currentEditingId.value}`, videoForm.value);
+        } else {
+            // 发布模式：调用 POST
+            res = await api.post('/videos', videoForm.value);
+        }
+
         if (res.data.success) {
-            isSuccess.value = true; // 触发火漆印章动画
+            isSuccess.value = true;
             setTimeout(() => {
-                message.success('🎬 灵感映画已封缄展出！');
-                router.push('/blog');
-            }, 1800);
+                message.success(isEditing.value ? '🎬 信息已更新！' : '🎬 灵感映画已封缄展出！');
+
+                if (isEditing.value) {
+                    resetForm();
+                    activeTab.value = 'works';
+                } else {
+                    router.push('/blog');
+                }
+                isSuccess.value = false;
+            }, 1500);
         }
     } catch (err) {
-        message.error('展出失败，请重试');
+        message.error('操作失败');
         isSubmitting.value = false;
     }
 };
 
-// ==================== 🛠️ 补全缺失的工具函数 (解决 getProxyUrl 报错) ====================
-
-const getProxyUrl = (url) => {
-    // 💡 处理空值情况
-    if (!url || url === 'null' || url === 'undefined') {
-        return 'https://images.unsplash.com/photo-1514525253361-bee8718a300c?w=500' // 默认唱片占位图
-    }
-    // 💡 如果是本地上传路径，直接返回
-    if (url.startsWith('/uploads') || url.startsWith('data:') || url.startsWith('/api')) {
-        return url
-    }
-    // 💡 如果是外部图片，走代理逻辑（防止跨域）
-    const isDev = import.meta.env.VITE_APP_ENV === 'development'
-    const apiBase = isDev ? import.meta.env.VITE_API_TARGET : window.location.origin
-    return `${apiBase}/api/proxy-image?url=${encodeURIComponent(url)}`
-}
-
-// ==================== 📻 音频相关 Ref 引用 (修复点击报错) ====================
-
-// 1. 定义音频实时播放状态
+// ==================== 📻 音频发布逻辑 (保持不变) ====================
 const isAudioPlaying = ref(false);
-
-// 2. 定义播放状态处理函数
-const handleAudioPlay = () => {
-    isAudioPlaying.value = true;
-};
-
-const handleAudioPause = () => {
-    isAudioPlaying.value = false;
-};
-
-// --- 📻 音频表单状态声明 (如果之前漏掉了请补上) ---
-const audioForm = ref({
-    title: '',
-    description: '',
-    audio_url: '',
-    cover_url: '',
-    category: '音乐',
-    column_id: null
-})
-
-// 2. 定义上传按钮的 DOM 引用（解决之前 $refs 访问报错）
+const handleAudioPlay = () => { isAudioPlaying.value = true; };
+const handleAudioPause = () => { isAudioPlaying.value = false; };
+const audioForm = ref({ title: '', description: '', audio_url: '', cover_url: '', category: '音乐', column_id: null })
 const audioFileRef = ref(null)
 const audioCoverRef = ref(null)
-
 const isAudioUploading = ref(false)
 const audioUploadProgress = ref(0)
 
-// --- 📻 音频素材上传逻辑 ---
 const onAudioFileChange = async (e) => {
     const file = e.target.files[0]
     if (!file) return
-    if (!file.type.includes('audio')) return message.error('请选择有效的音频格式')
-
     const formData = new FormData()
     formData.append('audio', file)
-
     isAudioUploading.value = true
     try {
         const res = await api.post('/upload/audio', formData, {
             headers: { 'Content-Type': undefined },
-            onUploadProgress: (p) => {
-                audioUploadProgress.value = Math.round((p.loaded * 100) / p.total)
-            }
+            onUploadProgress: (p) => { audioUploadProgress.value = Math.round((p.loaded * 100) / p.total) }
         })
         if (res.data.success) {
             audioForm.value.audio_url = res.data.data.url
-            message.success('📻 旋律素材已载入唱片库')
+            message.success('📻 旋律已载入')
         }
-    } catch (err) {
-        message.error('音频载入失败')
-    } finally {
-        isAudioUploading.value = false
-    }
+    } catch (err) { message.error('载入失败') }
+    finally { isAudioUploading.value = false }
 }
 
-// --- 📻 唱片封面上传逻辑 ---
 const onAudioCoverChange = async (e) => {
     const file = e.target.files[0]
     if (!file) return
@@ -350,38 +558,374 @@ const onAudioCoverChange = async (e) => {
         const res = await api.post('/upload', formData)
         if (res.data.success) {
             audioForm.value.cover_url = res.data.data.url
-            message.success('✨ 艺术海报已就绪')
+            message.success('✨ 封面已就绪')
         }
-    } catch (err) { message.error('海报上传失败') }
+    } catch (err) { message.error('封面上传失败') }
 }
 
-// --- 📻 音频发布提交 ---
 const submitAudio = async () => {
-    if (!audioForm.value.title.trim()) return message.warning('请为旋律命名')
-    if (!audioForm.value.audio_url) return message.warning('请上传音频素材')
+    // 1. 基础校验
+    if (!audioForm.value.title.trim()) return message.warning('请命名')
+    if (!audioForm.value.audio_url) return message.warning('请上传素材')
 
     isSubmitting.value = true
     try {
-        const res = await api.post('/audios', audioForm.value)
+        let res;
+        // 🔥 分支逻辑
+        if (isEditing.value) {
+            res = await api.put(`/audios/${currentEditingId.value}`, audioForm.value)
+        } else {
+            res = await api.post('/audios', audioForm.value)
+        }
+
         if (res.data.success) {
             isSuccess.value = true
             setTimeout(() => {
-                message.success('📻 旋律已在星空下公开发行')
-                router.push('/blog')
+                message.success(isEditing.value ? '📻 唱片信息已修改！' : '📻 旋律已发行');
+
+                if (isEditing.value) {
+                    resetForm();
+                    activeTab.value = 'works';
+                } else {
+                    router.push('/blog');
+                }
+                isSuccess.value = false;
             }, 1800)
         }
     } catch (err) {
-        message.error('封缄失败')
-        isSubmitting.value = false
+        message.error('发布失败');
+        isSubmitting.value = false;
     }
 }
 
-// 监听分类列表变化，默认给视频一个分类
-watch(sysCategories, (newVal) => {
-    if (newVal.length > 0 && !videoForm.value.category) {
-        videoForm.value.category = newVal[0].name
+const getProxyUrl = (url) => {
+    // 1. Strict null value processing
+    if (!url || url === 'null' || url === 'undefined') {
+        // Return a stable default image
+        return 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&h=200';
+    }
+
+    // 2. Already a full URL
+    if (url.startsWith('http') || url.startsWith('data:')) {
+        return url;
+    }
+
+    // 3. Relative path: Complete full URL
+    const isDev = import.meta.env.VITE_APP_ENV === 'development';
+    const apiBase = isDev ? 'http://localhost:3000' : window.location.origin;
+
+    // Ensure it starts with /
+    let cleanPath = url.startsWith('/') ? url : '/' + url;
+
+    // If it is a local upload path, append the API domain name
+    if (cleanPath.startsWith('/uploads')) {
+        return `${apiBase}${cleanPath}`;
+    }
+
+    // 4. External image proxy
+    return `/api/proxy-image?url=${encodeURIComponent(url)}`;
+}
+
+// ==================== 📦 作品管理逻辑 (重构版) ====================
+const worksSubTab = ref('article') // 当前选中的子分类: article, video, audio, short
+const userWorks = ref([])
+const worksPagination = ref({
+    current: 1,
+    pageSize: 10,
+    total: 0,
+    totalPages: 1
+})
+const isLoadingWorks = ref(false)
+
+// 二级导航配置
+const worksNavItems = [
+    { id: 'article', label: '📝 文章', count: 0 }, // count 可以后续扩展
+    { id: 'short', label: '📸 图文', count: 0 },
+    { id: 'video', label: '🎬 视频', count: 0 },
+    { id: 'audio', label: '📻 音频', count: 0 }
+]
+
+// 数据清洗 (复用之前的逻辑，针对列表做适配)
+// CreationCenter.vue
+
+const sanitizeWorkItem = (item) => {
+    // 1. 类型兜底 (非常重要！防止后端旧数据没有 type)
+    let type = item.work_type || worksSubTab.value;
+
+    // 2. 封面处理
+    let cover = item.cover_image;
+    // 图文自动提取逻辑
+    if (type === 'short' && !cover && item.content) {
+        const imgMatch = item.content.match(/!\[.*?\]\((.*?)\)/);
+        if (imgMatch) cover = imgMatch[1];
+    }
+
+    // 3. 视频路径修正
+    let videoUrl = item.video_url;
+    if (type === 'video' && videoUrl) {
+        // 确保路径以 / 开头 (如果不是 http 开头)
+        if (!videoUrl.startsWith('http') && !videoUrl.startsWith('/')) {
+            videoUrl = '/' + videoUrl;
+        }
+    }
+
+    // 4. 音频路径修正
+    let audioUrl = item.audio_url;
+    if (type === 'audio' && audioUrl) {
+        if (!audioUrl.startsWith('http') && !audioUrl.startsWith('/')) {
+            audioUrl = '/' + audioUrl;
+        }
+    }
+
+    // 5. 🔥 返回重组后的对象 (关键！不能只返回 item)
+    return {
+        ...item,
+        work_type: type,      // 确保组件拿到正确的类型
+        cover_image: cover,   // 确保组件拿到提取后的封面
+        video_url: videoUrl,  // 确保组件拿到修正后的视频地址
+        audio_url: audioUrl,  // 确保组件拿到修正后的音频地址
+
+        // 统计数据兜底
+        likes: Number(item.likes || 0),
+        favorites: Number(item.favorites || 0),
+        comments: Number(item.comments || 0),
+
+        // 作者信息兜底
+        author_name: item.author_name || '我',
+        author_avatar: item.author_avatar || '',
+        author_username: item.author_username || ''
+    };
+}
+
+// 获取作品列表
+const fetchUserWorks = async () => {
+    isLoadingWorks.value = true;
+    try {
+        const res = await api.get('/user/my-works', {
+            params: {
+                type: worksSubTab.value,
+                page: worksPagination.value.current,
+                limit: worksPagination.value.pageSize
+            }
+        });
+
+        if (res.data.success) {
+            userWorks.value = (res.data.data.list || []).map(sanitizeWorkItem);
+            // 更新分页信息
+            const p = res.data.data.pagination;
+            worksPagination.value = {
+                current: p.current,
+                pageSize: p.pageSize,
+                total: p.total,
+                totalPages: p.totalPages
+            };
+        }
+    } catch (err) {
+        console.error(err);
+        message.error('作品加载失败');
+    } finally {
+        isLoadingWorks.value = false;
+    }
+}
+
+// 切换子 Tab
+const handleWorksTabChange = (type) => {
+    if (worksSubTab.value === type) return;
+    worksSubTab.value = type;
+    worksPagination.value.current = 1; // 重置到第一页
+    fetchUserWorks();
+}
+
+// 分页跳转
+const changePage = (page) => {
+    if (page < 1 || page > worksPagination.value.totalPages) return;
+    worksPagination.value.current = page;
+    fetchUserWorks();
+    // 滚动回顶部 (可选)
+    document.querySelector('.works-container')?.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// 删除作品
+const handleDeleteWork = async (work) => {
+    if (!confirm(`确定要删除《${work.title}》吗？`)) return;
+
+    try {
+        let endpoint = `/articles/${work.id}`;
+        // 根据当前的子Tab判断调用哪个接口
+        if (worksSubTab.value === 'video') endpoint = `/videos/${work.id}`;
+        else if (worksSubTab.value === 'audio') endpoint = `/audios/${work.id}`;
+        // article 和 short 都走 articles 接口
+
+        const res = await api.delete(endpoint);
+        if (res.data.success) {
+            message.success('已删除');
+            fetchUserWorks(); // 刷新当前页
+        }
+    } catch (err) {
+        message.error('删除失败');
+    }
+}
+
+// 🔥 新增：编辑模式状态
+const isEditing = ref(false)
+const currentEditingId = ref(null)
+
+// 监听主 Tab 切换到 'works'
+watch(activeTab, (newVal) => {
+    if (newVal === 'works') {
+        fetchUserWorks();
     }
 })
+
+// 🔥 新增：处理点击“编辑”按钮
+const handleEditWork = (work) => {
+    console.log('正在编辑:', work);
+    isEditing.value = true;
+    currentEditingId.value = work.id;
+
+    // 1. 根据类型切换到对应的 Tab
+    // 注意：work.work_type 已经在列表中清洗过了 (article, short, video, audio)
+    activeTab.value = work.work_type;
+
+    // 2. 数据回填逻辑
+    if (work.work_type === 'article') {
+        articleForm.value = {
+            title: work.title,
+            summary: work.summary,
+            content: work.content, // 注意：列表接口需要返回 content 字段
+            category: work.category,
+            cover_image: work.cover_image,
+            column_id: null // 暂时不回填专栏，或者你需要后端返回 column_id
+        };
+    }
+    else if (work.work_type === 'short') {
+        shortForm.value = {
+            title: work.title,
+            summary: work.summary,
+            content: work.content,
+            category: work.category,
+            cover_image: work.cover_image,
+            column_id: null,
+            images: [] // 图片列表很难从 Markdown 反解回数组，这里留空，用户直接在编辑器里改
+        };
+    }
+    else if (work.work_type === 'video') {
+        videoForm.value = {
+            title: work.title,
+            description: work.summary, // 注意字段映射：列表叫 summary，表单叫 description
+            video_url: work.video_url,
+            cover_url: work.cover_image, // 列表叫 cover_image，表单叫 cover_url
+            category: work.category,
+            column_id: null
+        };
+    }
+    else if (work.work_type === 'audio') {
+        audioForm.value = {
+            title: work.title,
+            description: work.summary,
+            audio_url: work.audio_url,
+            cover_url: work.cover_image,
+            category: work.category,
+            column_id: null
+        };
+    }
+
+    message.info('已进入编辑模式，修改完成后请保存');
+    // 滚动到顶部
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// 🔥 新增：取消编辑 / 重置表单
+const resetForm = () => {
+    isEditing.value = false;
+    currentEditingId.value = null;
+    // 清空表单
+    articleForm.value = { title: '', summary: '', content: '', category: sysCategories.value[0]?.name, column_id: null, cover_image: '' };
+    shortForm.value = { title: '', summary: '', content: '', category: sysCategories.value[0]?.name, column_id: null, images: [] };
+    videoForm.value = { title: '', description: '', video_url: '', cover_url: '', category: sysCategories.value[0]?.name, column_id: null };
+    audioForm.value = { title: '', description: '', audio_url: '', cover_url: '', category: sysCategories.value[0]?.name, column_id: null };
+}
+
+// 🔥 新增：社交列表状态
+const socialList = ref([])
+const socialPagination = ref({ current: 1, pageSize: 12, total: 0, totalPages: 1 })
+const isLoadingSocial = ref(false)
+
+// 获取社交列表 (type: 'followers' | 'following')
+const fetchSocialList = async (type) => {
+    isLoadingSocial.value = true;
+    const endpoint = type === 'fans' ? '/user/followers' : '/user/following';
+
+    try {
+        const res = await api.get(endpoint, {
+            params: {
+                page: socialPagination.value.current,
+                limit: socialPagination.value.pageSize
+            }
+        });
+
+        if (res.data.success) {
+            socialList.value = res.data.data.list;
+            const p = res.data.data.pagination;
+            socialPagination.value = {
+                current: p.current,
+                pageSize: p.pageSize,
+                total: p.total,
+                totalPages: p.totalPages
+            };
+        }
+    } catch (err) {
+        console.error(err);
+        message.error('加载列表失败');
+    } finally {
+        isLoadingSocial.value = false;
+    }
+}
+
+// 社交列表翻页
+const changeSocialPage = (page) => {
+    if (page < 1 || page > socialPagination.value.totalPages) return;
+    socialPagination.value.current = page;
+    fetchSocialList(activeTab.value);
+}
+
+// 监听内部 Tab 切换
+watch(activeTab, (newVal) => {
+    if (newVal === 'works') fetchUserWorks();
+    else if (newVal === 'fans' || newVal === 'follows') {
+        socialPagination.value.current = 1;
+        fetchSocialList(newVal);
+    }
+})
+
+// 监听 Tab 切换，如果切走了，询问是否退出编辑模式（或者自动退出）
+watch(activeTab, (newTab, oldTab) => {
+    if (newTab === 'works') {
+        fetchUserWorks();
+    }
+    // 如果正在编辑，但用户手动点了其他 Tab (且不是为了去编辑对应的 Tab)，则重置
+    // 这里简单处理：只要手动切 Tab，就视为放弃编辑
+    if (isEditing.value && newTab !== oldTab) {
+        // 这里可以加个 confirm，为了体验流畅我们先不加，或者仅当切换到 'works' 时重置
+        if (newTab === 'works') {
+            resetForm();
+        }
+    }
+})
+
+// 🔥🔥🔥 核心修复：监听路由变化，实现从 Profile 跳转 🔥🔥🔥
+watch(
+    () => route.query.tab,
+    (newTab) => {
+        if (newTab && ['article', 'video', 'audio', 'short', 'works', 'fans', 'follows'].includes(newTab)) {
+            activeTab.value = newTab;
+            // 立即触发数据加载
+            if (newTab === 'works') fetchUserWorks();
+            else if (newTab === 'fans' || newTab === 'follows') fetchSocialList(newTab);
+        }
+    },
+    { immediate: true } // 立即执行，处理刷新或初次进入的情况
+);
 
 onMounted(() => {
     fetchCategories()
@@ -402,7 +946,6 @@ onMounted(() => {
         </header>
 
         <div class="creation-main-layout">
-
             <aside class="creation-sidebar crystal-card animate__animated animate__fadeInLeft">
                 <div class="nav-group">
                     <p class="group-label">✨ 发布灵感</p>
@@ -419,14 +962,12 @@ onMounted(() => {
                         <span class="icon">📸</span> 图文
                     </div>
                 </div>
-
                 <div class="nav-group">
                     <p class="group-label">📦 我的作品</p>
                     <div class="nav-item" :class="{ active: activeTab === 'works' }" @click="activeTab = 'works'">
                         <span class="icon">📁</span> 作品管理
                     </div>
                 </div>
-
                 <div class="nav-group">
                     <p class="group-label">🤝 互动社区</p>
                     <div class="nav-item" :class="{ active: activeTab === 'fans' }" @click="activeTab = 'fans'">
@@ -435,44 +976,36 @@ onMounted(() => {
                     <div class="nav-item" :class="{ active: activeTab === 'follows' }" @click="activeTab = 'follows'">
                         <span class="icon">🎈</span> 关注
                     </div>
-                    <div class="nav-item" :class="{ active: activeTab === 'comments' }" @click="activeTab = 'comments'">
-                        <span class="icon">💬</span> 评论
-                    </div>
                 </div>
             </aside>
 
             <main class="creation-workspace animate__animated animate__fadeIn">
+                <!-- 纯文章 -->
                 <section v-if="activeTab === 'article'" class="workspace-card mediterranean-theme animate__animated"
                     :class="{ 'is-sealed': isSuccess }">
                     <div v-if="isSuccess" class="wax-seal-stamp animate__animated animate__bounceInDown">
                         <div class="seal-inner">V</div>
                     </div>
-
                     <div class="studio-header">
                         <input v-model="articleForm.title" class="elegant-title-input"
                             placeholder="Per favore, 输入灵感标题...">
-
                         <div class="summary-input-container">
                             <input v-model="articleForm.summary" class="elegant-summary-input"
                                 placeholder="Breve riassunto / 输入这段灵感的引言 (可选)...">
                         </div>
-
                         <div class="header-divider"></div>
                     </div>
-
                     <div class="studio-body">
                         <div class="paper-editor-container">
                             <div class="label-tag">Draft / 草稿箱</div>
                             <textarea v-model="articleForm.content" placeholder="在此流淌你的思绪 (支持 Markdown)..."
                                 class="italian-textarea"></textarea>
                         </div>
-
                         <div class="paper-preview-container">
                             <div class="label-tag">Preview / 艺术预览</div>
                             <div class="markdown-body parchment-view" v-html="renderedPreview"></div>
                         </div>
                     </div>
-
                     <div class="studio-footer">
                         <div class="footer-inner-layout">
                             <div class="config-group">
@@ -486,37 +1019,142 @@ onMounted(() => {
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="med-select-wrapper">
                                     <span class="med-label">Collezione / 个人专栏</span>
                                     <div class="select-box-styled">
                                         <select v-model="articleForm.column_id" class="med-select"
                                             @change="handleColumnChange">
                                             <option :value="null">-- 不归入专栏 --</option>
-                                            <option v-for="col in userColumns" :key="col.id" :value="col.id">
-                                                📘 {{ col.name }}
-                                            </option>
+                                            <option v-for="col in userColumns" :key="col.id" :value="col.id">📘 {{
+                                                col.name }}</option>
                                             <option value="__new_column__" class="new-col-opt">+ 开启新专栏...</option>
                                         </select>
                                     </div>
                                 </div>
                             </div>
 
-                            <button class="med-publish-btn" @click="submitArticle" :disabled="isSubmitting">
-                                <span>{{ isSubmitting ? '正在密封灵感...' : 'PUBLISH / 立即发布' }}</span>
-                            </button>
+                            <div class="action-group">
+                                <button v-if="isEditing" class="med-cancel-btn"
+                                    @click="resetForm(); activeTab = 'works'">
+                                    取消修改
+                                </button>
+                                <button class="med-publish-btn" @click="submitArticle" :disabled="isSubmitting">
+                                    <span>{{ isSubmitting ? '处理中...' : (isEditing ? 'SAVE / 保存修改' : 'PUBLISH / 立即发布')
+                                    }}</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </section>
 
-                <section v-else-if="activeTab === 'video'"
+                <!-- 图文 -->
+                <section v-else-if="activeTab === 'short'"
                     class="workspace-card mediterranean-theme animate__animated animate__fadeIn"
                     :class="{ 'is-sealed': isSuccess }">
-
                     <div v-if="isSuccess" class="wax-seal-stamp animate__animated animate__bounceInDown">
                         <div class="seal-inner">V</div>
                     </div>
 
+                    <div class="studio-header">
+                        <input v-model="shortForm.title" class="elegant-title-input" placeholder="Galleria / 图文标题...">
+                        <div class="summary-input-container">
+                            <input v-model="shortForm.summary" class="elegant-summary-input"
+                                placeholder="Didascalia / 写一段简短的描述...">
+                        </div>
+                        <div class="header-divider"></div>
+                    </div>
+
+                    <div class="studio-body short-layout">
+                        <div class="photo-upload-zone" @click="shortImagesInput.click()">
+                            <div class="upload-placeholder" v-if="shortForm.images.length === 0">
+                                <span class="upload-icon">📸</span>
+                                <p>点击添加图片 (支持多选)</p>
+                                <small>记录美好瞬间</small>
+                            </div>
+
+                            <div class="photo-grid" v-else>
+                                <div v-for="(img, index) in shortForm.images" :key="img" class="photo-item"
+                                    :class="{ 'is-dragging': dragStartIndex === index }" draggable="true"
+                                    @dragstart="handleDragStart(index)" @dragover.prevent @dragenter.prevent
+                                    @drop="handleDrop(index)" @click.stop>
+                                    <img :src="getProxyUrl(img)" />
+
+                                    <div class="delete-btn" @click.stop="removeShortImage(index)">
+                                        ×
+                                    </div>
+
+                                    <div class="drag-handle">
+                                        <span>⋮⋮</span>
+                                    </div>
+                                </div>
+
+                                <div class="photo-add-btn">
+                                    <span>+</span>
+                                </div>
+                            </div>
+
+                            <input type="file" ref="shortImagesInput" hidden multiple accept="image/*"
+                                @change="handleShortImagesUpload" @click.stop>
+                        </div>
+
+                        <div class="text-editor-zone">
+                            <div class="editor-pane">
+                                <div class="label-tag">Story / 故事详情</div>
+                                <textarea ref="shortContentRef" v-model="shortForm.content"
+                                    class="italian-textarea short-textarea"
+                                    placeholder="在这里写下图片的故事... (图片会自动插入到这里)"></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="studio-footer">
+                        <div class="footer-inner-layout">
+                            <div class="config-group">
+                                <div class="med-select-wrapper">
+                                    <span class="med-label">Canale / 公共频道</span>
+                                    <div class="select-box-styled">
+                                        <select v-model="shortForm.category" class="med-select">
+                                            <option v-for="cat in sysCategories" :key="cat.id" :value="cat.name">
+                                                {{ cat.icon }} {{ cat.name }}
+                                            </option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="med-select-wrapper">
+                                    <span class="med-label">Collezione / 个人专栏</span>
+                                    <div class="select-box-styled">
+                                        <select v-model="shortForm.column_id" class="med-select"
+                                            @change="handleColumnChange">
+                                            <option :value="null">-- 不归入专栏 --</option>
+                                            <option v-for="col in userColumns" :key="col.id" :value="col.id">📘 {{
+                                                col.name }}</option>
+                                            <option value="__new_column__" class="new-col-opt">+ 开启新专栏...</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="action-group">
+                                <button v-if="isEditing" class="med-cancel-btn"
+                                    @click="resetForm(); activeTab = 'works'">
+                                    取消修改
+                                </button>
+                                <button class="med-publish-btn" @click="submitShort" :disabled="isSubmitting">
+                                    <span>{{ isSubmitting ? '定格中...' : (isEditing ? 'SAVE / 保存修改' : 'SHARE / 分享此刻')
+                                    }}</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 视频 -->
+                <section v-else-if="activeTab === 'video'"
+                    class="workspace-card mediterranean-theme animate__animated animate__fadeIn"
+                    :class="{ 'is-sealed': isSuccess }">
+                    <div v-if="isSuccess" class="wax-seal-stamp animate__animated animate__bounceInDown">
+                        <div class="seal-inner">V</div>
+                    </div>
                     <div class="studio-header">
                         <input v-model="videoForm.title" class="elegant-title-input"
                             placeholder="Cinematografia / 灵感映画标题...">
@@ -526,19 +1164,16 @@ onMounted(() => {
                         </div>
                         <div class="header-divider"></div>
                     </div>
-
                     <div class="studio-body video-studio-layout">
-
                         <div class="upload-top-row">
                             <div class="studio-upload-box" @click="videoInput.click()">
                                 <div class="box-content">
                                     <span class="box-icon">📽️</span>
                                     <p>{{ videoForm.video_url ? '🎬 素材已载入' : '选择视频文件' }}</p>
-                                    <small>MP4 / MOV (100MB以内)</small>
+                                    <small>MP4 / MOV (500MB以内)</small>
                                 </div>
                                 <input type="file" ref="videoInput" hidden accept="video/*" @change="onVideoFileChange">
                             </div>
-
                             <div class="studio-upload-box" @click="coverInput.click()">
                                 <div class="box-content">
                                     <span class="box-icon">🎨</span>
@@ -548,20 +1183,16 @@ onMounted(() => {
                                 <input type="file" ref="coverInput" hidden accept="image/*" @change="onCoverFileChange">
                             </div>
                         </div>
-
                         <div class="cinema-monitor-section">
                             <div class="label-tag">Cinema Preview / 监视器预览</div>
-
                             <div class="theater-display-frame">
                                 <div class="film-strip-edge left"><span></span><span></span><span></span></div>
-
                                 <div class="monitor-screen-glass">
                                     <template v-if="videoForm.video_url">
                                         <div class="rec-status-indicator animate__animated animate__fadeIn">
                                             <span class="rec-dot"></span> REC
                                             <span class="rec-time">00:00:00:00</span>
                                         </div>
-
                                         <video :src="videoForm.video_url" controls class="studio-video-player"
                                             :poster="videoForm.cover_url"></video>
                                     </template>
@@ -570,10 +1201,8 @@ onMounted(() => {
                                         <p>等待映画素材导入... / STANDBY</p>
                                     </div>
                                 </div>
-
                                 <div class="film-strip-edge right"><span></span><span></span><span></span></div>
                             </div>
-
                             <Transition name="fade">
                                 <div v-if="isUploading" class="upload-hud">
                                     <div class="hud-inner">
@@ -586,39 +1215,52 @@ onMounted(() => {
                             </Transition>
                         </div>
                     </div>
-
                     <div class="studio-footer">
                         <div class="footer-inner-layout">
                             <div class="config-group">
                                 <div class="med-select-wrapper">
                                     <span class="med-label">Canale / 公共频道</span>
-                                    <select v-model="videoForm.category" class="med-select">
-                                        <option v-for="cat in sysCategories" :key="cat.id" :value="cat.name">{{ cat.icon
-                                        }} {{ cat.name }}
-                                        </option>
-                                    </select>
+                                    <div class="select-box-styled">
+                                        <select v-model="videoForm.category" class="med-select">
+                                            <option v-for="cat in sysCategories" :key="cat.id" :value="cat.name">
+                                                {{ cat.icon }} {{ cat.name }}
+                                            </option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div class="med-select-wrapper">
                                     <span class="med-label">Collezione / 个人专栏</span>
-                                    <select v-model="videoForm.column_id" class="med-select"
-                                        @change="handleColumnChange">
-                                        <option :value="null">-- 不归入专栏 --</option>
-                                        <option v-for="col in userColumns" :key="col.id" :value="col.id">📘 {{ col.name
-                                        }}</option>
-                                        <option value="__new_column__" class="new-col-opt">+ 开启新专栏...</option>
-                                    </select>
+                                    <div class="select-box-styled">
+                                        <select v-model="videoForm.column_id" class="med-select"
+                                            @change="handleColumnChange">
+                                            <option :value="null">-- 不归入专栏 --</option>
+                                            <option v-for="col in userColumns" :key="col.id" :value="col.id">📘 {{
+                                                col.name }}</option>
+                                            <option value="__new_column__" class="new-col-opt">+ 开启新专栏...</option>
+                                        </select>
+                                    </div>
                                 </div>
                             </div>
-                            <button class="med-publish-btn" @click="submitVideo"
-                                :disabled="isSubmitting || isUploading">
-                                <span>{{ isSubmitting ? '正在封缄光影...' : 'EXHIBIT / 立即发布' }}</span>
-                            </button>
+
+                            <div class="action-group">
+                                <button v-if="isEditing" class="med-cancel-btn"
+                                    @click="resetForm(); activeTab = 'works'">
+                                    取消修改
+                                </button>
+                                <button class="med-publish-btn" @click="submitVideo"
+                                    :disabled="isSubmitting || isUploading">
+                                    <span>{{ isSubmitting ? '处理中...' : (isEditing ? 'SAVE / 保存修改' : 'EXHIBIT / 立即发布')
+                                    }}</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </section>
 
+                <!-- 音频 -->
                 <section v-else-if="activeTab === 'audio'"
-                    class="workspace-card mediterranean-theme animate__animated animate__fadeIn">
+                    class="workspace-card mediterranean-theme animate__animated animate__fadeIn"
+                    :class="{ 'is-sealed': isSuccess }">
                     <div class="studio-header">
                         <input v-model="audioForm.title" class="elegant-title-input"
                             placeholder="Composizione / 给这段旋律起个名字...">
@@ -649,10 +1291,8 @@ onMounted(() => {
 
                         <div class="audio-preview-section centered-monitor">
                             <div class="label-tag">Studio Monitor / 录音室监制</div>
-
                             <div class="turntable-wrapper">
                                 <div class="tonearm" :class="{ 'is-playing': isAudioPlaying }"></div>
-
                                 <div class="vinyl-record" :class="{ 'is-spinning': isAudioPlaying }">
                                     <img :src="getProxyUrl(audioForm.cover_url)" class="vinyl-cover"
                                         v-if="audioForm.cover_url">
@@ -660,14 +1300,12 @@ onMounted(() => {
                                     <div class="vinyl-shimmer"></div>
                                 </div>
                             </div>
-
                             <div class="player-control-zone">
                                 <audio v-if="audioForm.audio_url" :src="audioForm.audio_url" controls
                                     class="elegant-audio-node" @play="handleAudioPlay" @pause="handleAudioPause"
                                     @ended="handleAudioPause"></audio>
                                 <div v-else class="waiting-hint">等待音轨导入... / STANDBY</div>
                             </div>
-
                             <Transition name="fade">
                                 <div v-if="isAudioUploading" class="upload-hud-mini">
                                     正在刻录灵感... {{ audioUploadProgress }}%
@@ -689,54 +1327,173 @@ onMounted(() => {
                                         </select>
                                     </div>
                                 </div>
-
                                 <div class="med-select-wrapper">
                                     <span class="med-label">Collezione / 个人专栏</span>
                                     <div class="select-box-styled">
                                         <select v-model="audioForm.column_id" class="med-select"
                                             @change="handleColumnChange">
                                             <option :value="null">-- 不归入专栏 --</option>
-                                            <option v-for="col in userColumns" :key="col.id" :value="col.id">
-                                                📘 {{ col.name }}
-                                            </option>
+                                            <option v-for="col in userColumns" :key="col.id" :value="col.id">📘 {{
+                                                col.name }}</option>
                                             <option value="__new_column__" class="new-col-opt">+ 开启新专栏...</option>
                                         </select>
                                     </div>
                                 </div>
                             </div>
 
-                            <button class="med-publish-btn" @click="submitAudio"
-                                :disabled="isSubmitting || isAudioUploading">
-                                <span>{{ isSubmitting ? '正在刻录唱片...' : 'RELEASE / 立即发行' }}</span>
-                            </button>
+                            <div class="action-group">
+                                <button v-if="isEditing" class="med-cancel-btn"
+                                    @click="resetForm(); activeTab = 'works'">
+                                    取消修改
+                                </button>
+                                <button class="med-publish-btn" @click="submitAudio"
+                                    :disabled="isSubmitting || isAudioUploading">
+                                    <span>{{ isSubmitting ? '刻录中...' : (isEditing ? 'SAVE / 保存修改' : 'RELEASE / 立即发行')
+                                    }}</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 作品管理 -->
+                <section v-else-if="activeTab === 'works'"
+                    class="workspace-card mediterranean-theme animate__animated animate__fadeIn">
+
+                    <div class="studio-header works-header">
+                        <h2 class="works-title">My Portfolio / 作品管理</h2>
+                        <div class="works-sub-nav">
+                            <div v-for="tab in worksNavItems" :key="tab.id" class="sub-nav-item"
+                                :class="{ active: worksSubTab === tab.id }" @click="handleWorksTabChange(tab.id)">
+                                {{ tab.label }}
+                            </div>
+                        </div>
+                        <div class="header-divider"></div>
+                    </div>
+
+                    <div class="works-container">
+                        <div v-if="isLoadingWorks" class="loading-box">
+                            <div class="spinner"></div>
+                        </div>
+
+                        <div v-else-if="userWorks.length > 0" class="works-list-wrapper">
+                            <div class="works-list">
+                                <div v-for="work in userWorks" :key="work.id" class="work-item-wrapper">
+                                    <button class="delete-work-btn" @click.stop="handleDeleteWork(work)" title="删除此作品">
+                                        <span>🗑️</span>
+                                    </button>
+
+                                    <button class="edit-work-btn" @click.stop="handleEditWork(work)" title="编辑此作品">
+                                        <span>✎</span>
+                                    </button>
+
+                                    <ArticleItem :data="work"
+                                        @click="router.push({ path: `/article/${work.id}`, query: { type: work.work_type } })" />
+                                </div>
+                            </div>
+
+                            <div class="pagination-bar" v-if="worksPagination.totalPages > 1">
+                                <button class="page-btn" :disabled="worksPagination.current === 1"
+                                    @click="changePage(worksPagination.current - 1)">
+                                    ← 上一页
+                                </button>
+
+                                <span class="page-info">
+                                    {{ worksPagination.current }} / {{ worksPagination.totalPages }}
+                                </span>
+
+                                <button class="page-btn"
+                                    :disabled="worksPagination.current === worksPagination.totalPages"
+                                    @click="changePage(worksPagination.current + 1)">
+                                    下一页 →
+                                </button>
+                            </div>
+                        </div>
+
+                        <div v-else class="empty-state-works">
+                            <span class="empty-icon">🍃</span>
+                            <p>该分类下暂无作品，快去创作吧！</p>
+                            <button class="create-now-btn" @click="activeTab = worksSubTab">立即创作</button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 粉丝和关注 -->
+                <section v-else-if="activeTab === 'fans' || activeTab === 'follows'"
+                    class="workspace-card mediterranean-theme animate__animated animate__fadeIn">
+
+                    <div class="studio-header works-header">
+                        <h2 class="works-title">
+                            {{ activeTab === 'fans' ? 'My Fans / 粉丝列表' : 'Following / 我的关注' }}
+                        </h2>
+                        <div class="header-divider"></div>
+                    </div>
+
+                    <div class="works-container">
+                        <div v-if="isLoadingSocial" class="loading-box">
+                            <div class="spinner"></div>
+                        </div>
+
+                        <div v-else-if="socialList.length > 0" class="social-list-wrapper">
+                            <div class="social-grid">
+                                <div v-for="user in socialList" :key="user.id" class="user-card"
+                                    @click="router.push(`/profile/${user.username}`)">
+                                    <div class="card-avatar">
+                                        <img :src="getProxyUrl(user.avatar)" alt="avatar">
+                                    </div>
+                                    <div class="card-info">
+                                        <h3 class="card-name">{{ user.nickname || user.username }}</h3>
+                                        <p class="card-bio">{{ user.bio || '这个人很懒，什么都没写~' }}</p>
+                                        <div class="card-stats">
+                                            <span><b>{{ user.fans_count }}</b> 粉丝</span>
+                                            <span class="divider">|</span>
+                                            <span><b>{{ user.follow_count }}</b> 关注</span>
+                                        </div>
+                                    </div>
+                                    <div class="card-action" v-if="activeTab === 'fans' && user.is_following">
+                                        <span class="mutual-tag">互相关注</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="pagination-bar" v-if="socialPagination.totalPages > 1">
+                                <button class="page-btn" :disabled="socialPagination.current === 1"
+                                    @click="changeSocialPage(socialPagination.current - 1)">←</button>
+                                <span class="page-info">{{ socialPagination.current }} / {{ socialPagination.totalPages
+                                    }}</span>
+                                <button class="page-btn"
+                                    :disabled="socialPagination.current === socialPagination.totalPages"
+                                    @click="changeSocialPage(socialPagination.current + 1)">→</button>
+                            </div>
+                        </div>
+
+                        <div v-else class="empty-state-works">
+                            <span class="empty-icon">🍃</span>
+                            <p>{{ activeTab === 'fans' ? '还没有粉丝哦，快去发布作品吧！' : '你还没有关注任何人呢~' }}</p>
                         </div>
                     </div>
                 </section>
             </main>
-
         </div>
-        <!-- 创建个人新专栏 -->
+
         <Transition name="fade">
             <div v-if="showNewColumnModal" class="med-modal-overlay" @click="showNewColumnModal = false">
                 <div class="med-modal-card animate__animated animate__zoomIn" @click.stop>
                     <div class="modal-decoration">📘</div>
                     <h3>开启新专栏</h3>
                     <p>Nuova Collezione / 建立你的知识体系</p>
-
                     <div class="med-modal-form">
                         <div class="form-item">
                             <label class="med-modal-label">专栏名称</label>
                             <input v-model="newColumnName" class="med-modal-input" placeholder="例如：Vue3 实战系列..."
                                 @keyup.enter="confirmAddColumn">
                         </div>
-
                         <div class="form-item" style="margin-top: 15px;">
                             <label class="med-modal-label">专栏描述</label>
                             <textarea v-model="newColumnDesc" class="med-modal-textarea"
                                 placeholder="简单描述一下这个文件夹的主题吧..." rows="3"></textarea>
                         </div>
                     </div>
-
                     <div class="modal-ops">
                         <button class="modal-btn-cancel" @click="showNewColumnModal = false">取消</button>
                         <button class="modal-btn-confirm" @click="confirmAddColumn">确认创建</button>
@@ -765,6 +1522,89 @@ onMounted(() => {
     align-items: center;
 }
 
+/* ==================== 🔙 极致优化的返回按钮交互 ==================== */
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    cursor: pointer;
+    /* 让整个区域都显示小手 */
+    padding: 10px;
+    margin-left: -10px;
+    /* 视觉修正，让 hover 背景不突兀 */
+    border-radius: 12px;
+    transition: all 0.3s ease;
+}
+
+/* 整个区域悬停时，背景微微变亮 */
+.header-left:hover {
+    background: rgba(255, 255, 255, 0.6);
+}
+
+.back-btn {
+    /* 1. 基础形态：圆形玻璃质感 */
+    width: 42px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    font-size: 1.2rem;
+    color: #64748b;
+    font-family: system-ui, -apple-system, sans-serif;
+    /* 确保箭头符号标准显示 */
+
+    /* 2. 核心动画配置：贝塞尔曲线实现 Q 弹效果 */
+    transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    position: relative;
+    overflow: hidden;
+    /* 防止点击波纹溢出 */
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+/* --- 🖱️ 悬停效果 (Hover) --- */
+.header-left:hover .back-btn {
+    color: #42b883;
+    /* 变绿 */
+    border-color: #42b883;
+    background: #fff;
+    /* 向左轻微位移，心理暗示“返回” */
+    transform: translateX(-4px) scale(1.05);
+    /* 绿色光晕 */
+    box-shadow: 0 4px 15px rgba(66, 184, 131, 0.3);
+}
+
+/* --- 👆 点击效果 (Active) --- */
+.header-left:active .back-btn {
+    /* 模拟物理按压，缩小并下沉 */
+    transform: scale(0.9) translateX(-4px);
+    background: #e6f7f0;
+    /* 点击时背景变深一点的绿 */
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+    /* 内阴影增加深度 */
+    transition: all 0.1s ease;
+    /* 点击反应要快 */
+}
+
+/* --- 🌟 标题文字联动 --- */
+.hub-title {
+    font-size: 1.4rem;
+    color: #1e293b;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.3s ease;
+    /* 文字也加个过渡 */
+}
+
+/* 鼠标放上去时，标题也微微动一下，增加整体感 */
+.header-left:hover .hub-title {
+    transform: translateX(2px);
+}
+
 .hub-title {
     font-size: 1.4rem;
     color: #1e293b;
@@ -777,6 +1617,12 @@ onMounted(() => {
     color: #94a3b8;
     letter-spacing: 2px;
     margin-top: 2px;
+    transition: color 0.3s;
+}
+
+.header-left:hover .hub-title small {
+    color: #42b883;
+    /* 小标题也跟着变绿 */
 }
 
 /* 🔥 核心修复：左右并排布局 */
@@ -1261,6 +2107,33 @@ onMounted(() => {
     background: #8b5a2b;
     transform: translateY(-5px);
     box-shadow: 0 15px 30px rgba(139, 90, 43, 0.3);
+}
+
+/* 底部按钮组容器 */
+.action-group {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+}
+
+/* 取消按钮样式 */
+.med-cancel-btn {
+    background: transparent;
+    border: 1px solid #d2a679;
+    /* 与主题色呼应的边框 */
+    color: #8b5a2b;
+    padding: 14px 30px;
+    /* 调整大小与发布按钮协调 */
+    border-radius: 2px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: all 0.3s;
+}
+
+.med-cancel-btn:hover {
+    background: rgba(210, 166, 121, 0.1);
+    transform: translateY(-2px);
 }
 
 /* 极简选择框 */
@@ -1831,6 +2704,565 @@ onMounted(() => {
 
     to {
         transform: rotate(360deg);
+    }
+}
+
+
+/* ==================== 📸 图文专用布局 ==================== */
+
+.short-layout {
+    display: grid;
+    grid-template-columns: 350px 1fr;
+    /* 左侧图片区窄一点，右侧文字区宽 */
+    gap: 30px;
+    height: 600px;
+}
+
+.photo-upload-zone {
+    background: rgba(255, 255, 255, 0.4);
+    border: 1.5px dashed #d2a679;
+    border-radius: 8px;
+    padding: 15px;
+    cursor: pointer;
+    transition: all 0.3s;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.photo-upload-zone:hover {
+    background: rgba(255, 255, 255, 0.8);
+    border-color: #8b5a2b;
+}
+
+.upload-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #bca38a;
+    text-align: center;
+}
+
+.upload-icon {
+    font-size: 3rem;
+    margin-bottom: 10px;
+}
+
+.photo-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+.photo-item {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    transition: transform 0.2s, box-shadow 0.2s;
+    /* 增加阴影过渡 */
+    cursor: grab;
+    /* 鼠标变成抓手 */
+}
+
+.photo-item img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* 🔥 新增：拖拽时的样式 - 正在被拖动的那个元素变为半透明 */
+.photo-item.is-dragging {
+    opacity: 0.4;
+    border: 2px dashed #d2a679;
+    transform: scale(0.95);
+}
+
+/* 🔥 新增：拖拽悬停时的交互 - 增加一点按压感 */
+.photo-item:active {
+    cursor: grabbing;
+}
+
+/* 🔥 新增：拖拽手柄样式 (左下角或者任意你喜欢的位置) */
+.drag-handle {
+    position: absolute;
+    bottom: 5px;
+    left: 5px;
+    color: rgba(255, 255, 255, 0.8);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    pointer-events: none;
+    /* 让鼠标事件穿透，不影响拖拽主体 */
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.photo-item:hover .drag-handle {
+    opacity: 1;
+}
+
+/* 🔥 新增：删除按钮样式 */
+.delete-btn {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 24px;
+    height: 24px;
+    background: rgba(0, 0, 0, 0.6);
+    /* 半透明黑色背景 */
+    color: #fff;
+    border-radius: 50%;
+    /* 圆形 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    opacity: 0;
+    /* 默认隐藏 */
+    transition: all 0.3s ease;
+    z-index: 20;
+}
+
+.delete-btn:hover {
+    background: #ff3b30;
+    /* 悬停在按钮上时变红，提示删除 */
+    transform: scale(1.1);
+}
+
+/* 🔥 新增：当鼠标悬停在图片上时，显示删除按钮 */
+.photo-item:hover .delete-btn {
+    opacity: 1;
+}
+
+.photo-add-btn {
+    width: 100%;
+    aspect-ratio: 1;
+    border: 2px dashed #d2a679;
+    border-radius: 6px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 2rem;
+    color: #d2a679;
+    background: rgba(255, 255, 255, 0.5);
+    transition: all 0.2s;
+}
+
+.photo-add-btn:hover {
+    background: #fff;
+    color: #8b5a2b;
+}
+
+.text-editor-zone {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.short-textarea {
+    background: rgba(255, 255, 255, 0.6);
+    /* 稍微不透明一点 */
+    height: 100%;
+}
+
+/* 🔥 作品管理样式 */
+.works-title {
+    font-family: "Georgia", serif;
+    color: #4a3c28;
+    font-size: 1.8rem;
+    margin-bottom: 5px;
+}
+
+.works-container {
+    height: 100%;
+    overflow-y: auto;
+    padding: 0 10px;
+    /* 隐藏滚动条但保留功能 */
+    scrollbar-width: none;
+}
+
+.works-container::-webkit-scrollbar {
+    display: none;
+}
+
+.works-list {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding-bottom: 40px;
+}
+
+.work-item-wrapper {
+    position: relative;
+    transition: transform 0.2s;
+}
+
+.work-item-wrapper:hover {
+    transform: translateY(-2px);
+}
+
+/* 删除按钮 */
+.delete-work-btn {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid #ffcccc;
+    color: #ff4d4f;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0;
+    transition: all 0.3s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.work-item-wrapper:hover .delete-work-btn {
+    opacity: 1;
+}
+
+.delete-work-btn:hover {
+    background: #ff4d4f;
+    color: white;
+    transform: scale(1.1);
+}
+
+.empty-state-works {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 400px;
+    color: #bca38a;
+}
+
+.loading-box {
+    display: flex;
+    justify-content: center;
+    padding: 50px;
+}
+
+.spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #d2a679;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+/* 🔥 作品管理专属样式 */
+
+.works-header {
+    margin-bottom: 10px;
+}
+
+.works-title {
+    font-family: "Georgia", serif;
+    color: #4a3c28;
+    font-size: 1.8rem;
+    margin-bottom: 20px;
+}
+
+/* 二级导航栏 */
+.works-sub-nav {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin-bottom: 15px;
+}
+
+.sub-nav-item {
+    padding: 8px 24px;
+    border-radius: 20px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #8b5a2b;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(210, 166, 121, 0.2);
+    cursor: pointer;
+    transition: all 0.3s;
+    user-select: none;
+}
+
+.sub-nav-item:hover {
+    background: #fff;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+}
+
+.sub-nav-item.active {
+    background: #42b883;
+    /* 使用主题绿 */
+    color: white;
+    border-color: #42b883;
+    box-shadow: 0 4px 15px rgba(66, 184, 131, 0.3);
+}
+
+/* 列表容器 */
+.works-container {
+    height: 100%;
+    overflow-y: auto;
+    padding: 0 5px;
+    /* 隐藏滚动条 */
+    scrollbar-width: none;
+}
+
+.works-container::-webkit-scrollbar {
+    display: none;
+}
+
+.works-list-wrapper {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.works-list {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.work-item-wrapper {
+    position: relative;
+    transition: transform 0.2s;
+}
+
+.work-item-wrapper:hover {
+    transform: translateY(-2px);
+    z-index: 2;
+    /* 悬浮时层级提高 */
+}
+
+/* 删除按钮 */
+.delete-work-btn {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid #ffcccc;
+    color: #ff4d4f;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0;
+    /* 默认隐藏 */
+    transition: all 0.3s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.work-item-wrapper:hover .delete-work-btn {
+    opacity: 1;
+    /* 悬停整行时显示 */
+}
+
+.delete-work-btn:hover {
+    background: #ff4d4f;
+    color: white;
+    transform: scale(1.1);
+}
+
+/* 分页条 */
+.pagination-bar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 20px;
+    margin-top: auto;
+    /* 沉底 */
+    padding-top: 20px;
+    padding-bottom: 20px;
+}
+
+.page-btn {
+    padding: 8px 16px;
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    color: #555;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+.page-btn:hover:not(:disabled) {
+    border-color: #42b883;
+    color: #42b883;
+}
+
+.page-btn:disabled {
+    background: #f5f5f5;
+    color: #ccc;
+    cursor: not-allowed;
+    border-color: #eee;
+}
+
+.page-info {
+    font-family: "Georgia", serif;
+    font-weight: bold;
+    color: #8b5a2b;
+}
+
+/* 空状态 */
+.empty-state-works {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 300px;
+    color: #bca38a;
+}
+
+.empty-icon {
+    font-size: 3rem;
+    margin-bottom: 10px;
+}
+
+.create-now-btn {
+    margin-top: 15px;
+    padding: 8px 20px;
+    background: #42b883;
+    color: white;
+    border: none;
+    border-radius: 20px;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+/* 社交卡片网格布局 */
+.social-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    /* 强制三列 */
+    gap: 20px;
+    padding-bottom: 30px;
+}
+
+.user-card {
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 12px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    transition: all 0.3s;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+}
+
+.user-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.05);
+    border-color: #d2a679;
+}
+
+.card-avatar {
+    width: 70px;
+    height: 70px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 3px solid #f8f9fa;
+    margin-bottom: 12px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+}
+
+.card-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.card-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #333;
+    margin: 0 0 6px 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+
+.card-bio {
+    font-size: 0.8rem;
+    color: #888;
+    margin: 0 0 15px 0;
+    line-height: 1.5;
+    height: 36px;
+    /* 限制两行高度 */
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.card-stats {
+    font-size: 0.8rem;
+    color: #666;
+    background: #fcfaf2;
+    padding: 6px 15px;
+    border-radius: 20px;
+    display: flex;
+    gap: 10px;
+}
+
+.card-stats b {
+    color: #d2a679;
+    font-weight: 800;
+}
+
+.divider {
+    color: #ddd;
+}
+
+.mutual-tag {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    font-size: 10px;
+    color: #42b883;
+    background: rgba(66, 184, 131, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+/* 响应式适配 */
+@media (max-width: 1100px) {
+    .social-grid {
+        grid-template-columns: repeat(2, 1fr);
+        /* 窄屏变两列 */
+    }
+}
+
+@media (max-width: 768px) {
+    .social-grid {
+        grid-template-columns: 1fr;
+        /* 手机单列 */
     }
 }
 </style>

@@ -70,20 +70,55 @@ const getProxyUrl = (url) => {
     return `/api/proxy-image?url=${encodeURIComponent(url)}`
 }
 
-// ==================== 🛠️ 通用数据清洗 ====================
+// ==================== 🛠️ 通用数据清洗 (增强版) ====================
 const sanitizeItem = (item) => {
-    let type = item.work_type || 'article';
-    if (!item.work_type) {
-        if (item.audio_url) type = 'audio';
-        else if (item.video_url) type = 'video';
+    // 1. 基础类型判断
+    let type = item.work_type;
+
+    // 如果后端没返回 type，尝试推断
+    if (!type) {
+        if (item.video_url) type = 'video';
+        else if (item.audio_url) type = 'audio';
+        else type = 'article'; // 默认为文章
     }
+
+    // 2. 统一封面字段 (兼容各种后端命名)
+    let cover = item.cover_image || item.cover || item.cover_url || item.poster;
+
+    // 🔥🔥🔥 核心修复：图文作品封面自动提取 🔥🔥🔥
+    // 如果是图文(short)或者 content 里有图但没封面，尝试提取
+    if ((type === 'short' || !cover) && item.content) {
+        // 匹配 Markdown 图片语法 ![...](url)
+        const imgMatch = item.content.match(/!\[.*?\]\((.*?)\)/);
+        if (imgMatch && imgMatch[1]) {
+            cover = imgMatch[1]; // 提取第一张图
+
+            // 如果原本被误判为 article，这里修正为 short
+            if (type === 'article') type = 'short';
+        }
+    }
+
+    // 3. 视频路径修正 (防止缺少前斜杠)
+    if (type === 'video' && item.video_url) {
+        if (!item.video_url.startsWith('http') && !item.video_url.startsWith('/')) {
+            item.video_url = '/' + item.video_url;
+        }
+    }
+
+    // 4. 返回清洗后的标准化对象
     return {
         ...item,
-        work_type: type,
-        cover_image: item.cover_image || item.cover || item.cover_url || item.poster,
-        views: item.views || 0,
-        comments: item.comments || 0,
-        likes: item.likes || 0
+        id: item.id,
+        title: item.title,
+        summary: item.summary || item.description || '', // 视频音频可能是 description
+        work_type: type, // 修正后的类型
+        cover_image: cover, // 修正后的封面
+        // 确保数值存在，不为 null
+        views: Number(item.views || 0),
+        comments: Number(item.comments || 0),
+        likes: Number(item.likes || 0),
+        favorites: Number(item.favorites || 0),
+        created_at: item.created_at
     };
 }
 
@@ -306,6 +341,42 @@ const crossTabHint = computed(() => {
     return null
 })
 
+// 🔥 新增：处理社交数据点击跳转
+const handleStatClick = (type) => {
+    // 场景 A: 如果是【我自己的主页】 -> 跳转到创作中心对应的管理面板
+    if (isMyProfile.value) {
+        let targetTab = '';
+
+        if (type === 'original') {
+            targetTab = 'works'; // 原创 -> 作品管理
+        } else if (type === 'fans') {
+            targetTab = 'fans';  // 粉丝 -> 粉丝列表
+        } else if (type === 'follows') {
+            targetTab = 'follows'; // 关注 -> 关注列表
+        }
+
+        if (targetTab) {
+            router.push({
+                path: '/creation-center',
+                query: { tab: targetTab }
+            });
+        }
+    }
+    // 场景 B: 如果是【别人的主页】
+    else {
+        if (type === 'original') {
+            // 点击原创，就在当前页切换到“文章”Tab并清空搜索，方便查看
+            profileSearchQuery.value = '';
+            activeTab.value = 'posts';
+            // 可选：滚动到列表区域
+            document.querySelector('.main-content')?.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            // 粉丝和关注目前是隐私数据
+            message.info('🔒 为了隐私保护，暂不支持查看他人社交列表');
+        }
+    }
+}
+
 watch(profileSearchQuery, (newVal) => {
     if (!newVal) return
     if (activeTab.value === 'posts' && !filteredArticles.value.length && filteredFavorites.value.length) {
@@ -363,9 +434,17 @@ watch(() => route.params.username, () => {
 
 
                         <div class="stats-row-top">
-                            <span class="top-stat"><b>{{ targetUser?.stats?.originalCount || 0 }}</b> 原创</span>
-                            <span class="top-stat"><b>{{ targetUser?.stats?.fansCount || 0 }}</b> 粉丝</span>
-                            <span class="top-stat"><b>{{ targetUser?.stats?.followingCount || 0 }}</b> 关注</span>
+                            <span class="top-stat clickable" @click="handleStatClick('original')">
+                                <b>{{ targetUser?.stats?.originalCount || 0 }}</b> 原创
+                            </span>
+
+                            <span class="top-stat clickable" @click="handleStatClick('fans')">
+                                <b>{{ targetUser?.stats?.fansCount || 0 }}</b> 粉丝
+                            </span>
+
+                            <span class="top-stat clickable" @click="handleStatClick('follows')">
+                                <b>{{ targetUser?.stats?.followingCount || 0 }}</b> 关注
+                            </span>
                         </div>
 
                         <div class="user-meta-row">
@@ -677,6 +756,40 @@ watch(() => route.params.username, () => {
     margin-bottom: 15px;
     color: #555;
     font-size: 14px;
+}
+
+.top-stat b {
+    color: #000;
+    font-size: 18px;
+    /* 数字稍微加大一点 */
+    font-family: "Georgia", serif;
+    /* 换个字体更有质感 */
+}
+
+/* 🔥 新增：可点击状态的样式 */
+.top-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    transition: all 0.2s;
+    padding: 4px 8px;
+    border-radius: 6px;
+    margin-left: -8px;
+    /* 视觉修正，让 hover 背景居中 */
+}
+
+.top-stat.clickable {
+    cursor: pointer;
+}
+
+.top-stat.clickable:hover {
+    background: rgba(0, 0, 0, 0.04);
+    color: #42b883;
+    /* 悬停变绿 */
+}
+
+.top-stat.clickable:hover b {
+    color: #42b883;
 }
 
 .stats-row-top b {
