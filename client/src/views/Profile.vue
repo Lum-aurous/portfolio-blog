@@ -11,65 +11,206 @@ const router = useRouter()
 const userStore = useUserStore()
 
 const loading = ref(true)
-const targetUser = ref(null)
-const isFollowing = ref(false) // 🔥 必须补上这一行！
+const targetUser = ref({}) // 保持空对象防止报错
+const isFollowing = ref(false)
 const userArticles = ref([])
-const userFavorites = ref([]) // 🔥 新增：存储收藏列表
-const activeTab = ref('posts') // 默认选中文章的 ID
+const userFavorites = ref([])
+const activeTab = ref('posts')
 const profileSearchQuery = ref('')
 
+const userColumns = ref([])
+const userHistory = ref([])
 
-// ==================== 🛠️ 增加新的状态变量 ====================
-const userColumns = ref([])    // 存储专栏列表
-const userHistory = ref([])    // 存储最近访问列表
+const bannerInput = ref(null)
+const bannerUploading = ref(false)
+const defaultBanner = 'https://images.unsplash.com/photo-1478760329108-5c3ed9d495a0?q=80&w=2000&auto=format&fit=crop'
 
-// ==================== 🛠️ 增加获取数据的函数 ====================
+const isMyProfile = computed(() => {
+    return userStore.user?.username && route.params.username === userStore.user.username
+})
 
-// 1. 获取用户专栏
+// ==================== 🛠️ 核心修复：路径处理函数 ====================
+
+// 1. 获取 Banner 图片 (修复 NotSameOrigin 问题)
+const getFullBannerUrl = (path) => {
+    if (!path || path === 'null' || path === 'undefined') return defaultBanner
+
+    // 如果是网络图片，直接返回
+    if (path.startsWith('http')) return path
+
+    // 🔥 核心修改：全部转为相对路径，走前端代理
+    // 比如：/uploads/xxx.jpg -> /api/uploads/xxx.jpg
+    // 浏览器请求 localhost:5173/api/uploads... -> 代理转发给 3000
+    // 这样就避开了跨域资源拦截
+    let cleanPath = path.startsWith('/') ? path : '/' + path
+    if (!cleanPath.startsWith('/api')) {
+        cleanPath = '/api' + cleanPath
+    }
+    return cleanPath
+}
+
+// 2. 获取文章/作品封面 (修复同样的问题)
+const getProxyUrl = (url) => {
+    if (!url || url === 'null' || url === 'undefined') {
+        return 'https://images.unsplash.com/photo-1484417894907-623942c8ee29?w=500'
+    }
+    // 网络图片直接返回
+    if (url.startsWith('http') || url.startsWith('data:')) return url
+
+    // 🔥 本地上传的图片，同样走 /api 代理
+    if (url.startsWith('/uploads') || url.startsWith('/')) {
+        let cleanPath = url.startsWith('/') ? url : '/' + url
+        if (!cleanPath.startsWith('/api')) {
+            cleanPath = '/api' + cleanPath
+        }
+        return cleanPath
+    }
+
+    // 外部图片代理接口，也走相对路径
+    return `/api/proxy-image?url=${encodeURIComponent(url)}`
+}
+
+// ==================== 🛠️ 通用数据清洗 ====================
+const sanitizeItem = (item) => {
+    let type = item.work_type || 'article';
+    if (!item.work_type) {
+        if (item.audio_url) type = 'audio';
+        else if (item.video_url) type = 'video';
+    }
+    return {
+        ...item,
+        work_type: type,
+        cover_image: item.cover_image || item.cover || item.cover_url || item.poster,
+        views: item.views || 0,
+        comments: item.comments || 0,
+        likes: item.likes || 0
+    };
+}
+
+const formatJoinedDate = (dateStr) => {
+    if (!dateStr) return '加载中...'
+    const date = new Date(dateStr)
+    return isNaN(date.getTime()) ? '未知' : date.toLocaleDateString()
+}
+
+// ==================== 📡 数据获取逻辑 ====================
+
+const fetchTargetUserInfo = async () => {
+    try {
+        const res = await api.get('/user/profile', {
+            params: { username: route.params.username }
+        })
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+
+        if (serverData.success) {
+            targetUser.value = serverData.data
+            // console.log("✅ 用户数据加载成功:", targetUser.value)
+
+            if (serverData.data.navConfig) {
+                navMenuConfig.value = serverData.data.navConfig
+            }
+            if (!isMyProfile.value && userStore.user) {
+                checkFollowStatus()
+            }
+        }
+    } catch (error) {
+        console.error("❌ 获取用户失败:", error)
+    }
+}
+
+const fetchUserArticles = async () => {
+    loading.value = true
+    try {
+        const res = await api.get('/articles', {
+            params: { author: route.params.username, limit: 50 }
+        })
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) {
+            userArticles.value = (serverData.data.list || []).map(sanitizeItem);
+        }
+    } catch (err) { console.error(err) } finally { loading.value = false }
+}
+
+const fetchUserFavorites = async () => {
+    try {
+        const res = await api.get('/user/favorites', { params: { username: route.params.username } })
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) {
+            userFavorites.value = (serverData.data || []).map(sanitizeItem);
+        }
+    } catch (err) { console.error(err) }
+}
+
 const fetchUserColumns = async () => {
     try {
-        const res = await api.get('/columns', {
-            params: { author: route.params.username } // 确保传了用户名
-        })
-        if (res.data.success) {
-            userColumns.value = res.data.data
-            console.log("📂 获取到的专栏列表:", userColumns.value)
-        }
-    } catch (err) {
-        console.error("加载专栏失败:", err)
-    }
+        const res = await api.get('/columns', { params: { author: route.params.username } })
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) userColumns.value = serverData.data || []
+    } catch (err) { console.error(err) }
 }
 
-// 2. 获取最近访问（通常这部分数据仅对“自己”可见）
 const fetchUserHistory = async () => {
-    // 只有看自己的主页时，才获取历史记录（隐私保护）
     if (!isMyProfile.value) return
-
     try {
         const res = await api.get('/user/history')
-        if (res.data.success) {
-            userHistory.value = res.data.data || []
-            console.log("🕒 获取到的历史记录:", userHistory.value)
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) userHistory.value = (serverData.data || []).map(sanitizeItem);
+    } catch (err) { console.error(err) }
+}
+
+// ==================== 🖱️ 交互逻辑 ====================
+
+const triggerBannerUpload = () => bannerInput.value.click()
+
+const handleBannerChange = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    const formData = new FormData()
+    formData.append('banner', file)
+
+    bannerUploading.value = true
+    try {
+        const res = await api.post('/user/update-banner', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+        })
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+
+        if (serverData.success) {
+            message.success('背景图更换成功')
+            targetUser.value.banner = serverData.data
+            if (userStore.user) userStore.user.banner = serverData.data
         }
     } catch (err) {
-        console.error("加载历史记录失败")
+        message.error('上传失败，请稍后再试')
+    } finally {
+        bannerUploading.value = false
+        e.target.value = ''
     }
 }
 
-// ==================== 🛠️ 更新初始化和监听 ====================
-const initData = () => {
-    loading.value = true
-    fetchTargetUserInfo()
-    fetchUserArticles()
-    fetchUserFavorites()
-    fetchUserColumns()   // 🔥 新增
-    fetchUserHistory()   // 🔥 新增
+const checkFollowStatus = async () => {
+    if (!targetUser.value?.id) return;
+    try {
+        const res = await api.get('/user/follow-status', { params: { targetUserId: targetUser.value.id } })
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) isFollowing.value = serverData.data.isFollowing
+    } catch (err) { console.error(err) }
 }
 
-// ==================== 🔥 1. 动态导航设置逻辑 ====================
-const showNavSettings = ref(false)
+const handleFollowAction = async () => {
+    if (!userStore.user) return message.warning('请先登录再操作')
+    try {
+        const res = await api.post('/user/follow', { targetUserId: targetUser.value.id })
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) {
+            isFollowing.value = serverData.data.status === 'followed'
+            message.success(serverData.message)
+            if (targetUser.value.stats) targetUser.value.stats.fansCount += isFollowing.value ? 1 : -1
+        }
+    } catch (err) { message.error('操作失败') }
+}
 
-// 初始导航菜单配置 (包含 ID, 名称, 显隐状态)
+// 导航配置
 const navMenuConfig = ref([
     { id: 'posts', name: '文章', visible: true },
     { id: 'columns', name: '专栏', visible: true },
@@ -78,275 +219,114 @@ const navMenuConfig = ref([
     { id: 'code', name: '代码仓', visible: false },
     { id: 'resources', name: '资源', visible: false }
 ])
-
-// 计算属性：过滤出可见的 Tab 供内容区展示
-const visibleNavItems = computed(() => {
-    return navMenuConfig.value.filter(item => item.visible)
-})
-
-// 排序逻辑：向上/向下移动位置
+const showNavSettings = ref(false)
+const visibleNavItems = computed(() => navMenuConfig.value.filter(item => item.visible))
+const toggleNavVisibility = (item) => { item.visible = !item.visible }
 const moveTab = (index, direction) => {
     const newIndex = index + direction
     if (newIndex < 0 || newIndex >= navMenuConfig.value.length) return
-    // 交换数组元素实现排序
     const temp = navMenuConfig.value[index]
     navMenuConfig.value[index] = navMenuConfig.value[newIndex]
     navMenuConfig.value[newIndex] = temp
 }
-
-// 切换显示/隐藏状态
-const toggleNavVisibility = (item) => {
-    item.visible = !item.visible
-}
-
-// 🔥 新增：保存导航设置到后端
 const saveNavSettings = async () => {
     try {
         await api.post('/user/nav-settings', { navConfig: navMenuConfig.value })
-        message.success('导航配置已同步至云端')
+        message.success('导航配置已同步')
         showNavSettings.value = false
-    } catch (err) {
-        message.error('同步失败，请稍后再试')
-    }
+    } catch (err) { message.error('同步失败') }
 }
 
-// ==================== 🛠️ 数据交互逻辑 ====================
-
-const isMyProfile = computed(() => userStore.user?.username === route.params.username)
-
-// 计算时间
-// 修改计算属性名称和逻辑
-const residenceTime = computed(() => {
-    if (!targetUser.value?.created_at) return '新晋博主';
-
-    const start = new Date(targetUser.value.created_at);
-    const now = new Date();
-
-    // 计算总月份差
-    let months = (now.getFullYear() - start.getFullYear()) * 12;
-    months += now.getMonth() - start.getMonth();
-
-    // 如果还没满一个月
-    if (months <= 0) {
-        // 计算天数
-        const diffDays = Math.floor((now - start) / (1000 * 60 * 60 * 24));
-        return diffDays <= 0 ? '刚刚加入' : `${diffDays} 天`;
-    }
-
-    // 如果不足一年
-    if (months < 12) {
-        return `${months} 个月`;
-    }
-
-    // 超过一年，计算 年 + 月
-    const yrs = Math.floor(months / 12);
-    const remainingMonths = months % 12;
-    return remainingMonths > 0 ? `${yrs} 年 ${remainingMonths} 个月` : `${yrs} 年`;
-});
-
-// 统一使用这个 formatJoinedDate
-const formatJoinedDate = (dateStr) => {
-    if (!dateStr) return '加载中...';
-    const date = new Date(dateStr);
-
-    // 如果日期无效，返回未知
-    if (isNaN(date.getTime())) return '未知';
-
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-};
-
-// 🔥 新增：检查关注状态
-const checkFollowStatus = async () => {
-    try {
-        const res = await api.get('/user/follow-status', {
-            // 这里建议加个 ?. 防止 targetUser 极端情况下为 null
-            params: { targetUserId: targetUser.value?.id }
-        })
-        isFollowing.value = res.data.data.isFollowing
-    } catch (err) { console.error(err) }
-}
-
-// 🔥 新增：关注/取消关注交互
-const handleFollowAction = async () => {
-    if (!userStore.user) return message.warning('请先登录再操作')
-    try {
-        const res = await api.post('/user/follow', { targetUserId: targetUser.value.id })
-        isFollowing.value = res.data.data.status === 'followed'
-        message.success(res.data.message)
-        // 重新获取数据以刷新粉丝数
-        fetchTargetUserInfo()
-    } catch (err) {
-        message.error('操作失败')
-    }
-}
-
-// 🔥 优化后的获取用户信息逻辑
-const fetchTargetUserInfo = async () => {
-    try {
-        const res = await api.get('/user/profile', {
-            params: { username: route.params.username }
-        })
-        if (res.data.success) {
-            targetUser.value = res.data.data
-            console.log("🔍 接口返回的原始数据:", res.data.data); // 加上这一行
-            targetUser.value = res.data.data
-            console.log("🖼️ 当前 targetUser.banner 的值:", targetUser.value.banner); // 加上这一行
-
-            // 1. 同步云端导航配置
-            if (res.data.data.navConfig) {
-                navMenuConfig.value = res.data.data.navConfig
-            }
-
-            // 2. 如果不是自己的主页，且已登录，检查关注状态
-            if (!isMyProfile.value && userStore.user) {
-                checkFollowStatus()
-            }
-        }
-    } catch (error) {
-        message.error('获取用户信息失败')
-        router.push('/')
-    }
-}
-
-const fetchUserArticles = async () => {
-    try {
-        const res = await api.get('/articles', {
-            params: { author: route.params.username, limit: 10 }
-        })
-        if (res.data.success) {
-            // 🔥 核心修正：因为后端返回了对象，数据在 .list 里面
-            userArticles.value = res.data.data.list || []
-            console.log("获取到的文章列表:", userArticles.value)
-        }
-    } catch (err) {
-        console.error("加载文章失败:", err)
-    } finally {
-        loading.value = false
-    }
-}
-
-// 🔥 新增：获取用户收藏列表
-const fetchUserFavorites = async () => {
-    try {
-        const res = await api.get('/user/favorites', {
-            params: { username: route.params.username }
-        })
-        if (res.data.success) {
-            userFavorites.value = res.data.data
-        }
-    } catch (error) {
-        console.error("加载收藏失败:", error)
-    }
-}
-
+// 专栏操作
 const showCreateColumnModal = ref(false)
-const newColumnForm = ref({
-    name: '',
-    description: '',
-    cover: ''
-})
+const newColumnForm = ref({ name: '', description: '', cover: '' })
 
 const handleCreateColumn = async () => {
     if (!newColumnForm.value.name) return message.warning('请输入专栏名称')
     try {
         const res = await api.post('/columns', newColumnForm.value)
-        if (res.data.success) {
-            message.success('新专栏已创建')
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) {
+            message.success('创建成功')
             showCreateColumnModal.value = false
             newColumnForm.value = { name: '', description: '', cover: '' }
-            fetchUserColumns() // 重新刷新列表
+            fetchUserColumns()
         }
-    } catch (err) {
-        message.error('创建失败')
-    }
+    } catch (err) { message.error('创建失败') }
 }
 
-const bannerInput = ref(null)      // 引用 DOM
-const bannerUploading = ref(false) // 上传状态锁
-
-// --- 🔥 辅助函数：处理背景图 URL ---
-// 默认背景图（防止路径为空时显示空白）
-const defaultBanner = 'https://w.wallhaven.cc/full/ly/wallhaven-ly9qzq.jpg'
-
-const getFullBannerUrl = (path) => {
-    // 1. 如果路径不存在，返回默认图
-    if (!path) return defaultBanner
-
-    // 2. 如果路径已经是完整的 http 链接，直接返回
-    if (path.startsWith('http')) return path
-
-    // 3. 如果是后端返回的相对路径（如 /uploads/xxx.jpg），直接返回
-    // 前端 Vite 代理会自动处理 /uploads 路径
-    return path
-}
-
-// --- 🔥 逻辑 A：触发点击 ---
-const triggerBannerUpload = () => {
-    if (bannerUploading.value) return
-    bannerInput.value.click()
-}
-
-// --- 🔥 逻辑 B：处理文件选择 ---
-const handleBannerChange = async (e) => {
-    // 1. 获取选中的文件
-    const file = e.target.files[0]
-
-    // 2. 安全检查
-    if (!file) return
-
-    // 3. 核心修复：在这里定义 formData 👈
-    const formData = new FormData()
-    formData.append('banner', file)
-
-    bannerUploading.value = true
+const handleDeleteColumn = async (column) => {
+    if (!confirm(`确定删除专栏【${column.name}】吗？`)) return
     try {
-        // 4. 发送请求
-        const res = await api.post('/user/update-banner', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
-        })
-
-        if (res.data.success) {
-            message.success('背景图更换成功！')
-            // 更新页面显示的图片
-            targetUser.value.banner = res.data.data
-            // 同步更新全局 store
-            if (userStore.user) {
-                userStore.user.banner = res.data.data
-            }
+        const res = await api.delete(`/columns/${column.id}`)
+        const serverData = (res.data && res.data.success !== undefined) ? res.data : res;
+        if (serverData.success) {
+            message.success('已删除')
+            fetchUserColumns()
         }
-    } catch (err) {
-        console.error("上传失败:", err)
-        // 这里的错误如果是 500，请看下面的说明
-        message.error('上传失败，请稍后再试')
-    } finally {
-        bannerUploading.value = false
-        // 清空 input 框
-        e.target.value = ''
-    }
+    } catch (err) { message.error('删除失败') }
 }
 
-// 搜索框
-// 🔥 计算属性：根据关键词实时过滤文章
-const filteredProfileArticles = computed(() => {
-    const query = profileSearchQuery.value.trim().toLowerCase()
-    if (!query) return userArticles.value
+// ==================== 🧠 计算属性与监听 ====================
 
-    return userArticles.value.filter(article =>
-        article.title.toLowerCase().includes(query) ||
-        article.summary?.toLowerCase().includes(query) ||
-        article.category?.toLowerCase().includes(query)
+const residenceTime = computed(() => {
+    if (!targetUser.value?.created_at) return '新晋博主'
+    const start = new Date(targetUser.value.created_at)
+    const now = new Date()
+    const diffDays = Math.ceil(Math.abs(now - start) / (1000 * 60 * 60 * 24))
+    if (diffDays < 30) return `${diffDays} 天`
+    return `${Math.floor(diffDays / 30)} 个月`
+})
+
+const filteredArticles = computed(() => {
+    const q = profileSearchQuery.value.trim().toLowerCase()
+    if (!q) return userArticles.value
+    return userArticles.value.filter(item =>
+        item.title?.toLowerCase().includes(q) || item.category?.toLowerCase().includes(q)
     )
 })
 
-// 修改初始化逻辑，同时获取文章和收藏
+const filteredFavorites = computed(() => {
+    const q = profileSearchQuery.value.trim().toLowerCase()
+    if (!q) return userFavorites.value
+    return userFavorites.value.filter(item =>
+        item.title?.toLowerCase().includes(q) || item.category?.toLowerCase().includes(q)
+    )
+})
+
+const crossTabHint = computed(() => {
+    const q = profileSearchQuery.value.trim()
+    if (!q) return null
+    if (activeTab.value === 'posts' && filteredFavorites.value.length > 0) {
+        return { text: `在“收藏”中发现了 ${filteredFavorites.value.length} 个结果`, target: 'likes' }
+    }
+    if (activeTab.value === 'likes' && filteredArticles.value.length > 0) {
+        return { text: `在“文章”中发现了 ${filteredArticles.value.length} 个结果`, target: 'posts' }
+    }
+    return null
+})
+
+watch(profileSearchQuery, (newVal) => {
+    if (!newVal) return
+    if (activeTab.value === 'posts' && !filteredArticles.value.length && filteredFavorites.value.length) {
+        activeTab.value = 'likes'
+    } else if (activeTab.value === 'likes' && !filteredFavorites.value.length && filteredArticles.value.length) {
+        activeTab.value = 'posts'
+    }
+})
+
+const initData = () => {
+    fetchTargetUserInfo()
+    fetchUserArticles()
+    fetchUserFavorites()
+    fetchUserColumns()
+    fetchUserHistory()
+}
+
 onMounted(() => {
     initData()
 })
 
-// 修改监听逻辑
 watch(() => route.params.username, () => {
     initData()
 })
@@ -411,6 +391,10 @@ watch(() => route.params.username, () => {
 
                     <div class="header-actions">
                         <template v-if="isMyProfile">
+                            <button class="action-btn primary" @click="router.push('/creation-center')">
+                                ✨ 创作中心
+                            </button>
+
                             <button class="action-btn outline" @click="router.push('/account')">编辑资料</button>
 
                             <div class="nav-settings-wrapper">
@@ -498,55 +482,69 @@ watch(() => route.params.username, () => {
                 </nav>
 
                 <div class="content-body">
-                    <div v-if="profileSearchQuery" class="article-list-v2">
-                        <ArticleItem v-for="article in filteredProfileArticles" :key="article.id" :data="article"
-                            @click="router.push(`/article/${article.id}`)" />
-                        <div v-if="filteredProfileArticles.length === 0" class="empty-state">🔍 未找到相关动态</div>
+                    <transition name="fade-slide">
+                        <div v-if="profileSearchQuery && crossTabHint" class="search-cross-hint"
+                            @click="activeTab = crossTabHint.target">
+                            <span class="hint-icon">💡</span> {{ crossTabHint.text }}
+                            <span class="hint-link">点击查看 →</span>
+                        </div>
+                    </transition>
+
+                    <div v-if="activeTab === 'posts'" class="article-list-v2">
+                        <ArticleItem v-for="article in filteredArticles" :key="article.id" :data="article"
+                            @click="router.push({ path: `/article/${article.id}`, query: { type: article.work_type } })" />
+                        <div v-if="profileSearchQuery && filteredArticles.length === 0" class="empty-state">🔍
+                            未在“文章”中找到相关内容
+                        </div>
+                        <div v-else-if="!profileSearchQuery && userArticles.length === 0" class="empty-state">📭
+                            还没有发布过作品哦</div>
+                    </div>
+
+                    <div v-else-if="activeTab === 'likes'" class="article-list-v2">
+                        <ArticleItem v-for="article in filteredFavorites" :key="article.id" :data="article"
+                            @click="router.push({ path: `/article/${article.id}`, query: { type: article.work_type } })" />
+
+                        <div v-if="profileSearchQuery && filteredFavorites.length === 0" class="empty-state">🔍
+                            未在收藏中找到相关内容
+                        </div>
+                        <div v-else-if="!profileSearchQuery && userFavorites.length === 0" class="empty-state">📭 暂无收藏内容
+                        </div>
                     </div>
 
                     <template v-else>
-                        <div v-if="activeTab === 'posts'" class="article-list-v2">
-                            <ArticleItem v-for="article in userArticles" :key="article.id" :data="article"
-                                @click="router.push(`/article/${article.id}`)" />
-                            <div v-if="userArticles.length === 0" class="empty-state">📭 还没有发布过文章哦</div>
+                        <div v-if="profileSearchQuery" class="empty-state">
+                            💡 请在“文章”或“收藏”中查看搜索结果
                         </div>
-
-                        <div v-else-if="activeTab === 'columns'" class="column-grid">
-                            <div v-if="isMyProfile" class="column-card create-trigger"
-                                @click="showCreateColumnModal = true">
-                                <div class="create-inner">
-                                    <span class="plus-icon">+</span>
-                                    <p>新建专栏文件夹</p>
+                        <template v-else>
+                            <div v-if="activeTab === 'columns'" class="column-grid">
+                                <div v-if="isMyProfile" class="column-card create-trigger"
+                                    @click="showCreateColumnModal = true">
+                                    <div class="create-inner">
+                                        <span class="plus-icon">+</span>
+                                        <p>新建专栏文件夹</p>
+                                    </div>
+                                </div>
+                                <div v-for="col in userColumns" :key="col.id" class="column-card"
+                                    @click="router.push(`/column/${col.id}`)">
+                                    <button v-if="isMyProfile" class="delete-column-btn"
+                                        @click.stop="handleDeleteColumn(col)">
+                                        <span>×</span>
+                                    </button>
+                                    <div class="column-cover">
+                                        <img :src="getProxyUrl(col.cover)" alt="cover">
+                                        <span class="count-badge">{{ col.articleCount || 0 }} 篇</span>
+                                    </div>
+                                    <div class="column-info">
+                                        <h4 class="column-title">{{ col.name }}</h4>
+                                        <p class="column-desc">{{ col.description || '这个专栏还没有描述~' }}</p>
+                                    </div>
                                 </div>
                             </div>
-
-                            <div v-for="col in userColumns" :key="col.id" class="column-card"
-                                @click="router.push(`/column/${col.id}`)">
-                                <div class="column-cover">
-                                    <img :src="col.cover || 'https://images.unsplash.com/photo-1484417894907-623942c8ee29?w=500'"
-                                        alt="cover">
-                                    <span class="count-badge">{{ col.articleCount || 0 }} 篇</span>
-                                </div>
-                                <div class="column-info">
-                                    <h4 class="column-title">{{ col.name }}</h4>
-                                    <p class="column-desc">{{ col.description || '这个专栏还没有描述~' }}</p>
-                                </div>
+                            <div v-else-if="activeTab === 'history'" class="article-list-v2">
+                                <ArticleItem v-for="article in userHistory" :key="article.id" :data="article"
+                                    @click="router.push({ path: `/article/${article.id}`, query: { type: article.work_type } })" />
                             </div>
-
-                            <div v-if="userColumns.length === 0 && !isMyProfile" class="empty-state">
-                                📭 暂无专栏内容
-                            </div>
-                        </div>
-
-                        <div v-else-if="activeTab === 'likes'" class="article-list-v2">
-                            <ArticleItem v-for="article in userFavorites" :key="article.id" :data="article"
-                                @click="router.push(`/article/${article.id}`)" />
-                        </div>
-
-                        <div v-else-if="activeTab === 'history'" class="article-list-v2">
-                            <ArticleItem v-for="article in userHistory" :key="article.id" :data="article"
-                                @click="router.push(`/article/${article.id}`)" />
-                        </div>
+                        </template>
                     </template>
                 </div>
             </section>
@@ -997,10 +995,16 @@ watch(() => route.params.username, () => {
 }
 
 .action-btn.primary {
-    background: #42b883;
+    background: linear-gradient(135deg, #42b883 0%, #34a853 100%);
+    color: white;
     border: none;
-    color: #fff;
-    box-shadow: 0 4px 12px rgba(66, 184, 131, 0.3);
+    padding: 8px 25px;
+    box-shadow: 0 4px 15px rgba(66, 184, 131, 0.3);
+}
+
+.action-btn.primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(66, 184, 131, 0.4);
 }
 
 /* 下拉动画 */
@@ -1024,6 +1028,7 @@ watch(() => route.params.username, () => {
 }
 
 .column-card {
+    position: relative;
     background: #fff;
     border: 1px solid #eee;
     border-radius: 12px;
@@ -1035,6 +1040,53 @@ watch(() => route.params.username, () => {
 .column-card:hover {
     transform: translateY(-5px);
     box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05);
+}
+
+/* --- 🗑️ 删除专栏按钮专属样式 --- */
+.column-card {
+    position: relative;
+    /* 必须设为相对定位，作为按钮的基准 */
+}
+
+.delete-column-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    background: rgba(255, 95, 126, 0.9);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 10;
+    opacity: 0;
+    transition: 0.3s;
+    font-size: 18px;
+}
+
+/* 鼠标悬停卡片时，删除按钮浮现并伴随轻微缩放 */
+.column-card:hover .delete-column-btn {
+    opacity: 1;
+    transform: scale(1);
+}
+
+.delete-column-btn:hover {
+    color: white;
+    border-color: #ff5f7e;
+    /* 悬停按钮本身时进一步放大 */
+    transform: scale(1.2);
+    background: #ff4757;
+}
+
+.delete-column-btn .cross-icon {
+    font-size: 20px;
+    line-height: 1;
+    margin-top: -2px;
+    /* 微调 × 的垂直中心 */
 }
 
 .column-cover {
@@ -1175,5 +1227,43 @@ watch(() => route.params.username, () => {
 .banner-tag:hover {
     background: rgba(0, 0, 0, 0.6);
     transform: scale(1.05);
+}
+
+/* --- 🔍 搜索跨栏提示条 --- */
+.search-cross-hint {
+    margin: 15px 20px;
+    padding: 10px 16px;
+    background: rgba(66, 184, 131, 0.05);
+    border: 1px dashed #42b883;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #42b883;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    transition: all 0.3s ease;
+}
+
+.search-cross-hint:hover {
+    background: rgba(66, 184, 131, 0.1);
+    transform: translateY(-2px);
+}
+
+.hint-icon {
+    margin-right: 8px;
+}
+
+.hint-link {
+    margin-left: auto;
+    font-weight: 700;
+    text-decoration: underline;
+}
+
+/* 搜索状态下的列表间距微调 */
+.article-list-v2 {
+    padding: 10px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
 }
 </style>

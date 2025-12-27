@@ -1,93 +1,121 @@
-<template>
-    <div class="article-item-flat" @click="$emit('click')">
-        <div class="article-main">
-            <h3 class="article-title">{{ data.title }}</h3>
-            <p class="article-excerpt">{{ data.summary }}</p>
-
-            <div class="article-meta-v2">
-                <span class="category-tag">{{ data.category || '未分类' }}</span>
-
-                <div class="author-tag">
-                    <img :src="data.author_avatar || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'"
-                        class="author-mini-img" alt="avatar">
-                    <span class="author-name">{{ data.author_name || '匿名作者' }}</span>
-                </div>
-
-                <div class="meta-stats">
-                    <span class="stat-item" title="浏览量">
-                        <span class="stat-icon">👁️</span>
-                        {{ formatNumber(data.views) }}
-                    </span>
-                    <span class="stat-item" title="点赞数" v-if="data.likes !== undefined">
-                        <span class="stat-icon">👍</span>
-                        {{ formatNumber(data.likes) }}
-                    </span>
-                    <span class="stat-item" title="评论数" v-if="data.comments !== undefined">
-                        <span class="stat-icon">💬</span>
-                        {{ formatNumber(data.comments) }}
-                    </span>
-                </div>
-            </div>
-        </div>
-
-        <div v-if="data.cover_image" class="article-thumb-v2">
-            <img :src="data.cover_image" alt="cover" loading="lazy">
-        </div>
-    </div>
-</template>
-
 <script setup>
-defineProps({
-    data: {
-        type: Object,
-        required: true
-    }
+import { useRouter } from 'vue-router' // 🔑 引入路由
+
+const props = defineProps({
+    data: { type: Object, required: true }
 })
 defineEmits(['click'])
 
-// 辅助函数：数字过万时显示 1.2w 格式
+const router = useRouter() // 🔑 初始化
+
+// ✅ 路径处理函数：支持 Base64、外链、本地代理
+const getFullImageUrl = (url) => {
+    // 只有当 url 真正有值（不是空字符串且不是 null）时才处理
+    if (!url || url === '' || url === 'null') return null;
+
+    if (url.startsWith('data:') || url.startsWith('http')) return url;
+    return url.startsWith('/') ? url : `/${url}`;
+}
+
 const formatNumber = (num) => {
     if (!num) return 0
     return num >= 10000 ? (num / 10000).toFixed(1) + 'w' : num
 }
 </script>
 
+<template>
+    <div class="article-item-flat" @click="$emit('click')">
+        <div class="article-main">
+            <h3 class="article-title">
+                <span v-if="data.work_type === 'video'" class="type-tag">🎬</span>
+                <span v-else-if="data.work_type === 'music'" class="type-tag">🎵</span>
+                {{ data.title }}
+            </h3>
+
+            <p class="article-excerpt">{{ data.summary }}</p>
+
+            <div class="article-footer-row">
+                <div class="footer-left">
+                    <span class="category-tag">{{ data.category || '未分类' }}</span>
+                </div>
+
+                <div class="footer-center">
+                    <div class="user-pill" @click.stop="router.push(`/profile/${data.author_username}`)">
+                        <img :src="getFullImageUrl(data.author_avatar)" class="user-avatar-mini" alt="avatar">
+                        <span class="user-nickname">{{ data.author_name || '匿名' }}</span>
+                    </div>
+                </div>
+
+                <div class="footer-right">
+                    <div class="meta-stats-group">
+                        <span class="stat-pill">
+                            <i class="stat-icon">👁️</i> {{ data.views || 0 }}
+                        </span>
+                        <span class="stat-pill">
+                            <i class="stat-icon">❤️</i> {{ data.likes || 0 }}
+                        </span>
+                        <span class="stat-pill">
+                            <i class="stat-icon">⭐</i> {{ data.favorites || 0 }}
+                        </span>
+                        <span class="stat-pill">
+                            <i class="stat-icon">💬</i> {{ data.comments || 0 }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="article-thumb-v2">
+            <div v-if="data.work_type === 'video' && data.video_url" class="media-container" @click.stop>
+                <video :src="getFullImageUrl(data.video_url)" controls preload="metadata" class="item-media"
+                    :poster="getFullImageUrl(data.cover_image)"></video>
+            </div>
+
+            <img v-else-if="data.cover_image" :src="getFullImageUrl(data.cover_image)" class="item-media" loading="lazy"
+                alt="cover">
+
+            <div v-else class="artistic-text-cover">
+                <div class="quote-mark">“</div>
+                <div class="text-preview">{{ data.title }}</div>
+            </div>
+        </div>
+    </div>
+</template>
+
 <style scoped>
 .article-item-flat {
-    padding: 24px;
-    border-bottom: 1px solid #f2f2f2;
+    padding: 20px 24px;
+    border-bottom: 1px solid #f0f0f0;
     display: flex;
     justify-content: space-between;
-    gap: 25px;
+    gap: 30px;
     cursor: pointer;
-    transition: all 0.3s ease;
     background: #fff;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .article-item-flat:hover {
     background: #fafafa;
-    /* 稍微给一点向上的位移感 */
-    transform: translateY(-1px);
 }
 
-/* 标题样式：悬停变色 */
+.article-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
 .article-title {
     font-size: 18px;
     font-weight: 700;
     color: #1a1a1a;
-    margin: 0 0 10px 0;
-    transition: color 0.2s;
-}
-
-.article-item-flat:hover .article-title {
-    color: #42b883;
-    /* 使用你站点的绿色主调 */
+    margin: 0 0 8px 0;
+    line-height: 1.4;
 }
 
 .article-excerpt {
     font-size: 14px;
-    color: #515767;
-    /* 稍深一点的灰色，提升阅读体验 */
+    color: #666;
     line-height: 1.6;
     margin-bottom: 16px;
     display: -webkit-box;
@@ -96,111 +124,154 @@ const formatNumber = (num) => {
     overflow: hidden;
 }
 
-.article-meta-v2 {
-    font-size: 13px;
-    color: #8a919f;
-    display: flex;
-    flex-wrap: wrap;
-    /* 适配窄屏 */
-    gap: 20px;
-    align-items: center;
+/* 🔥 底部一行排版逻辑 */
+.article-footer-row {
     margin-top: auto;
+    /* 始终沉底 */
+    display: flex;
+    align-items: center;
+    gap: 15px;
 }
 
-/* 分类标签微调 */
 .category-tag {
     color: #42b883;
     background: rgba(66, 184, 131, 0.1);
     padding: 2px 10px;
     border-radius: 4px;
-    font-weight: 500;
     font-size: 12px;
+    font-weight: 600;
 }
 
-/* 作者样式 */
-.author-tag {
+.user-pill {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    padding: 2px 8px 2px 4px;
+    border-radius: 20px;
+    background: #f8f9fa;
 }
 
-.author-mini-img {
+.user-avatar-mini {
     width: 22px;
     height: 22px;
     border-radius: 50%;
     object-fit: cover;
-    border: 1px solid #eee;
 }
 
-.author-name {
+.user-nickname {
+    font-size: 13px;
     color: #515767;
+    font-weight: 500;
 }
 
-/* 🔥 核心：互动数据区样式 */
-.meta-stats {
+.footer-right {
+    margin-left: auto;
+    /* 将统计数据推向最右侧 */
+}
+
+.meta-stats-group {
     display: flex;
-    gap: 16px;
-    margin-left: 4px;
+    gap: 12px;
 }
 
-.stat-item {
+.stat-pill {
     display: flex;
     align-items: center;
     gap: 4px;
-    transition: color 0.2s;
-}
-
-.stat-item:hover {
-    color: #1a1a1a;
+    font-size: 12px;
+    color: #999;
 }
 
 .stat-icon {
-    font-size: 14px;
-    filter: grayscale(1);
-    /* 默认图标灰色 */
-    opacity: 0.7;
+    font-style: normal;
 }
 
-.stat-item:hover .stat-icon {
-    filter: grayscale(0);
-    /* 悬停时恢复颜色 */
-    opacity: 1;
-}
-
-/* 封面图优化 */
+/* --- 右侧媒体样式 --- */
 .article-thumb-v2 {
-    width: 150px;
-    height: 95px;
-    border-radius: 6px;
+    width: 160px;
+    height: 100px;
+    border-radius: 10px;
     overflow: hidden;
     flex-shrink: 0;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    background: #000;
+    /* 视频背景通常用黑色 */
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
 }
 
-.article-thumb-v2 img {
+.media-container {
     width: 100%;
     height: 100%;
-    object-fit: cover;
-    transition: transform 0.4s;
 }
 
-/* 悬停时图片轻微放大 */
-.article-item-flat:hover .article-thumb-v2 img {
-    transform: scale(1.05);
+.item-media {
+    width: 100%;
+    height: 100%;
+    object-fit: cover !important;
 }
 
-/* 响应式适配 */
-@media (max-width: 640px) {
+.text-placeholder {
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    color: #fff;
+    font-weight: 900;
+    letter-spacing: 1px;
+}
+
+@media (max-width: 768px) {
     .article-item-flat {
-        padding: 16px;
         flex-direction: column-reverse;
-        /* 移动端图片放到文字下方或隐藏 */
-        gap: 12px;
+        padding: 16px;
     }
 
     .article-thumb-v2 {
         width: 100%;
-        height: 160px;
+        height: 180px;
     }
+
+    .footer-right {
+        margin-left: 0;
+        margin-top: 10px;
+        width: 100%;
+    }
+
+    .article-footer-row {
+        flex-wrap: wrap;
+    }
+}
+
+/* ArticleItem.vue 样式 */
+.artistic-text-cover {
+    width: 100%;
+    height: 100%;
+    background: #fdfaf2;
+    /* 奶油色背景 */
+    background-image: url('https://www.transparenttextures.com/patterns/natural-paper.png');
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 10px;
+    text-align: center;
+}
+
+.quote-mark {
+    font-family: "Georgia", serif;
+    font-size: 2rem;
+    color: #d2a679;
+    opacity: 0.3;
+    line-height: 1;
+}
+
+.text-preview {
+    font-size: 11px;
+    color: #5d4a3b;
+    font-weight: 700;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 </style>

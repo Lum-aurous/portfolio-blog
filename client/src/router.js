@@ -75,6 +75,12 @@ const router = createRouter({
       },
     },
     {
+      path: "/creation-center",
+      name: "CreationCenter",
+      component: () => import("@/views/CreationCenter.vue"),
+      meta: { requiresAuth: true, title: "创作中心 - Veritas" },
+    },
+    {
       path: "/copyright",
       name: "Copyright",
       // 建议使用异步加载，优化性能

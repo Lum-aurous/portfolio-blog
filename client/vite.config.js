@@ -14,88 +14,73 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
-      host: "localhost",
+      host: true, // 允许局域网访问，方便手机端调试
       proxy: {
+        // 1. API 接口代理
         "/api": {
           target: env.VITE_API_TARGET || "http://127.0.0.1:3000",
           changeOrigin: true,
           secure: false,
-          configure: (proxy, options) => {
-            proxy.on("error", (err, req, res) => {
-              console.log("❌ 代理错误:", err);
-            });
-            proxy.on("proxyReq", (proxyReq, req, res) => {
-              // 在终端显示真实发出的请求
-              console.log(
-                "📡 发送请求到后端:",
-                req.method,
-                req.url,
-                " => ",
-                proxyReq.path
-              );
-            });
-            proxy.on("proxyRes", (proxyRes, req, res) => {
-              console.log("📦 后端响应状态:", proxyRes.statusCode, req.url);
-            });
-          },
+          // 移除 configure 里的 console 输出可以提升一点开发环境性能，如果需要调试再开启
         },
+        // 2. 🔥 核心优化：静态资源（封面、视频）代理
         "/uploads": {
           target: env.VITE_API_TARGET || "http://127.0.0.1:3000",
           changeOrigin: true,
           secure: false,
+          // 💡 关键：确保响应头允许缓存，加快图片加载速度
+          configure: (proxy, options) => {
+            proxy.on("proxyRes", (proxyRes, req, res) => {
+              res.setHeader("Cache-Control", "public, max-age=31536000");
+            });
+          },
         },
       },
-      // 添加 HMR 配置
       hmr: {
-        overlay: true, // 显示错误覆盖层
+        overlay: true,
       },
     },
-    // 构建配置
     build: {
       outDir: "dist",
       sourcemap: mode === "development",
       assetsDir: "assets",
-      // 优化依赖项分割
+      // 💡 优化：将视频和图片文件的压缩阈值调高，防止小视频被打包成 Base64 导致主包过大
+      assetsInlineLimit: 4096,
       rollupOptions: {
         output: {
           manualChunks: {
-            vue: ["vue", "vue-router", "pinia"],
-            vendor: ["axios", "country-state-city", "lodash-es"],
-            ui: ["element-plus", "vant"],
+            vue_vendor: ["vue", "vue-router", "pinia"],
+            tools_vendor: ["axios", "lodash-es"],
+            ui_vendor: ["element-plus", "vant"],
           },
           chunkFileNames: "assets/js/[name]-[hash].js",
           entryFileNames: "assets/js/[name]-[hash].js",
           assetFileNames: (assetInfo) => {
-            if (assetInfo.name?.endsWith(".css")) {
+            if (assetInfo.name?.endsWith(".css"))
               return "assets/css/[name]-[hash][extname]";
+            // 💡 增强：增加对视频文件后缀的分类处理
+            if (/\.(mp4|webm|ogg|mp3|wav|flac|aac)$/i.test(assetInfo.name)) {
+              return "assets/media/[name]-[hash][extname]";
             }
-            if (/\.(png|jpe?g|gif|svg|webp|ico)$/.test(assetInfo.name)) {
+            if (/\.(png|jpe?g|gif|svg|webp|ico)$/i.test(assetInfo.name)) {
               return "assets/images/[name]-[hash][extname]";
-            }
-            if (/\.(woff2?|eot|ttf|otf)$/.test(assetInfo.name)) {
-              return "assets/fonts/[name]-[hash][extname]";
             }
             return "assets/[name]-[hash][extname]";
           },
         },
       },
-      // 构建优化
       minify: "terser",
       terserOptions: {
         compress: {
-          drop_console: mode !== "development", // 生产环境移除console
+          drop_console: mode !== "development",
           drop_debugger: true,
         },
       },
-      // 分块策略
-      chunkSizeWarningLimit: 1000,
+      chunkSizeWarningLimit: 1200,
     },
-    // 预加载和预取
     optimizeDeps: {
-      include: ["vue", "vue-router", "pinia", "axios"],
-      exclude: [],
+      include: ["vue", "vue-router", "pinia", "axios", "element-plus"],
     },
-    // 全局常量定义
     define: {
       __APP_VERSION__: JSON.stringify(env.VITE_APP_VERSION || "1.0.0"),
       __APP_ENV__: JSON.stringify(env.VITE_APP_ENV || "development"),

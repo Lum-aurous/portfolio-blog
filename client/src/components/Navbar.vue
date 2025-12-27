@@ -765,18 +765,20 @@ onUnmounted(() => {
 }
 
 .nav-item {
-  color: white;
-  text-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+  /* 初始颜色：在透明背景下为白色，在毛玻璃背景下为深色 */
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
   text-decoration: none;
-  transition: all 0.3s ease;
   cursor: pointer;
-  padding: 8px 0;
+  padding: 8px 4px; /* 减小左右内边距，让线条对齐文字 */
+  margin: 0 5px;
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 1rem;
   font-weight: 500;
-  position: relative;
+  position: relative; /* 必须，作为下划线的定位基准 */
+  transition: color 0.3s ease;
 }
 
 .nav-icon {
@@ -786,33 +788,56 @@ onUnmounted(() => {
 }
 
 .navbar-active .nav-item {
-  color: var(--text-color);
+  color: #475569; /* 深灰色 */
   text-shadow: none;
 }
 
 .nav-item:hover {
-  color: #3b82f6;
+  color: #48cbb6; /* 悬停时文字变色 */
+}
+
+.nav-item:hover::after {
+  width: 100%; /* 悬停时线条从左向右铺满 */
 }
 
 .nav-item:hover .nav-icon {
-  transform: translateY(-2px);
+  transform: translateY(-2px); /* 图标微动感 */
 }
 
 .nav-item::after {
   content: '';
   position: absolute;
-  bottom: 0;
-  left: 50%;
-  width: 0;
-  height: 2px;
-  background-color: #3b82f6;
-  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  transform: translateX(-50%);
+  bottom: -2px; /* 距离文字底部 2px */
+  left: 0;
+  width: 0; /* 初始宽度为 0 */
+  height: 2px; /* 线条厚度 */
+  background: #48cbb6; /* 使用你最喜欢的青绿色 */
+  /* 🔥 关键动画：从左向右平滑展开 */
+  transition: width 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
-.nav-item:hover::after {
-  width: 100%;
+/* 利用 Vue Router 自动生成的类名 */
+.nav-item.router-link-active,
+.nav-item.router-link-exact-active {
+  color: #48cbb6 !important; /* 选中时文字持久变色 */
+  font-weight: 700;
 }
+
+.nav-item.router-link-active::after,
+.nav-item.router-link-exact-active::after {
+  width: 100%; /* 选中时线条持久显示 */
+  background: #48cbb6; /* 线条颜色与文字保持一致 */
+}
+
+/* 特殊处理：深色模式下的选中颜色（如果需要更亮一点） */
+:global(html.dark) .nav-item.router-link-active {
+  color: #51d5c0 !important;
+}
+:global(html.dark) .nav-item.router-link-active::after {
+  background: #51d5c0;
+}
+
+
 
 /* ==================== 5. 下拉菜单美化 ==================== */
 .dropdown-menu {

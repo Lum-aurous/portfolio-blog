@@ -15,15 +15,30 @@ const form = reactive({
     title: '',
     summary: '',
     content: '',
-    category: 'Veritas',
+    category: '', // 👈 初始设为空字符串
     cover_image: ''
 })
 
-const categories = [
-    'Veritas', '生活倒影', '视听盛宴', '学习人生',
-    '海外趣事', '爱心资源', '技术分享', '心情随笔'
-]
+// 1. 将原有的死数组改为响应式 ref
+const sysCategories = ref([])
 
+// 2. 新增：获取系统分类的函数
+const fetchCategories = async () => {
+    try {
+        const res = await api.get('/categories') // 确保指向系统分类接口
+        if (res.data.success) {
+            sysCategories.value = res.data.data
+
+            // 🔥 自动兜底：如果当前是发布模式且表单分类为空，默认选第一个
+            if (!isEditMode.value && sysCategories.value.length > 0) {
+                form.category = sysCategories.value[0].name
+            }
+        }
+    } catch (err) {
+        console.error('获取系统分类失败', err)
+        message.error('无法同步分类数据')
+    }
+}
 const isUploading = ref(false)
 const isSubmitting = ref(false)
 const fileInput = ref(null)
@@ -42,46 +57,46 @@ const pageTitle = computed(() => isEditMode.value ? '✍️ 编辑文章' : '�
  * @param {Object} options 压缩选项 (质量, 最大宽度)
  */
 const compressImage = (file, { quality = 0.7, maxWidth = 1200 } = {}) => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (e) => {
-      const img = new Image();
-      img.src = e.target.result;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (e) => {
+            const img = new Image();
+            img.src = e.target.result;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
 
-        // 计算缩放比例
-        if (width > maxWidth) {
-          height = (maxWidth / width) * height;
-          width = maxWidth;
-        }
+                // 计算缩放比例
+                if (width > maxWidth) {
+                    height = (maxWidth / width) * height;
+                    width = maxWidth;
+                }
 
-        canvas.width = width;
-        canvas.height = height;
+                canvas.width = width;
+                canvas.height = height;
 
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
 
-        // 将 canvas 转为 Blob
-        canvas.toBlob((blob) => {
-          if (blob) {
-            // 将 Blob 转回 File 对象，保持原始文件名
-            const compressedFile = new File([blob], file.name, {
-              type: 'image/jpeg',
-              lastModified: Date.now(),
-            });
-            resolve(compressedFile);
-          } else {
-            reject(new Error('Canvas 压缩失败'));
-          }
-        }, 'image/jpeg', quality);
-      };
-    };
-    reader.onerror = (error) => reject(error);
-  });
+                // 将 canvas 转为 Blob
+                canvas.toBlob((blob) => {
+                    if (blob) {
+                        // 将 Blob 转回 File 对象，保持原始文件名
+                        const compressedFile = new File([blob], file.name, {
+                            type: 'image/jpeg',
+                            lastModified: Date.now(),
+                        });
+                        resolve(compressedFile);
+                    } else {
+                        reject(new Error('Canvas 压缩失败'));
+                    }
+                }, 'image/jpeg', quality);
+            };
+        };
+        reader.onerror = (error) => reject(error);
+    });
 };
 
 // 触发文件选择
@@ -122,9 +137,9 @@ const handleFileUpload = async (event) => {
         console.error('上传失败详情:', error);
         // cpolar 环境下经常出现的错误提示
         if (error.code === 'ECONNABORTED') {
-          message.error('❌ 上传超时，请尝试更小的图片');
+            message.error('❌ 上传超时，请尝试更小的图片');
         } else {
-          message.error('❌ 上传失败，请检查穿透隧道是否正常');
+            message.error('❌ 上传失败，请检查穿透隧道是否正常');
         }
     } finally {
         isUploading.value = false;
@@ -191,18 +206,22 @@ const submitArticle = async () => {
 const getPreviewUrl = (path) => {
     if (!path) return ''
     if (path.startsWith('http') || path.startsWith('data:')) return path
-    
+
     // 🔥 核心修改：动态获取当前页面的 host (包含协议、域名和端口)
     // 这样在 cpolar 下它就是 http://xxx.cpolar.cn/uploads/...
     // 在本地它就是 http://localhost:3000/uploads/...
     const host = window.location.origin;
-    
+
     const cleanPath = path.startsWith('/') ? path : '/' + path
     return `${host}${cleanPath}`
 }
 
 // 🔥 初始化：如果是编辑模式，加载数据
-onMounted(() => {
+onMounted(async () => {
+    // 1. 先同步分类数据
+    await fetchCategories() 
+    
+    // 2. 如果是编辑模式，再加载详情（详情里的 category 会覆盖默认值）
     if (isEditMode.value) {
         fetchArticleDetails(route.query.id)
     }
@@ -259,11 +278,15 @@ watch(() => form.content, (newContent) => {
                 <div class="setting-card">
                     <h3>📂 分类专栏</h3>
                     <div class="category-list">
-                        <label v-for="cat in categories" :key="cat" class="radio-label"
-                            :class="{ active: form.category === cat }">
-                            <input type="radio" v-model="form.category" :value="cat" hidden>
-                            {{ cat }}
+                        <label v-for="cat in sysCategories" :key="cat.id" class="radio-label"
+                            :class="{ active: form.category === cat.name }">
+                            <input type="radio" v-model="form.category" :value="cat.name" hidden>
+                            <span class="cat-icon">{{ cat.icon }}</span> {{ cat.name }}
                         </label>
+
+                        <div v-if="sysCategories.length === 0" class="empty-hint">
+                            暂无系统分类，请先去配置
+                        </div>
                     </div>
                 </div>
 
@@ -531,6 +554,8 @@ watch(() => form.content, (newContent) => {
 }
 
 .radio-label {
+    display: flex;
+    align-items: center;
     padding: 6px 12px;
     background: rgba(255, 255, 255, 0.05);
     border-radius: 20px;
@@ -552,6 +577,17 @@ watch(() => form.content, (newContent) => {
     border-color: #8b5cf6;
     font-weight: 600;
     box-shadow: 0 0 10px rgba(139, 92, 246, 0.2);
+}
+
+.cat-icon {
+    margin-right: 4px;
+    font-size: 1.1em;
+}
+
+.empty-hint {
+    font-size: 12px;
+    color: #64748b;
+    padding: 10px;
 }
 
 /* 封面上传区 */

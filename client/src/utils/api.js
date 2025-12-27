@@ -3,7 +3,6 @@ import axios from "axios";
 import { message } from "./message.js";
 
 const api = axios.create({
-  // 🔥 核心修改：改为相对路径。
   // 这样无论域名是 localhost 还是 cpolar，它都会自动请求当前域名下的 /api
   baseURL: import.meta.env.VITE_API_BASE_URL || "/api", 
   
@@ -11,9 +10,6 @@ const api = axios.create({
   timeout: 60000, // 👈 将超时时间延长到 60 秒
   
   withCredentials: true,
-  headers: {
-    "Content-Type": "application/json",
-  },
 });
 
 // 请求拦截器：自动添加 Token

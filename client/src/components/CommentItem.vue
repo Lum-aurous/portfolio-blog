@@ -23,12 +23,15 @@ const props = defineProps({
 })
 
 // 1. 判断该评论者是不是文章作者
+// ✅ 优化后的判定逻辑
 const isArticleAuthor = computed(() => {
-    // 🔥 修正：对比“当前评论者ID”和“父组件传下来的文章作者ID”
-    const commenterId = props.comment.commenter_id || props.comment.user_id;
+    // 兼容多种可能的 ID 字段名
+    const commenterId = props.comment.commenter_id || props.comment.user_id || props.comment.author_id;
+    const authorId = props.articleAuthorId;
+
+    if (!commenterId || !authorId) return false;
     
-    // 使用 Number 强制转换，防止 String 和 Number 匹配失败
-    return Number(commenterId) === Number(props.articleAuthorId);
+    return Number(commenterId) === Number(authorId);
 })
 
 // 2. 作者是否赞过（直接用后端传来的布尔值）
@@ -504,24 +507,25 @@ const toggleReplies = () => {
 
 /* 作者标签：名字旁边的 */
 .author-text-green {
+    background: rgba(72, 203, 182, 0.1); /* 浅青色背景 */
     color: #48cbb6;
-    /* 还原图二的青绿色 */
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid rgba(72, 203, 182, 0.2);
     margin-left: 8px;
-    font-family: "Kaiti", "STKaiti", serif;
-    /* 增加一点人文气息 */
+    font-weight: bold;
 }
 
 /* “作者赞过”：内容下方的 */
 .author-liked-italic {
     color: #82cc9d;
-    /* 还原图一的淡绿色 */
-    font-size: 13px;
+    font-size: 12px;
     font-style: italic;
-    /* 必须是斜体 */
     margin-top: 6px;
-    font-family: "Kaiti", "STKaiti", serif;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .heart-icon {

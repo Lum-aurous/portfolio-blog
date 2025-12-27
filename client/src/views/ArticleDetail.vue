@@ -34,6 +34,24 @@ const isCreatingInModal = ref(false) // 🔥 新增：是否处于"创建模式"
 const newColumnData = ref({ name: '', description: '' }) // 🔥 新增：快捷创建表单
 const isSubmitting = ref(false)
 
+// 🔥 必须定义这个，否则页面会报错
+const renderedContent = computed(() => {
+    return article.value?.content || ''
+})
+
+// ✅ 1. 定义一个安全的当前页面 URL（用于二维码）
+const currentUrl = computed(() => {
+    return typeof window !== 'undefined' ? window.location.href : '';
+});
+
+// ✅ 2. 定义二维码 API 地址
+const qrCodeUrl = computed(() => {
+    return `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(currentUrl.value)}`;
+});
+
+// ✅ 3. 定义缺少的默认图片地址
+const defaultAuthorAvatar = 'https://w.wallhaven.cc/full/76/wallhaven-76r86v.jpg';
+
 // 🔥 新增：图片预览（灯箱）逻辑
 const isLightboxOpen = ref(false)
 const lightboxUrl = ref('')
@@ -112,42 +130,75 @@ const sidebarStyle = computed(() => ({
 }))
 
 // 初始化互动状态
+// ✅ 修复后的 fetchInteractionStatus
 const fetchInteractionStatus = async () => {
-    if (!isLoggedIn.value) return
+    if (!isLoggedIn.value) return;
+
+    // 确保此时 currentWorkType 已经是修正后的正确类型
+    const realType = currentWorkType.value;
+
     try {
-        const res = await api.get(`/articles/${route.params.id}/interaction-status`)
+        const res = await api.get(`/articles/${route.params.id}/interaction-status`, {
+            params: { type: realType }
+        })
+
         if (res.data.success) {
             isLiked.value = res.data.data.isLiked
             isFavorited.value = res.data.data.isFavorited
+
+            // 🔥 如果后端返回了最新计数，顺便更新一下界面
+            if (res.data.data.likeCount !== undefined) {
+                likeCount.value = res.data.data.likeCount;
+            }
         }
     } catch (err) {
         console.warn('获取互动状态失败', err)
     }
 }
 
-// 🔥 处理点赞
+// ✅ 修改点：点赞函数
 const handleLike = async () => {
-    if (!isLoggedIn.value) return message.warning('请先登录后点赞')
+    if (!isLoggedIn.value) return message.warning('请登录后再为灵感喝彩')
+
+    const originalState = isLiked.value;
+    const originalCount = likeCount.value;
+
+    // 1. 🚀 乐观更新：立即反馈
+    isLiked.value = !originalState;
+    likeCount.value += isLiked.value ? 1 : -1;
+
     try {
-        const res = await api.post(`/articles/${route.params.id}/like`)
-        isLiked.value = res.data.data.status === 'liked'
-        isLiked.value ? likeCount.value++ : likeCount.value--
-        message.success(res.data.message)
+        const res = await api.post(`/articles/${route.params.id}/like`, {
+            type: currentWorkType.value // 🔑 告诉后端查哪张点赞表
+        });
+        if (!res.data.success) throw new Error();
     } catch (err) {
-        message.error('操作失败')
+        // 2. 🔙 失败回滚
+        isLiked.value = originalState;
+        likeCount.value = originalCount;
+        message.error('点赞同步失败，请重试');
     }
 }
 
-// 🔥 处理收藏
+// ✅ 修改点：收藏函数 (同理)
 const handleFavorite = async () => {
-    if (!isLoggedIn.value) return message.warning('请先登录后收藏')
+    if (!isLoggedIn.value) return message.warning('请登录后再收藏这段灵感')
+
+    const originalState = isFavorited.value;
+    const originalCount = favoriteCount.value;
+
+    isFavorited.value = !originalState;
+    favoriteCount.value += isFavorited.value ? 1 : -1;
+
     try {
-        const res = await api.post(`/articles/${route.params.id}/favorite`)
-        isFavorited.value = res.data.data.status === 'favorited'
-        isFavorited.value ? favoriteCount.value++ : favoriteCount.value--
-        message.success(res.data.message)
+        const res = await api.post(`/articles/${route.params.id}/favorite`, {
+            type: currentWorkType.value // 🔑 精准传递类型
+        });
+        if (!res.data.success) throw new Error();
     } catch (err) {
-        message.error('操作失败')
+        isFavorited.value = originalState;
+        favoriteCount.value = originalCount;
+        message.error('收藏失败');
     }
 }
 
@@ -189,13 +240,18 @@ const handleCreateColumnInModal = async () => {
 }
 
 // 选择专栏并提交
+// ✅ 修改点：确保加入专栏时带上当前作品的真实类型
 const selectColumnAndAdd = async (columnId) => {
     try {
-        await api.post(`/columns/${columnId}/articles`, { articleId: article.value.id })
-        message.success('已成功添加到专栏！')
+        await api.post(`/columns/${columnId}/articles`, {
+            articleId: article.value.id,
+            // 🔑 关键：使用我们之前定义的 currentWorkType 计算属性
+            type: currentWorkType.value
+        })
+        message.success('✨ 灵感已成功收录入专栏！')
         showColumnModal.value = false
     } catch (err) {
-        message.error('添加失败，可能已存在')
+        message.error('该作品已在专栏中了哦')
     }
 }
 
@@ -225,6 +281,7 @@ const toggleFollow = async () => {
 
 // 跳转至作者主页
 const goToAuthorProfile = () => {
+    // 🔑 这里的逻辑很稳：优先拿用户名，没有就拿昵称
     const username = article.value?.author_username || article.value?.author_name
     if (username) {
         router.push(`/profile/${username}`)
@@ -363,8 +420,22 @@ const textThemes = [
     { id: 'purple', name: '暮山紫', color: '#dcd6f7', fontColor: '#9370db' }
 ]
 
+// 🔥 新增：标记主题是否正在切换中
+const isThemeChanging = ref(false)
+
+// ✅ 优化原有的切换函数
 const changeHighlightColor = (theme) => {
+    // 1. 开启切换动画状态
+    isThemeChanging.value = true
+
+    // 2. 更新颜色
     highlightColor.value = theme.fontColor
+
+    // 3. 400ms 后关闭状态（与 CSS 动画时间匹配）
+    setTimeout(() => {
+        isThemeChanging.value = false
+    }, 400)
+
     message.success(`主题已切换为：${theme.name}`)
 }
 
@@ -372,28 +443,69 @@ const changeHighlightColor = (theme) => {
 const fetchArticle = async () => {
     loading.value = true
     try {
-        const res = await api.get(`/articles/${route.params.id}`)
+        // 1. 尝试从 URL 获取 type，如果没有，先暂时默认为 article
+        // (这是为了应对刷新页面时 query 参数可能丢失的情况)
+        let requestType = route.query.type || 'article'
+
+        const res = await api.get(`/articles/${route.params.id}`, {
+            params: { type: requestType }
+        })
+
         if (res.data.success) {
-            article.value = res.data.data
-            likeCount.value = article.value.likes || 0
-            favoriteCount.value = article.value.favorites || 0
-            fetchInteractionStatus()
-            api.post(`/articles/${route.params.id}/view`).catch(err => console.warn(err))
-        } else {
-            message.error('文章不存在')
-            router.push('/')
+            const serverData = res.data.data
+            article.value = serverData
+
+            // 🔥🔥🔥 核心修复 A：类型自动修正逻辑
+            // 数据回来后，根据内容特征（audio_url/video_url）强制修正内存中的 work_type
+            // 这样后续的评论和点赞操作都能拿到正确的类型
+            if (serverData.work_type) {
+                // 如果后端直接给了 work_type，直接用
+            } else if (serverData.audio_url) {
+                article.value.work_type = 'audio'
+            } else if (serverData.video_url) {
+                article.value.work_type = 'video'
+            } else {
+                article.value.work_type = 'article'
+            }
+
+            // 2. 更新页面显示的计数
+            likeCount.value = Number(serverData.likes || 0)
+            favoriteCount.value = Number(serverData.favorites || 0)
+
+            // 3. 增加浏览量 (使用修正后的类型)
+            // 注意：这里使用了 currentWorkType 计算属性，它现在已经指向了正确的值
+            api.post(`/articles/${route.params.id}/view`, { type: currentWorkType.value })
+                .then(() => {
+                    // 视觉上立即 +1
+                    article.value.views = (article.value.views || 0) + 1
+                })
+                .catch(err => console.warn('统计失败:', err))
+
+            // 🔥🔥🔥 核心修复 B：严格的执行顺序
+            // 只有当文章类型确定后，才去拉取评论列表
+            // 这样 fetchComments() 内部读取到的 currentWorkType 才是 'audio'，从而查到正确的评论
+            fetchComments()
+
+            // 4. 最后查询互动状态 (点赞/收藏高亮)
+            nextTick(() => {
+                fetchInteractionStatus()
+            })
         }
     } catch (error) {
-        message.error('加载文章失败')
+        console.error("详情加载错误:", error)
+        message.error('加载内容失败')
     } finally {
         loading.value = false
     }
 }
-
 const fetchComments = async () => {
     try {
         const res = await api.get('/comments', {
-            params: { article_id: route.params.id }
+            params: {
+                article_id: route.params.id,
+                // 🔥 确保获取列表时也带上类型隔离
+                type: currentWorkType.value
+            }
         })
         if (res.data.success) {
             comments.value = res.data.data || []
@@ -483,12 +595,14 @@ const submitComment = async () => {
             }
         }
 
-        // 提交评论主体
+        // 🔑 核心修改：构造 Payload
         const payload = {
             article_id: parseInt(route.params.id),
             content: commentContent.value,
             images: imageUrls,
-            parent_id: replyTarget.value ? replyTarget.value.rootId : null
+            parent_id: replyTarget.value ? replyTarget.value.rootId : null,
+            // 🔥 使用我们定义的计算属性，确保传给后端的是 'audio'
+            type: currentWorkType.value
         }
 
         const res = await api.post('/comments', payload)
@@ -499,8 +613,11 @@ const submitComment = async () => {
             selectedImages.value = []
             if (replyTarget.value) expandedReplies.value.add(replyTarget.value.rootId)
             cancelReply()
+
+            // 💡 重点：由于后端在插入评论时已经自动更新了对应表的 comments 计数，
+            // 之前的 api.post(.../update-comments-count) 属于旧逻辑且不支持音频，
+            // 必须删掉或注释掉，直接刷新评论列表即可。
             fetchComments()
-            api.post(`/articles/${route.params.id}/update-comments-count`)
         }
     } catch (e) {
         console.error('评论流程出错:', e);
@@ -609,20 +726,6 @@ const deleteComment = async (id) => {
     }
 }
 
-watch(isLoggedIn, (newVal) => {
-    if (newVal) {
-        restoreCommentContent()
-        showWelcomeMessage()
-    }
-})
-
-watch(commentContent, (newVal) => {
-    if (!isLoggedIn.value && newVal.trim()) {
-        localStorage.setItem('temp_comment', newVal)
-    }
-})
-
-
 // 🔥 1. 新增一个将十六进制颜色转换为 RGB 的工具函数
 const hexToRgb = (hex) => {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -689,36 +792,50 @@ const closeShareModal = (e) => {
     }
 }
 
+// 如果你还没定义默认头像，请补充
+const defaultAvatar = 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'
+
+// ✅ 确保 downloadCard 函数中使用了正确的消息提示
 const downloadCard = async () => {
-    if (!shareCardRef.value) return
-    isGeneratingCard.value = true
+    if (!shareCardRef.value) return;
+    isGeneratingCard.value = true;
 
     try {
-        await nextTick()
+        // 1. 确保 DOM 已经完全更新
+        await nextTick();
+
+        // 2. 💡 这是一个高级技巧：在截图前，强制让图片“预热”完成
+        // 有时浏览器渲染 object-fit 需要一瞬间的时间
+        await new Promise(resolve => setTimeout(resolve, 300));
 
         const canvas = await html2canvas(shareCardRef.value, {
-            useCORS: true,
-            allowTaint: false,
-            scale: 2,
+            useCORS: true,      // 允许跨域图片
+            allowTaint: false,  // 防止污染
+            scale: 3,           // 3倍高清，发朋友圈不模糊
             backgroundColor: null,
-            logging: false
-        })
+            // 💡 针对 object-fit 的兼容性增强：
+            onclone: (clonedDoc) => {
+                // 你可以在这里对克隆出来的 DOM 进行微调
+                const img = clonedDoc.querySelector('.card-cover-art');
+                if (img) img.style.objectFit = 'cover';
+            }
+        });
 
-        const imgUrl = canvas.toDataURL('image/png')
-        const link = document.createElement('a')
-        link.download = `Veritas_Share_${article.value.id}.png`
-        link.href = imgUrl
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
+        const imgUrl = canvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = `Veritas_Postcard_${article.value.id}.png`;
+        link.href = imgUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
 
-        message.success('卡片已保存到本地！')
-        showShareModal.value = false
+        message.success('📬 明信片已封缄冲印，完美收官！');
+        showShareModal.value = false;
     } catch (err) {
-        console.error(err)
-        message.error('生成卡片失败，请重试')
+        console.error(err);
+        message.error('冲印过程中墨水不足（生成失败）');
     } finally {
-        isGeneratingCard.value = false
+        isGeneratingCard.value = false;
     }
 }
 
@@ -730,17 +847,6 @@ const getProxyUrl = (url) => {
     const isDev = import.meta.env.VITE_APP_ENV === 'development'
     const apiBase = isDev ? import.meta.env.VITE_API_TARGET : window.location.origin
     return `${apiBase}/api/proxy-image?url=${encodeURIComponent(url)}`
-}
-
-const handleImageError = (event, fallbackUrl = null) => {
-    const img = event.target
-    if (img.dataset.fallback === 'true') {
-        console.warn('降级图片也加载失败')
-        return
-    }
-    img.dataset.fallback = 'true'
-    const defaultImage = fallbackUrl || 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800'
-    img.src = getProxyUrl(defaultImage)
 }
 
 const formatCount = (count) => {
@@ -763,10 +869,87 @@ const scrollToComments = () => {
     }
 }
 
+// 1. 识别内容的媒体类型
+const contentMediaType = computed(() => {
+    // 逻辑：优先判断视频，其次音频，再看有没有封面
+    if (article.value?.video_url) return 'video';
+    if (article.value?.audio_url) return 'audio';
+    if (article.value?.cover_image) return 'standard';
+    return 'text-only'; // 什么都没有，就是纯文本
+});
+
+// 2. 增强背景样式：如果是音视频，给背景加一个深度模糊，营造氛围感
+
+// ✅ 优化后的背景逻辑：使用 getProxyUrl 确保相对路径和跨域图片都能正常显示
+const heroBgStyle = computed(() => {
+    const type = contentMediaType.value;
+
+    if (type === 'text-only') {
+        return {
+            background: 'linear-gradient(135deg, #eaddca 0%, #fdfaf2 50%, #eaddca 100%)',
+            filter: 'none', transform: 'none'
+        };
+    }
+
+    // 🔑 核心修正：使用 getProxyUrl 包装原始封面路径
+    const rawUrl = article.value?.cover_image || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg';
+    const finalUrl = getProxyUrl(rawUrl);
+
+    const isMedia = ['video', 'audio'].includes(type);
+
+    return {
+        backgroundImage: `url(${finalUrl})`,
+        filter: isMedia ? 'blur(40px) brightness(0.8) saturate(1.2)' : 'none',
+        transform: isMedia ? 'scale(1.15)' : 'none',
+        transition: 'all 1s ease'
+    };
+});
+
+const handleAudioPlay = () => { isAudioPlaying.value = true }
+const handleAudioPause = () => { isAudioPlaying.value = false }
+// --- 📻 音频实时播放状态追踪 ---
+const isAudioPlaying = ref(false);
+
+// 模拟音符粒子数据
+const musicalNotes = ref([
+    { id: 1, left: '10%', delay: '0s' },
+    { id: 2, left: '30%', delay: '1.2s' },
+    { id: 3, left: '60%', delay: '0.5s' },
+    { id: 4, left: '85%', delay: '2s' },
+    { id: 5, left: '45%', delay: '1.8s' }
+])
+
+// ✅ 新增：多重校验作品类型，确保评论和互动发送正确的标识
+const currentWorkType = computed(() => {
+    if (!article.value) return 'article'; // 防止空指针
+    // 1. 优先信赖后端返回的显式字段
+    if (article.value.work_type) return article.value.work_type;
+    // 2. 其次看 URL
+    if (route.query.type) return route.query.type;
+    // 3. 最后根据特征推断
+    if (article.value.audio_url) return 'audio';
+    if (article.value.video_url) return 'video';
+    return 'article';
+});
+
+
+watch(isLoggedIn, (newVal) => {
+    if (newVal) {
+        restoreCommentContent()
+        showWelcomeMessage()
+    }
+})
+
+watch(commentContent, (newVal) => {
+    if (!isLoggedIn.value && newVal.trim()) {
+        localStorage.setItem('temp_comment', newVal)
+    }
+})
+
+
 // 生命周期
 onMounted(() => {
     fetchArticle()
-    fetchComments()
     window.scrollTo(0, 0)
     document.addEventListener('click', closeEmojiPicker)
     window.addEventListener('keydown', handleEsc)
@@ -799,7 +982,6 @@ onUnmounted(() => {
                     <svg class="progress-circle" viewBox="0 0 44 44">
                         <circle class="progress-circle-bg" cx="22" cy="22" r="20"></circle>
                         <circle class="progress-circle-bar" cx="22" cy="22" r="20" :style="{
-                            // 🔥 增加 NaN 和 0 的逻辑保护
                             strokeDashoffset: (isNaN(scrollPercent) || !scrollPercent) ? 125.6 : (125.6 - (125.6 * scrollPercent) / 100),
                             stroke: progressColor
                         }">
@@ -828,57 +1010,134 @@ onUnmounted(() => {
             </div>
         </aside>
 
-        <header class="hero-header">
-            <div class="hero-bg"
-                :style="{ backgroundImage: `url(${article.cover_image || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'})` }">
-            </div>
+        <header class="hero-header" :class="`type-${contentMediaType}`">
+            <div class="hero-bg" :style="heroBgStyle"></div>
             <div class="hero-overlay"></div>
+
             <div class="hero-container animate__animated animate__fadeInUp">
-                <div class="hero-info">
-                    <h1 class="article-title">{{ article.title }}</h1>
-                    <div class="article-meta">
-                        <div class="meta-item author" @click="goToAuthorProfile" title="查看作者主页">
-                            <div class="author-avatar-wrapper">
-                                <img :src="article.author_avatar || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg'"
-                                    class="author-avatar" alt="作者头像">
-                                <button v-if="currentUser?.id !== article.author_id" class="mini-follow-btn"
-                                    :class="{ 'followed': isFollowing }" @click.stop="toggleFollow">
-                                    <svg v-if="!isFollowing" viewBox="0 0 24 24" width="14" height="14" fill="none"
-                                        stroke="currentColor" stroke-width="3">
-                                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                                        <line x1="5" y1="12" x2="19" y2="12"></line>
-                                    </svg>
-                                    <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none"
-                                        stroke="currentColor" stroke-width="3">
-                                        <polyline points="20 6 9 17 4 12"></polyline>
-                                    </svg>
-                                </button>
-                            </div>
-                            <span class="author-name">{{ article.author_name || 'Veritas' }}</span>
-                        </div>
+
+                <div v-if="contentMediaType === 'text-only'" class="text-art-cover"
+                    :class="{ 'theme-switching': isThemeChanging }">
+                    <div class="manuscript-stamp">Manuscript</div>
+                    <div class="text-inner">
+                        <span class="initial-letter">{{ article.title.charAt(0) }}</span>
+                        <h1 class="article-title">{{ article.title }}</h1>
+                    </div>
+                    <p class="hero-summary-fade">{{ article.summary }}</p>
+
+                    <div class="article-meta text-mode-meta">
+                        <img :src="article.author_avatar || defaultAvatar" class="author-avatar-tiny"
+                            @click="goToAuthorProfile" style="cursor: pointer">
+                        <span class="author-name">{{ article.author_name }}</span>
                         <span class="meta-divider">·</span>
-                        <div class="meta-item">📅 {{ formatDate(article.created_at) }}</div>
-                        <span class="meta-divider">·</span>
-                        <div class="meta-item">🔥 {{ article.views || 0 }}</div>
-                        <span class="meta-divider">·</span>
-                        <div class="meta-item">💬 {{ totalCommentCount }}</div>
+                        <span>📅 {{ formatDate(article.created_at) }}</span>
                     </div>
                 </div>
+
+                <template v-else>
+
+                    <div v-if="contentMediaType === 'audio'" class="media-preview-aside">
+                        <div class="media-box audio">
+                            <img :src="article.cover_image || defaultAvatar" class="media-poster">
+                            <div class="media-icon-center">♫</div>
+                        </div>
+                    </div>
+
+                    <div class="hero-info-bottom" :class="{ 'has-media': contentMediaType !== 'standard' }">
+                        <h1 class="article-title">{{ article.title }}</h1>
+                        <div class="article-meta">
+                            <div class="meta-item author" @click="goToAuthorProfile" title="查看作者主页">
+                                <div class="author-avatar-wrapper">
+                                    <img :src="article.author_avatar || defaultAvatar" class="author-avatar" alt="作者头像"
+                                        @click="goToAuthorProfile" style="cursor: pointer" title="点击查看作者主页">
+
+                                    <button v-if="currentUser?.id !== article.author_id" class="mini-follow-btn"
+                                        :class="{ 'followed': isFollowing }" @click.stop="toggleFollow">
+                                        <svg v-if="!isFollowing" viewBox="0 0 24 24" width="14" height="14" fill="none"
+                                            stroke="currentColor" stroke-width="3">
+                                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                                        </svg>
+                                        <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none"
+                                            stroke="currentColor" stroke-width="3">
+                                            <polyline points="20 6 9 17 4 12"></polyline>
+                                        </svg>
+                                    </button>
+
+                                </div>
+                                <span class="author-name">{{ article.author_name || 'Veritas' }}</span>
+                            </div>
+                            <span class="meta-divider">·</span>
+                            <div class="meta-item">📅 {{ formatDate(article.created_at) }}</div>
+                            <span class="meta-divider">·</span>
+                            <div class="meta-item">🔥 {{ article.views || 0 }}</div>
+                            <span class="meta-divider">·</span>
+                            <div class="meta-item">💬 {{ totalCommentCount }}</div>
+                        </div>
+                    </div>
+                </template>
+
                 <div class="hero-controls">
                     <div v-for="theme in textThemes" :key="theme.id" class="q-btn"
-                        :style="{ backgroundColor: theme.color }" @click="changeHighlightColor(theme)">{{ theme.name }}
+                        :style="{ backgroundColor: theme.color }" @click="changeHighlightColor(theme)">
+                        {{ theme.name }}
                     </div>
                 </div>
             </div>
         </header>
 
         <main class="main-wrapper">
-            <div class="content-card animate__animated animate__fadeInUp" :style="contentStyle">
+            <div class="content-card animate__animated animate__fadeInUp" :style="contentStyle"
+                :class="{ 'theme-switching': isThemeChanging }">
+                <!-- 音频 -->
+                <div v-if="article.audio_url" class="disney-piano-concert">
+                    <div class="concert-backdrop" :class="{ 'is-active': isAudioPlaying }">
+                        <div v-for="note in musicalNotes" :key="note.id" class="floating-note"
+                            :style="{ left: note.left, animationDelay: note.delay }">♫</div>
+                    </div>
+
+                    <div class="piano-workbench">
+                        <div class="vinyl-record-stage">
+                            <div class="concert-vinyl" :class="{ 'spinning': isAudioPlaying }">
+                                <img :src="getProxyUrl(article.cover_image)" class="vinyl-cover-main">
+                                <div class="vinyl-shine"></div>
+                            </div>
+                            <div class="piano-tonearm" :class="{ 'is-on': isAudioPlaying }"></div>
+                        </div>
+
+                        <div class="dreamy-keys">
+                            <div v-for="i in 14" :key="i" class="piano-key" :class="{ 'key-active': isAudioPlaying }">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="romantic-player-bar">
+                        <audio ref="audioPlayerRef" :src="article.audio_url" controls class="disney-audio-node"
+                            @play="handleAudioPlay" @pause="handleAudioPause" @ended="handleAudioPause"></audio>
+                        <p class="audio-caption">正在为您演奏：{{ article.title }}</p>
+                    </div>
+                </div>
+                <!-- 视频 -->
+                <div v-if="article.video_url" class="inner-theater-section">
+                    <div class="theater-frame">
+                        <div class="theater-rec-status"><span class="dot-pulse"></span> REC</div>
+
+                        <video :src="article.video_url" controls class="inner-video-player"
+                            :poster="getProxyUrl(article.cover_image)" preload="metadata">
+                        </video>
+                    </div>
+                    <div class="video-info-strip">
+                        <span>影视作品 / Film Archive</span>
+                        <small>Veritas Cinema Project</small>
+                    </div>
+                </div>
                 <div class="article-preface" v-if="article.summary">
                     <div class="preface-content">
-                        <span class="quote-left">“</span>
+                        <span class="quote-left" :class="{ 'quote-shimmer': isThemeChanging }">“</span>
+
                         <p class="summary-text">{{ article.summary }}</p>
-                        <span class="quote-right">”</span>
+
+                        <span class="quote-right" :class="{ 'quote-shimmer': isThemeChanging }">”</span>
                     </div>
                     <div class="preface-divider"></div>
                 </div>
@@ -922,7 +1181,7 @@ onUnmounted(() => {
                         <div class="comment-box-beige">
                             <textarea id="comment-input" v-model="commentContent" placeholder="写下点什么..."
                                 :disabled="!isLoggedIn" @click="showLoginTip">
-                            </textarea>
+                    </textarea>
                             <div v-if="!isLoggedIn" class="disabled-overlay" @click="showLoginTip"></div>
                             <div v-if="selectedImages.length" class="image-preview">
                                 <div v-for="(img, index) in selectedImages" :key="index" class="preview-item">
@@ -942,7 +1201,8 @@ onUnmounted(() => {
                                 </div>
                                 <div v-if="showEmojiPicker" class="emoji-panel" @click.stop>
                                     <span v-for="emoji in emojis" :key="emoji" class="emoji-item"
-                                        @click="insertEmoji(emoji)">{{ emoji }}</span>
+                                        @click="insertEmoji(emoji)">{{
+                                            emoji }}</span>
                                 </div>
                                 <div class="tool-icon-btn image-upload" title="上传图片" @click="handleImageUpload">
                                     <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
@@ -961,7 +1221,7 @@ onUnmounted(() => {
                     </div>
                     <div class="comments-list">
                         <CommentItem v-for="comment in comments" :key="comment.id" :comment="comment" :depth="0"
-                            :article-author-id="article.author_id" @reply="handleReply"
+                            :article-author-id="article.author_id || article.user_id" @reply="handleReply"
                             @like="(c) => handleAction(c, 'like')" @dislike="(c) => handleAction(c, 'dislike')"
                             @delete="deleteComment" />
 
@@ -1037,37 +1297,46 @@ onUnmounted(() => {
                     <div class="modal-body">
                         <div class="card-preview-container">
                             <div class="share-card" ref="shareCardRef" :style="{ backgroundColor: cardBgColor }">
-                                <div class="card-header">
-                                    <img :src="getProxyUrl(article.author_avatar || 'https://w.wallhaven.cc/full/9o/wallhaven-9oog5d.jpg')"
-                                        @error="handleImageError($event)" class="card-avatar" crossorigin="anonymous"
-                                        alt="作者头像">
-                                    <div class="card-date">{{ formatDate(new Date()) }}</div>
-                                </div>
+                                <div class="paper-texture-overlay"></div>
 
-                                <div class="card-title">{{ article.title }}</div>
-
-                                <div class="card-cover-wrapper">
-                                    <img v-if="article.cover_image" :src="getProxyUrl(article.cover_image)"
-                                        @error="handleImageError($event, 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800')"
-                                        class="card-cover" crossorigin="anonymous" alt="文章封面">
-                                    <img v-else
-                                        :src="getProxyUrl('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=800')"
-                                        class="card-cover" crossorigin="anonymous" alt="默认封面">
-                                </div>
-
-                                <div class="card-summary">
-                                    {{ article.summary || '暂无摘要' }}
-                                </div>
-
-                                <div class="card-footer">
-                                    <div class="footer-left">
-                                        <div class="site-logo">VERITAS</div>
+                                <div class="card-header-postcard">
+                                    <div class="author-info">
+                                        <img :src="getProxyUrl(article.author_avatar || defaultAuthorAvatar)"
+                                            class="card-avatar" crossorigin="anonymous">
+                                        <div class="author-detail">
+                                            <span class="author-name">@{{ article.author_name || 'Veritas' }}</span>
+                                            <span class="card-date">{{ formatDate(new Date()) }}</span>
+                                        </div>
                                     </div>
-                                    <div class="footer-right">
-                                        <div class="card-user">@{{ currentUser.nickname || currentUser.username }}</div>
-                                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://poetize.cn"
-                                            class="qr-code" alt="二维码">
+                                    <div class="postcard-stamp">
+                                        <div class="stamp-inner">VERITAS</div>
                                     </div>
+                                </div>
+
+                                <div class="card-main-content">
+                                    <div class="card-title-art">{{ article.title }}</div>
+                                    <div class="card-cover-art-wrapper">
+                                        <img v-if="article.cover_image" :src="getProxyUrl(article.cover_image)"
+                                            class="card-cover-art" crossorigin="anonymous">
+                                        <div v-else class="card-text-fallback">
+                                            “{{ article.summary ? article.summary.substring(0, 20) : article.title
+                                            }}...”
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="card-footer-postcard">
+                                    <div class="footer-left-content">
+                                        <p class="card-summary-handwriting">{{ article.summary || '这是一份来自 Veritas的灵感寄语。'
+                                        }}</p>
+                                        <div class="postcard-lines"><span></span><span></span></div>
+                                    </div>
+
+                                    <div class="postcard-wax-seal">
+                                        <div class="seal-v">V</div>
+                                    </div>
+
+                                    <img :src="qrCodeUrl" class="postcard-qr" alt="qr">
                                 </div>
                             </div>
                         </div>
@@ -1092,8 +1361,7 @@ onUnmounted(() => {
             </div>
         </Teleport>
 
-
-
+        <!-- 预览评论区图片 -->
         <Teleport to="body">
             <Transition name="fade">
                 <div v-if="isLightboxOpen" class="lightbox-overlay" @click="closeLightbox">
@@ -1107,6 +1375,11 @@ onUnmounted(() => {
 
         <!-- 火箭回到顶部 -->
         <div class="floating-tools">
+            <Transition name="fade">
+                <div v-if="isLaunching" class="rocket-trajectory-container">
+                    <div class="trajectory-flow"></div>
+                </div>
+            </Transition>
             <div class="tool-btn rocket-btn" :class="{ 'launching': isLaunching }" @click="handleScrollToTop"
                 title="回到顶部">
                 <div class="rocket-wrapper">
@@ -1163,26 +1436,27 @@ onUnmounted(() => {
 .hero-header {
     position: relative;
     width: 100%;
-    height: 40vh;
+    /* 将高度从 50vh 缩小到 380px 左右，这是一个非常经典的比例 */
+    height: 380px;
     min-height: 350px;
     overflow: hidden;
     display: flex;
+    align-items: center;
     justify-content: center;
-    align-items: flex-end;
-    box-shadow: inset 0 -20px 30px -10px rgba(0, 0, 0, 0.15);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.type-text-only .hero-header {
+    background-color: #f4f1ea;
+    /* 底色与渐变呼应 */
 }
 
 .hero-bg {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     background-size: cover;
     background-position: center;
-    background-attachment: fixed;
     z-index: 0;
+    transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .hero-overlay {
@@ -1194,14 +1468,206 @@ onUnmounted(() => {
 
 .hero-container {
     position: relative;
-    z-index: 2;
+    z-index: 5;
     width: 100%;
+    height: 100%;
+    /* 🔥 必须撑满全高，底部的 flex 对齐才有效 */
     max-width: 1200px;
     margin: 0 auto;
-    padding: 0 40px 30px;
+    padding: 0 40px;
     display: flex;
-    justify-content: space-between;
+    /* 默认设为垂直居中，这是为了服务 text-only 模式 */
+    align-items: center;
+    justify-content: center;
+}
+
+/* ✅ 核心逻辑：只要不是纯文本模式，内容一律沉底 */
+.hero-header:not(.type-text-only) .hero-container {
     align-items: flex-end;
+    /* 内容靠底部对齐 */
+    justify-content: space-between;
+    padding-bottom: 35px;
+    /* 留出底部呼吸空间，与按钮持平 */
+}
+
+.hero-info-bottom {
+    flex: 1;
+    text-align: left;
+    /* 有封面时，文字左对齐最美观 */
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* 确保标题在有背景图时有阴影保护，更清晰 */
+.hero-info-bottom .article-title {
+    font-size: 2.4rem;
+    /* 封面模式标题可以大气一点 */
+    color: #fff;
+    text-shadow: 0 2px 15px rgba(0, 0, 0, 0.5);
+}
+
+/* --- 视频/音频预览框样式 --- */
+.media-preview-aside {
+    flex-shrink: 0;
+}
+
+.media-box {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 4px solid rgba(255, 255, 255, 0.8);
+    /* 瓷白边框 */
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    transition: transform 0.4s ease;
+}
+
+.media-box.video {
+    width: 420px;
+    aspect-ratio: 16 / 9;
+}
+
+.media-box.audio {
+    width: 260px;
+    height: 260px;
+    border-radius: 50%;
+    /* 音频做成圆形黑胶感 */
+}
+
+.media-poster {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* 媒体中间的播放/音符图标 */
+.media-icon-center {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.2);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: #fff;
+    font-size: 3rem;
+    text-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(2px);
+}
+
+/* 文字信息区：当有媒体框时，标题稍小一点 */
+.hero-info.has-media .article-title {
+    font-size: 2.2rem;
+}
+
+/* --- 纯文本封面排版 --- */
+.text-art-cover {
+    flex: none;
+    width: 680px;
+    /* 稍微收窄一点 */
+    min-height: 220px;
+    /* 降低最小高度 */
+    margin: 0 auto;
+    padding: 35px 40px;
+    /* 减小内边距，让它更紧致 */
+    background: rgba(255, 255, 255, 0.7);
+    /* 半透明白色，让纸质感透出来 */
+    backdrop-filter: blur(5px);
+    border-radius: 2px;
+    /* 极小的圆角，模仿切割纸张 */
+    border: 1px solid rgba(139, 90, 43, 0.2);
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.1);
+    /* 柔和的深投影 */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    z-index: 2;
+}
+
+.manuscript-stamp {
+    position: absolute;
+    top: 20px;
+    right: 30px;
+    color: #d2a679;
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    border: 1px solid #d2a679;
+    padding: 2px 8px;
+    opacity: 0.6;
+    transform: rotate(5deg);
+}
+
+.initial-letter {
+    font-size: 12rem;
+    font-family: "serif";
+    color: var(--highlight-color);
+    opacity: 0.05;
+    /* 极其微弱 */
+    line-height: 1;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    transition: color 0.6s ease;
+}
+
+.text-art-cover .article-title {
+    font-size: 2.2rem;
+    margin-bottom: 12px;
+    position: relative;
+    z-index: 1;
+    color: #4a3c28;
+}
+
+.text-art-cover,
+.content-card {
+    transition:
+        all 0.6s cubic-bezier(0.4, 0, 0.2, 1),
+        filter 0.4s ease,
+        border-color 0.4s ease;
+    will-change: filter, opacity, transform;
+}
+
+.theme-switching {
+    /* 🔥 核心：增加亮度、轻微模糊、以及色彩饱和度，模拟“过载”感 */
+    filter: brightness(1.05) blur(2px) saturate(1.2);
+    opacity: 0.85;
+    /* 配合一个极细微的缩放，模拟呼吸感 */
+    transform: scale(0.995);
+}
+
+.hero-summary-fade {
+    font-style: italic;
+    color: #8b5a2b;
+    font-size: 1.1rem;
+    opacity: 0.8;
+    line-height: 1.8;
+}
+
+/* 纯文本模式下的 Meta 信息精简排版 */
+.text-mode-meta {
+    margin-top: 30px;
+    justify-content: center;
+    color: #bca38a !important;
+}
+
+.author-avatar-tiny {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    vertical-align: middle;
+    margin-right: 8px;
+    cursor: pointer;
+    /* 🔑 核心修正：确保图片在圆形容器中保持原始比例并裁剪，绝不缩放变形 */
+    object-fit: cover;
+}
+
+.author-avatar,
+.author-avatar-tiny {
+    cursor: pointer;
+    transition: all 0.3s ease;
 }
 
 .hero-info {
@@ -1238,10 +1704,6 @@ onUnmounted(() => {
     object-fit: cover;
 }
 
-.author-avatar:hover {
-    transform: scale(1.05);
-}
-
 .author-name {
     font-size: 1.1rem;
     font-weight: 700;
@@ -1265,7 +1727,11 @@ onUnmounted(() => {
 
 /* 头像悬停轻微放大已经在之前帮你写好了 */
 .author-avatar:hover {
-    transform: scale(1.05);
+    transform: scale(1.1);
+    /* 稍微放大一点 */
+    border-color: var(--highlight-color);
+    /* 边框色跟随主题切换 */
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
 }
 
 .author-avatar-wrapper {
@@ -1310,9 +1776,15 @@ onUnmounted(() => {
 }
 
 .hero-controls {
+    position: absolute;
+    /* 脱离文档流 */
+    bottom: 30px;
+    /* 距离底部留白 */
+    right: 40px;
+    /* 对齐容器右边缘 */
     display: flex;
-    gap: 10px;
-    padding-bottom: 2px;
+    gap: 12px;
+    padding-bottom: 0;
 }
 
 .q-btn {
@@ -1837,6 +2309,86 @@ textarea:disabled {
     z-index: 99;
 }
 
+/* ==================== 🔥 新增：火箭轨迹光流特效 ==================== */
+
+/* 1. 轨迹容器：定位在火箭下方 */
+.rocket-trajectory-container {
+    position: absolute;
+    /* 火箭按钮宽50px，在right:30px的位置。
+       为了让轨迹居中，我们需要精密计算：
+       中心点在 right: 30px + 25px = 55px。
+       轨迹宽 8px，所以 left 应该是 55px - 4px = 51px。
+    */
+    right: 51px;
+    /* 火箭底部大约在 bottom: 100px，轨迹从它下面一点开始 */
+    bottom: 130px;
+    width: 8px;
+    /* 高度拉满，形成长长的一道光 */
+    height: 60vh;
+    z-index: 90;
+    /* 放在火箭按钮(z-index:99)的后面 */
+    pointer-events: none;
+    /* 确保不会挡住鼠标交互 */
+    /* 增加整体的模糊发光感 */
+    filter: blur(6px);
+    opacity: 0.8;
+    /* 这里的 overflow hidden 很重要，用于裁剪内部流动的光 */
+    overflow: hidden;
+    border-radius: 0 0 50% 50%;
+    /* 尾部稍微圆润一点 */
+}
+
+/* 2. 核心光流动画层 */
+.trajectory-flow {
+    width: 100%;
+    height: 200%;
+    /* 高度是容器的两倍，用于循环滚动 */
+
+    /* 🔥 核心技巧：使用重复渐变制造能量条纹 */
+    background-image: repeating-linear-gradient(to bottom,
+            /* 从上往下渐变 */
+            transparent 0%,
+            rgba(30, 89, 228, 0.1) 5%,
+            /* 蓝色淡光 */
+            rgba(30, 89, 228, 0.8) 15%,
+            /* 蓝色强光 */
+            rgba(255, 90, 6, 0.9) 25%,
+            /* 橙色核心光 */
+            rgba(30, 89, 228, 0.8) 35%,
+            /* 蓝色强光 */
+            rgba(30, 89, 228, 0.1) 45%,
+            /* 蓝色淡光 */
+            transparent 50%);
+    /* 将背景拉长，让条纹更稀疏有冲击力 */
+    background-size: 100% 300px;
+
+    /* 执行向上流动的动画 */
+    animation: trajectory-flowing 0.4s linear infinite;
+}
+
+/* 定义流动动画 */
+@keyframes trajectory-flowing {
+    0% {
+        transform: translateY(-50%);
+        /* 从一半的位置开始 */
+    }
+
+    100% {
+        transform: translateY(0);
+        /* 向下移动到初始位置，形成向上流动的错觉 */
+    }
+}
+
+.fade-enter-active,
+.fade-leave-active {
+    transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+    opacity: 0;
+}
+
 /* ==================== 🔥 垂直升空火箭 ==================== */
 
 /* 1. 按钮容器 */
@@ -2111,25 +2663,193 @@ textarea:disabled {
     justify-content: center;
 }
 
-/* 🔥 卡片样式设计 */
-.share-card {
-    width: 320px;
-    /* 默认浅黄色 */
-    background-color: #fff9c4;
-    border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+/* ==================== ✉️ 艺术明信片专属渲染 ==================== */
+
+
+/* 确保封面容器比例严谨 */
+.card-cover-art-wrapper {
+    width: 100%;
+    height: 200px;
+    /* 稍微增加一点高度，比例更美 */
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 20px;
+    background: #f0f0f0;
+    /* 🔥 关键：确保容器是 flex 居中，即使图片加载慢也能保住比例 */
     display: flex;
-    flex-direction: column;
-    gap: 15px;
-    transition: background-color 0.3s;
+    align-items: center;
+    justify-content: center;
 }
 
-.card-header {
+.card-cover-art {
+    width: 100%;
+    height: 100%;
+    /* 🔥 核心修复：强制图片填充且不拉伸 */
+    object-fit: cover !important;
+    display: block;
+}
+
+/* 没封面时的文字兜底样式 */
+.card-text-fallback {
+    width: 100%;
+    height: 100%;
+    background: rgba(var(--highlight-color-rgb), 0.08);
+    color: var(--highlight-color);
+    font-size: 1.2rem;
+    line-height: 1.6;
+    padding: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.share-card {
+    position: relative;
+    width: 360px;
+    /* 稍微加宽，符合明信片比例 */
+    min-height: 520px;
+    padding: 30px;
+    border-radius: 2px;
+    /* 极硬的圆角，像裁切的纸 */
+    overflow: hidden;
+    /* 纸张边缘的微弱凹凸感 */
+    box-shadow:
+        0 0 1px rgba(0, 0, 0, 0.1),
+        0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+/* 纸张纤维纹理 */
+.paper-texture-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.4;
+    background-image: url('https://www.transparenttextures.com/patterns/natural-paper.png');
+    z-index: 1;
+}
+
+/* 装饰性邮票 */
+.postcard-stamp {
+    width: 45px;
+    height: 55px;
+    border: 2px dashed rgba(var(--highlight-color-rgb), 0.3);
+    padding: 3px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.stamp-inner {
+    width: 100%;
+    height: 100%;
+    background: rgba(var(--highlight-color-rgb), 0.1);
+    font-size: 0.5rem;
+    color: var(--highlight-color);
+    writing-mode: vertical-lr;
+    letter-spacing: 2px;
+    font-weight: 900;
+}
+
+/* 标题：艺术感排版 */
+.card-title-art {
+    font-family: "Georgia", "STKaiti", serif;
+    font-size: 1.5rem;
+    color: #2c1e0f;
+    margin-bottom: 20px;
+    line-height: 1.3;
+}
+
+/* 手写感摘要 */
+.card-summary-handwriting {
+    font-family: "STKaiti", serif;
+    font-style: italic;
+    color: #5d4a3b;
+    font-size: 0.95rem;
+    line-height: 1.8;
+    margin-bottom: 15px;
+}
+
+/* 底部地址横线装饰 */
+.postcard-lines span {
+    display: block;
+    width: 100%;
+    height: 1px;
+    background: rgba(0, 0, 0, 0.05);
+    margin-bottom: 10px;
+}
+
+/* 🔥 金色火漆印章 */
+.postcard-wax-seal {
+    position: absolute;
+    bottom: 30px;
+    right: 60px;
+    width: 65px;
+    height: 65px;
+    background: radial-gradient(circle at 30% 30%, #ffd700, #b8860b);
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    transform: rotate(-15deg);
+    /* 增加一点倾斜角，更像手工盖章 */
+    z-index: 10;
+}
+
+.seal-v {
+    font-family: "Georgia", serif;
+    font-size: 1.8rem;
+    color: rgba(74, 60, 40, 0.5);
+    font-weight: 900;
+}
+
+/* 明信片顶部布局 */
+.card-header-postcard {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 25px;
+    z-index: 2;
+    position: relative;
+}
+
+.author-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.author-detail {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
+}
+
+/* 明信片底部布局 */
+.card-footer-postcard {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-top: auto;
+    padding-top: 20px;
+    z-index: 2;
+    position: relative;
+}
+
+.footer-left-content {
+    flex: 1;
+    padding-right: 20px;
+}
+
+/* 确保二维码有洁净的背景，防止透色 */
+.postcard-qr {
+    width: 65px;
+    height: 65px;
+    padding: 4px;
+    background: #fff;
+    border-radius: 4px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    z-index: 5;
+    position: relative;
 }
 
 .card-avatar {
@@ -2300,13 +3020,12 @@ textarea:disabled {
 
 .side-toolbar-wrapper {
     position: fixed;
-    /* 1. 将 top 调大，确保避开顶部的 Hero 封面和标题区 */
-    top: 400px;
-    /* 2. 这里的偏移量需要根据 .content-card 的 max-width (900px) 来微调 */
-    /* 900/2 = 450, 再往左挪 70px 左右比较合适 */
+    /* Hero 高度 380px + 间距 40px = 420px */
+    top: 420px;
+    /* 这里的偏移量保持不变 */
     left: calc(50% - 530px);
     z-index: 100;
-    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: opacity, transform;
 }
 
 .side-toolbar {
@@ -2358,8 +3077,41 @@ textarea:disabled {
     /* 增加白色描边，更有立体感 */
 }
 
+/* ❤️ 红心跳动动画 */
+@keyframes heartbeat {
+    0% {
+        transform: scale(1);
+    }
+
+    15% {
+        transform: scale(1.3);
+    }
+
+    30% {
+        transform: scale(1);
+    }
+
+    45% {
+        transform: scale(1.15);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+/* 🔥 让侧边栏工具项和底部大按钮都支持动画 */
+.tool-item.active .icon,
+.btn-large.active .icon {
+    display: inline-block;
+    /* 必须是块级或行内块才能应用 transform */
+    animation: heartbeat 0.45s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* 侧边栏点赞激活时的特殊发光感 */
 .tool-item.active {
-    background: #fff1f2;
+    background: #fff1f2 !important;
+    box-shadow: 0 0 15px rgba(255, 95, 126, 0.2);
 }
 
 .tool-item.active .icon {
@@ -2780,6 +3532,51 @@ textarea:disabled {
     transition: color 0.5s ease;
 }
 
+/* ==================== 🔥 主题切换：引号流光特效 ==================== */
+
+/* 1. 定义流光划过的动画关键帧 */
+@keyframes shimmer-flow {
+    0% {
+        background-position: -100% center;
+        /* 光在最左侧外面 */
+    }
+
+    100% {
+        background-position: 200% center;
+        /* 光划过并移出到最右侧 */
+    }
+}
+
+/* 2. 定义激活时的特效样式 */
+.quote-shimmer {
+    /* 强制覆盖原有的平滑过渡，确保动画立即执行 */
+    transition: none !important;
+
+    /* 🔥 核心：创造一道光 */
+    /* 使用线性渐变，两边是当前主题色，中间是一道亮白色的光 */
+    background: linear-gradient(120deg,
+            var(--highlight-color) 30%,
+            rgba(255, 255, 255, 0.9) 50%,
+            /* 中间最亮的光斑 */
+            var(--highlight-color) 70%);
+    background-size: 200% auto;
+    /* 拉大背景，以便让光动起来 */
+
+    /* 将背景裁剪为文字形状 */
+    background-clip: text;
+    -webkit-background-clip: text;
+
+    /* 将文字本身颜色变透明，露出背景的光 */
+    text-fill-color: transparent;
+    -webkit-text-fill-color: transparent;
+
+    /* 执行动画：快速划过 */
+    animation: shimmer-flow 0.7s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+
+    /* 稍微增加一点亮度滤镜，让光感更强 */
+    filter: brightness(1.2) drop-shadow(0 0 5px rgba(var(--highlight-color-rgb), 0.5));
+}
+
 /* --- 🔥 虚线间距优化 --- */
 .dashed-line {
     border: 0;
@@ -2905,5 +3702,249 @@ textarea:disabled {
         transform: scale(1);
         opacity: 1;
     }
+}
+
+/* ==================== 🎬 视频剧场模式：全格式自适应重构 ==================== */
+
+.inner-theater-section {
+    width: 100%;
+    margin-bottom: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.theater-frame {
+    position: relative;
+    width: 100%;
+    /* 🔑 关键修正：移除 aspect-ratio: 16/9 */
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 40px 100px rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+
+    /* 🔥 核心：使用 flex 布局让视频在黑场中居中 */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 200px;
+}
+
+.inner-video-player {
+    /* 🔑 关键：宽度 100%，高度自适应 */
+    width: 100%;
+    height: auto;
+    /* 🔑 关键：高度最大限制在屏幕高度的 80%，防止 9:16 视频太长 */
+    max-height: 80vh;
+    display: block;
+    object-fit: contain;
+    /* 确保不裁剪视频 */
+    outline: none;
+    background: #000;
+}
+
+/* 红色 REC 指示器：固定在左上角，不受视频比例影响 */
+.theater-rec-status {
+    position: absolute;
+    top: 15px;
+    left: 20px;
+    z-index: 10;
+    color: #ff3b30;
+    font-family: 'Courier New', monospace;
+    font-weight: 900;
+    font-size: 13px;
+    text-shadow: 0 0 8px rgba(255, 59, 48, 0.8);
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 4px 10px;
+    border-radius: 4px;
+}
+
+.dot-pulse {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background-color: #ff3b30;
+    border-radius: 50%;
+    box-shadow: 0 0 10px #ff3b30;
+    animation: rec-pulse 1s infinite alternate;
+}
+
+@keyframes rec-pulse {
+    from {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    to {
+        opacity: 0.3;
+        transform: scale(0.8);
+    }
+}
+
+.video-info-strip {
+    width: 100%;
+    margin-top: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #94a3b8;
+    font-size: 0.8rem;
+    padding: 0 5px;
+}
+
+/* ==================== 🎹 浪漫钢琴演奏厅专属样式 ==================== */
+.disney-piano-concert {
+    width: 100%;
+    background: linear-gradient(to bottom, #1a1a2e, #16213e);
+    border-radius: 16px;
+    padding: 60px 20px 40px;
+    margin-bottom: 40px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(214, 163, 84, 0.3);
+    /* 金箔色边框 */
+}
+
+/* 粒子音符动画 */
+.floating-note {
+    position: absolute;
+    bottom: 20%;
+    color: #f7d794;
+    font-size: 24px;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.is-active .floating-note {
+    animation: note-rise 3s ease-in infinite;
+}
+
+@keyframes note-rise {
+    0% {
+        transform: translateY(0) scale(0.5) rotate(0deg);
+        opacity: 0;
+    }
+
+    50% {
+        opacity: 0.8;
+    }
+
+    100% {
+        transform: translateY(-300px) scale(1.2) rotate(45deg);
+        opacity: 0;
+    }
+}
+
+/* 唱片舞台 */
+.vinyl-record-stage {
+    position: relative;
+    width: 280px;
+    height: 280px;
+    margin: 0 auto 50px;
+}
+
+.concert-vinyl {
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle, #222 0%, #000 100%);
+    border-radius: 50%;
+    border: 8px solid #333;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 50px rgba(214, 163, 84, 0.2);
+
+    /* 🔥 核心优化：默认挂载动画，但设为暂停状态 */
+    animation: vinyl-rotate 8s linear infinite;
+    animation-play-state: paused;
+    will-change: transform;
+    /* 开启硬件加速 */
+}
+
+/* 旋转动画定义 */
+@keyframes vinyl-rotate {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* 🔥 当拥有 spinning 类名时，动画开始运行 */
+.concert-vinyl.spinning {
+    animation-play-state: running;
+}
+
+.vinyl-cover-main {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 4px solid #111;
+}
+
+/* 梦幻钢琴键 */
+.dreamy-keys {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+}
+
+.piano-key {
+    width: 30px;
+    height: 100px;
+    background: linear-gradient(to bottom, #fff, #eee);
+    border-radius: 0 0 4px 4px;
+    box-shadow: 0 4px 0 #ccc;
+    transition: all 0.2s;
+}
+
+.key-active {
+    animation: piano-press 1s infinite alternate calc(var(--i) * 0.1s);
+}
+
+@keyframes piano-press {
+    0% {
+        transform: translateY(0);
+    }
+
+    100% {
+        transform: translateY(5px);
+        background: #f7d794;
+        box-shadow: 0 0 15px #f7d794;
+    }
+}
+
+/* 播放器美化 */
+.romantic-player-bar {
+    text-align: center;
+    margin-top: 30px;
+}
+
+.disney-audio-node {
+    width: 90%;
+    max-width: 600px;
+    filter: invert(100%) hue-rotate(180deg) brightness(1.5);
+    /* 适配暗色背景 */
+}
+
+.audio-caption {
+    color: #bca38a;
+    font-size: 0.9rem;
+    margin-top: 15px;
+    font-style: italic;
+    letter-spacing: 2px;
 }
 </style>
